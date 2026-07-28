@@ -1,0 +1,9 @@
+{
+  "name": "wydev",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WyDev - offline-first developer toolbox with Paystack-gated premium tools",
+  "engines": {
+    "node": "18.x"
+  }
+}
