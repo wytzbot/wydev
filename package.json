@@ -4,6 +4,6 @@
   "private": true,
   "description": "WyDev - offline-first developer toolbox with Paystack-gated premium tools",
   "engines": {
-    "node": "18.x"
+    "node": "24.x"
   }
 }
