@@ -1,7 +1,7 @@
 {
   "name": "WyDev - Local Developer Tools",
   "short_name": "WyDev",
-  "description": "Secure, local-only browser tool suites for fast execution. Offline-ready and clean-designed.",
+  "description": "Secure, local-only browser developer tools which includes json formatter, keystone generator,base64 encoder,suites for fast execution. Offline-ready and clean-designed.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0A0A0F",
