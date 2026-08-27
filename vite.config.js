@@ -6,13 +6,9 @@ import { fileURLToPath } from "url";
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 
-// These live in the project root by design (not in `public/`). Vite only
-// auto-copies files from `publicDir` (default "public") into the production
-// build, so without this plugin they're served fine in local dev (Vite's dev
-// server serves the whole project root) but silently missing from `dist` in
-// production — the manifest/icons 404 there, which fails PWA installability
-// checks and stops the service worker from registering, even though nothing
-// looks wrong locally.
+// Keep root-level PWA assets available in production, but never fail a build
+// because an optional asset is missing. This is important for partial uploads
+// and repository updates where a favicon/icon may temporarily be absent.
 const ROOT_ASSETS = [
   "favicon.ico",
   "favicon.svg",
@@ -26,20 +22,32 @@ const ROOT_ASSETS = [
 ];
 
 function copyRootAssets() {
-  let outDir = "dist";
+  let outDir;
   return {
     name: "copy-root-assets",
     configResolved(config) {
-      outDir = path.isAbsolute(config.build.outDir) ? config.build.outDir : path.join(rootDir, config.build.outDir);
+      outDir = path.resolve(rootDir, config.build.outDir);
     },
     closeBundle() {
+      fs.mkdirSync(outDir, { recursive: true });
       for (const name of ROOT_ASSETS) {
         const src = path.join(rootDir, name);
-        if (fs.existsSync(src)) fs.copyFileSync(src, path.join(outDir, name));
-        else console.warn(`[copy-root-assets] expected root asset not found: ${name}`);
+        const dest = path.join(outDir, name);
+        if (!fs.existsSync(src)) {
+          console.warn(`[copy-root-assets] optional asset missing: ${name}`);
+          continue;
+        }
+        try {
+          fs.copyFileSync(src, dest);
+        } catch (error) {
+          // Do not turn an optional icon/manifest into a failed deployment.
+          console.warn(`[copy-root-assets] could not copy ${name}: ${error.message}`);
+        }
       }
     },
   };
 }
 
-export default defineConfig({ plugins: [react(), copyRootAssets()] });
+export default defineConfig({
+  plugins: [react(), copyRootAssets()],
+});
