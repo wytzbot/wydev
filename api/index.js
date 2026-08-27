@@ -129,7 +129,7 @@ async function flw(path,opts={}){
   const r=await fetch(url,{...opts,headers});
   const t=await r.text();let d;try{d=t?JSON.parse(t):{}}catch{d={message:t}}
   if(!r.ok){
-    const detail=d?.error?.message||d?.error?.type||d?.message||d?.error_description||`HTTP ${r.status}`;
+    const validation=Array.isArray(d?.error?.validation_errors)?d.error.validation_errors.map(v=>`${v.field_name}: ${v.message}`).join("; "):""; const detail=validation||d?.error?.message||d?.error?.type||d?.message||d?.error_description||`HTTP ${r.status}`;
     const code=d?.error?.code||d?.code||null;
     let message=code?`Flutterwave ${code}: ${detail}`:`Flutterwave request failed (${r.status}): ${detail}`;
     if(r.status===403||String(code)==="10403")message+=` [Forbidden at ${path}. Environment: ${FLW_LIVE?"production":"sandbox"}. Base: ${FLW_BASE}. Check that FLW_ENV matches your v4 credential environment and that the live account has the required API permissions/KYC. Trace: ${trace}]`;
@@ -174,7 +174,7 @@ async function resolveCustomerId(customerPayload){
   }
 }
 async function createBillingCheckout(s,payload){
-  const currency=payload.currency==="NGN"?"NGN":"USD", amount=amountFor(currency), reference=`WYDEV-PRO-${s.id}-${crypto.randomUUID()}`;
+  const currency=payload.currency==="NGN"?"NGN":"USD", amount=amountFor(currency), reference=`WYDEV-${String(s.id).slice(0,12)}-${Date.now().toString(36)}-${crypto.randomBytes(5).toString("hex")}`;
   const customerPayload={email:payload.email||`${s.login}@users.noreply.github.com`,name:{first:s.name||s.login},meta:{github_id:String(s.id)}};
   if(payload.payment_method?.type!=="card")throw new Error("Select card checkout.");
   const customerId=await resolveCustomerId(customerPayload);
@@ -195,7 +195,7 @@ async function renewDue(){
   for(const e of due){
     if(!e.customerId||!e.paymentMethodId||!e.currency)continue;
     try{
-      const reference=`WYDEV-RENEW-${e.id}-${crypto.randomUUID()}`,amount=amountFor(e.currency);
+      const reference=`WYDEV-R-${String(e.id).slice(0,12)}-${Date.now().toString(36)}-${crypto.randomBytes(5).toString("hex")}`,amount=amountFor(e.currency);
       const d=await flw("/charges",{method:"POST",body:JSON.stringify({reference,currency:e.currency,amount,customer_id:e.customerId,payment_method_id:e.paymentMethodId,recurring:true})});
       const status=d.data?.status||"pending"; await setTransaction(reference,{userId:e.id,amount,currency:e.currency,status,chargeId:d.data?.id,customerId:e.customerId,paymentMethodId:e.paymentMethodId,createdAt:Date.now(),renewal:true});
       if(status==="succeeded")await setEntitlement(e.id,{status:"active",expiresAt:Date.now()+31*86400000,renewAt:Date.now()+31*86400000,updatedAt:Date.now(),lastRenewalReference:reference});
