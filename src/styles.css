@@ -266,3 +266,20 @@ select:focus{border-color:var(--accent)}
 @media(max-width:720px){
   .fileBack{display:inline-flex}
 }
+
+
+/* Billing Pro feature list and legal pages */
+.featureList { list-style: none; padding: 0; margin: 0 0 12px; display: grid; gap: 12px; }
+.featureList li { display: grid; gap: 3px; padding: 12px 0; border-bottom: 1px solid var(--border, rgba(127,127,127,.18)); }
+.featureList li:last-child { border-bottom: 0; }
+.featureList b { font-size: 14px; }
+.featureList span { color: var(--muted, #777); font-size: 13px; line-height: 1.45; }
+.legalPanel { padding: 0; overflow: hidden; }
+.legalSection { border-bottom: 1px solid var(--border, rgba(127,127,127,.18)); padding: 0 16px; }
+.legalSection:last-of-type { border-bottom: 0; }
+.legalSection summary { cursor: pointer; list-style: none; padding: 16px 0; font-weight: 700; }
+.legalSection summary::-webkit-details-marker { display: none; }
+.legalSection summary::after { content: "+"; float: right; font-size: 18px; opacity: .6; }
+.legalSection[open] summary::after { content: "−"; }
+.legalSection p { margin: -3px 0 16px; line-height: 1.65; color: var(--muted, #777); }
+.legalNote { padding: 16px; margin: 0; }

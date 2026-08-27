@@ -13,6 +13,7 @@ import Settings from "./pages/Settings";
 import Billing from "./pages/Billing";
 import Project from "./pages/Project";
 import SearchPage from "./pages/Search";
+import LegalPage from "./pages/Legal";
 import { github } from "./github";
 import { loadState, saveState } from "./storage";
 
@@ -99,6 +100,9 @@ export default function App() {
         {page === "search" && <SearchPage repos={repos} onOpen={open} onNavigate={setPage} query={searchQuery} repoFiles={working?.files || {}} onOpenFile={openFile} />}
         {page === "recent" && <Recent onOpen={open} />}
         {page === "help" && <Help />}
+        {page === "privacy" && <LegalPage type="privacy" />}
+        {page === "terms" && <LegalPage type="terms" />}
+        {page === "about" && <LegalPage type="about" />}
       </section>
       <TabBar page={page} setPage={setPage} onMore={openMenu} />
       <DialogHost />

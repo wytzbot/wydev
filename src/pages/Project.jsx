@@ -20,6 +20,8 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
   const [branch, setBranch] = useState(cached?.branch || repo.default_branch || "main"),
     [branches, setBranches] = useState([]),
     [files, setFiles] = useState(cached?.files || {}),
+    [fileIndex, setFileIndex] = useState(cached?.fileIndex || Object.keys(cached?.files || {}).map((path) => ({ path, sha: null, size: 0 }))),
+    [fileLoading, setFileLoading] = useState(false),
     [base, setBase] = useState(cached?.base || {}),
     [baseSha, setBaseSha] = useState(cached?.baseSha || ""),
     [selected, setSelected] = useState(cached?.selected || ""),
@@ -33,7 +35,8 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
     [plan, setPlan] = useState("free"),
     [prs, setPrs] = useState([]),
     [prOpen, setPrOpen] = useState(false),
-    [prBusy, setPrBusy] = useState(false);
+    [prBusy, setPrBusy] = useState(false),
+    [remoteConflict, setRemoteConflict] = useState(null);
   useEffect(() => {
     billing.status().then((s) => setPlan(s.plan)).catch(() => {});
   }, []);
@@ -45,7 +48,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
   }, [files, times, loadedAt]);
   useEffect(() => {
     onWorkingState?.({ repo, branch, files, base, changes, openFile: setSelected });
-    saveState(key, { branch, files, base, baseSha, selected, times, loadedAt });
+    saveState(key, { branch, files, fileIndex, base, baseSha, selected, times, loadedAt });
   }, [repo, branch, files, base, baseSha, selected, changes.length, times, loadedAt]);
 
   // Every discrete file/folder action (not raw keystrokes — CodeMirror already
@@ -108,21 +111,17 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
     try {
       setBusy(true);
       const t = await github.tree(repo.owner.login, repo.name, branch);
-      const map = {};
-      for (const x of t.files || [])
-        if (x.size < 500000) {
-          try {
-            const f = await github.file(repo.owner.login, repo.name, x.path, branch);
-            map[x.path] = f.content || "";
-          } catch {}
-        }
-      setFiles(map);
-      setBase({ ...map });
+      const index = (t.files || []).filter((x) => Number(x.size || 0) < 500000).map((x) => ({ path: x.path, sha: x.sha, size: x.size || 0 }));
+      const empty = Object.fromEntries(index.map((x) => [x.path, null]));
+      setFileIndex(index);
+      setFiles(empty);
+      setBase({ ...empty });
       setBaseSha(t.baseSha);
+      setSelected("");
       setHistory([]);
       setTimes({});
       setLoadedAt(Date.now());
-      toastSuccess("Repository loaded");
+      toastSuccess(`Repository loaded · ${index.length} files ready`);
     } catch (e) {
       toastError(e.message);
     } finally {
@@ -136,7 +135,20 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
   useEffect(() => {
     if (openPath) setSelected(openPath);
   }, [openPath]);
+  useEffect(() => {
+    if (!selected || files[selected] !== null && files[selected] !== undefined) return;
+    let cancelled = false;
+    setFileLoading(true);
+    github.file(repo.owner.login, repo.name, selected, branch).then((f) => {
+      if (cancelled) return;
+      const content = f.content ?? "";
+      setFiles((x) => ({ ...x, [selected]: content }));
+      setBase((x) => ({ ...x, [selected]: content }));
+    }).catch((e) => { if (!cancelled) { setSelected(""); toastError(e.message); } }).finally(() => { if (!cancelled) setFileLoading(false); });
+    return () => { cancelled = true; };
+  }, [selected, branch, repo]);
   const edit = (v) => {
+    if (!selected) return;
     setFiles((x) => ({ ...x, [selected]: v }));
     setTimes((t) => ({ ...t, [selected]: Date.now() }));
   };
@@ -150,7 +162,8 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
       toastSuccess(`Committed and pushed successfully · ${r.commitSha.slice(0, 7)}`);
       localStorage.removeItem("wydev:project:" + repo.id);
     } catch (e) {
-      toastError(e.message || "Commit failed. Pull the latest changes and try again.");
+      if (e.status === 409 || e.code === "REMOTE_CHANGED") setRemoteConflict({ message: e.message, remoteSha: e.details?.remoteSha || "" });
+      else toastError(e.message || "Commit failed. Pull the latest changes and try again.");
     } finally {
       setBusy(false);
     }
@@ -565,6 +578,18 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
           </div>
         </div>
       )}
+      {remoteConflict && (
+        <div className="sheet conflictSheet">
+          <h3>REMOTE CHANGES DETECTED</h3>
+          <p>{remoteConflict.message}</p>
+          <p className="muted">Your local changes are still here. Review the latest branch on GitHub before deciding how to continue.</p>
+          <div className="sheetActions">
+            <button onClick={() => setRemoteConflict(null)}>Keep editing</button>
+            <a className="button" href={repo.html_url} target="_blank" rel="noreferrer">Review on GitHub</a>
+            <button onClick={() => { setRemoteConflict(null); load(); }}>Reload repository</button>
+          </div>
+        </div>
+      )}
       {changes.length > 0 && (
         <div className="changesDropdown">
           <button className="changesToggle" onClick={() => setChangesOpen((o) => !o)}>
@@ -595,10 +620,10 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
       )}
       <div className={`projectBody${selected && selected in files ? " hasSelection" : ""}`}>
         <aside>
-          <FileExplorer files={files} times={displayTimes} onOpen={setSelected} />
+          <FileExplorer files={Object.fromEntries(fileIndex.map((x) => [x.path, files[x.path]]))} times={displayTimes} onOpen={setSelected} />
         </aside>
         <main>
-          {selected && selected in files ? (
+          {selected && files[selected] !== null && files[selected] !== undefined ? (
             <>
               <div className="fileTitle">
                 <button className="fileBack" aria-label="Back to files" onClick={() => setSelected("")}>‹</button>
@@ -612,8 +637,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
             </>
           ) : (
             <div className="empty">
-              <h2>Select a file</h2>
-              <p>Choose a file from the repository tree.</p>
+              {fileLoading ? <><h2>Loading file…</h2><p>Fetching only the selected file from GitHub.</p></> : <><h2>Select a file</h2><p>Choose a file from the repository tree.</p></>}
             </div>
           )}
         </main>

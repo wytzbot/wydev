@@ -2,10 +2,14 @@
   "version": 2,
   "buildCommand": "npm run build:source",
   "outputDirectory": "dist",
-  "installCommand": "npm install",
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 60
+    }
+  },
   "rewrites": [
     {
-      "source": "/api/:path*",
+      "source": "/api/(.*)",
       "destination": "/api"
     }
   ],
@@ -71,5 +75,6 @@
       "path": "/api/billing/renew",
       "schedule": "0 2 * * *"
     }
-  ]
+  ],
+  "installCommand": "npm install"
 }

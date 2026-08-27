@@ -20,7 +20,7 @@ const FLW_BASE=process.env.FLW_ENV==="production"
   ?"https://f4bexperience.flutterwave.com"
   :"https://developersandbox-api.flutterwave.com";
 
-const memory={usage:new Map(),entitlements:new Map(),transactions:new Map(),cache:new Map()};
+const memory={usage:new Map(),entitlements:new Map(),transactions:new Map(),preferences:new Map(),cache:new Map()};
 async function getEntitlement(userId){
   if(db){const d=await db.collection("wydev_entitlements").doc(String(userId)).get();return d.exists?d.data():null}
   return memory.entitlements.get(String(userId))||null;
@@ -152,10 +152,25 @@ async function handler(req,res){
     if(p==="/auth/github/callback"&&req.method==="GET")return oauthCallback(req,res);
     if(p==="/auth/me"&&req.method==="GET"){const s=session(req);return json(res,200,s?{user:{id:s.id,login:s.login,name:s.name,avatar:s.avatar}}:{user:null});}
     if(p==="/auth/logout"&&req.method==="POST"){clearSession(res);return json(res,200,{ok:true});}
+    const s=requireSession(req,res);if(!s)return;
+    if(p==="/preferences"&&req.method==="GET") {
+      const ref=db?.collection("wydev_preferences").doc(String(s.id));
+      if(!ref) return json(res,200,{preferences:memory.preferences.get(String(s.id))||{}});
+      const d=await ref.get();
+      return json(res,200,{preferences:d.exists?(d.data().preferences||{}):{}});
+    }
+    if(p==="/preferences"&&req.method==="PUT") {
+      const b=await body(req), incoming=b?.preferences&&typeof b.preferences==="object"?b.preferences:{};
+      const allowed=["fontSize","wordWrap","reducedMotion","density"];
+      const preferences={};
+      for(const k of allowed) if(Object.prototype.hasOwnProperty.call(incoming,k)) preferences[k]=incoming[k];
+      if(db) await db.collection("wydev_preferences").doc(String(s.id)).set({preferences,updatedAt:Date.now()},{merge:true});
+      else memory.preferences.set(String(s.id),preferences);
+      return json(res,200,{ok:true,preferences});
+    }
     if(p==="/billing/webhook"&&req.method==="POST"){let raw="";for await(const c of req)raw+=c;if(!validWebhook(req,raw))return json(res,401,{error:"Invalid Flutterwave signature"});let data;try{data=JSON.parse(raw)}catch{return json(res,400,{error:"Invalid JSON"})}const tx=data.data||{};if(tx.id){try{const d=await flw(`/charges/${encodeURIComponent(tx.id)}`),x=d.data||{};const ref=x.reference||tx.reference,rec=await getTransaction(ref);if(rec&&x.status==="succeeded"&&Number(x.amount)===Number(rec.amount)&&x.currency===rec.currency){await setEntitlement(rec.userId,{status:"active",expiresAt:Date.now()+31*86400000,renewAt:Date.now()+31*86400000,reference:ref,customerId:rec.customerId,paymentMethodId:rec.paymentMethodId,currency:rec.currency,updatedAt:Date.now()})}}catch{} }return json(res,200,{received:true});}
     if(p==="/billing/renew"&&req.method==="POST"){const auth=req.headers.authorization||"";if(!process.env.CRON_SECRET||auth!==`Bearer ${process.env.CRON_SECRET}`)return json(res,401,{error:"Unauthorized"});return json(res,200,{processed:await renewDue()});}
     if(p==="/billing/authorize"&&req.method==="POST"){const s=requireSession(req,res);if(!s)return;const b=await body(req);return json(res,200,await authorizeCharge(s,b.id,b.authorization));}
-    const s=requireSession(req,res);if(!s)return;
     if(p==="/github/repos"&&req.method==="GET"){
       const all=await gh(s.token,"/user/repos?per_page=100&sort=updated");
       const plan=await entitlement(s);
@@ -218,7 +233,7 @@ async function handler(req,res){
       if(changes.length>300)return json(res,413,{error:"Too many changed files in one push. Split the work into smaller commits."});
       for(const c of changes) safePath(c.path);
       const ref=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(branch)}`);
-      if(b.expectedSha&&ref.object.sha!==b.expectedSha)return json(res,409,{error:"Repository changed on GitHub. Pull and review before pushing.",remoteSha:ref.object.sha});
+      if(b.expectedSha&&ref.object.sha!==b.expectedSha)return json(res,409,{error:"Remote changes detected. Review the latest GitHub changes before pushing.",code:"REMOTE_CHANGED",remoteSha:ref.object.sha});
       const head=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits/${ref.object.sha}`);
       const entries=[];
       const uploads=[];
