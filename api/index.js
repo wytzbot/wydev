@@ -105,8 +105,38 @@ async function aiDiagnose(s,payload){
   return {...out,usage:{used:quota.used+1,limit:quota.limit,remaining:Math.max(0,quota.limit-quota.used-1),plan:quota.plan}};
 }
 
-async function flwToken(){const r=await fetch(FLW_TOKEN,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({client_id:process.env.FLW_CLIENT_ID||"",client_secret:process.env.FLW_CLIENT_SECRET||"",grant_type:"client_credentials"})});const d=await r.json();if(!r.ok||!d.access_token)throw new Error(d.error_description||"Flutterwave authentication failed");return d.access_token;}
-async function flw(path,opts={}){const token=await flwToken();const trace=crypto.randomUUID();const r=await fetch(FLW_BASE+path,{...opts,headers:{"Authorization":`Bearer ${token}`,"Content-Type":"application/json","X-Trace-Id":trace,"X-Idempotency-Key":crypto.randomUUID(),...(opts.headers||{})}});const t=await r.text();let d;try{d=JSON.parse(t)}catch{d={message:t}}if(!r.ok){const detail=d?.error?.message||d?.error?.type||d?.message||d?.error_description||`HTTP ${r.status}`;const code=d?.error?.code||d?.code;const err=new Error(code?`Flutterwave ${code}: ${detail}`:`Flutterwave request failed (${r.status}): ${detail}`);throw Object.assign(err,{status:r.status,data:d,flutterwaveCode:code||null});}return d;}
+function flwRequestId(prefix){return `${prefix}${crypto.randomBytes(18).toString("hex")}`;}
+async function flwToken(){
+  const clientId=String(process.env.FLW_CLIENT_ID||"").trim();
+  const clientSecret=String(process.env.FLW_CLIENT_SECRET||"").trim();
+  if(!clientId||!clientSecret)throw Object.assign(new Error("Flutterwave v4 credentials are not configured. Set FLW_CLIENT_ID and FLW_CLIENT_SECRET in Vercel."),{status:500,code:"FLW_CREDENTIALS_MISSING"});
+  const r=await fetch(FLW_TOKEN,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded","Accept":"application/json"},body:new URLSearchParams({client_id:clientId,client_secret:clientSecret,grant_type:"client_credentials"})});
+  const text=await r.text();let d={};try{d=text?JSON.parse(text):{}}catch{d={message:text}}
+  if(!r.ok||!d.access_token){
+    const detail=d?.error_description||d?.error?.message||d?.message||`HTTP ${r.status}`;
+    throw Object.assign(new Error(`Flutterwave authentication failed (${r.status}): ${detail}`),{status:r.status,code:d?.error?.code||d?.error||"FLW_AUTH_FAILED"});
+  }
+  return d.access_token;
+}
+async function flw(path,opts={}){
+  const token=await flwToken();
+  const trace=flwRequestId("WYTRACE");
+  const idempotency=flwRequestId("WYREQ");
+  const headers={"Authorization":`Bearer ${token}`,"Accept":"application/json","Content-Type":"application/json","X-Trace-Id":trace,"X-Idempotency-Key":idempotency,...(opts.headers||{})};
+  if(process.env.FLW_SCENARIO_KEY)headers["X-Scenario-Key"]=String(process.env.FLW_SCENARIO_KEY);
+  const url=FLW_BASE+path;
+  const r=await fetch(url,{...opts,headers});
+  const t=await r.text();let d;try{d=t?JSON.parse(t):{}}catch{d={message:t}}
+  if(!r.ok){
+    const detail=d?.error?.message||d?.error?.type||d?.message||d?.error_description||`HTTP ${r.status}`;
+    const code=d?.error?.code||d?.code||null;
+    let message=code?`Flutterwave ${code}: ${detail}`:`Flutterwave request failed (${r.status}): ${detail}`;
+    if(r.status===403||String(code)==="10403")message+=` [Forbidden at ${path}. Environment: ${FLW_LIVE?"production":"sandbox"}. Trace: ${trace}]`;
+    const err=new Error(message);
+    throw Object.assign(err,{status:r.status,data:d,flutterwaveCode:code,traceId:trace,endpoint:path});
+  }
+  return d;
+}
 function amountFor(currency){if(currency==="NGN"){const n=Number(process.env.FLW_PRO_NGN||9000);if(!n)throw new Error("FLW_PRO_NGN is required for NGN checkout");return n}return Number(process.env.FLW_PRO_USD||9.99);}
 
 async function createBillingCheckout(s,payload){

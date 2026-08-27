@@ -97,3 +97,7 @@ Firestore removes the Vercel in-memory state problem for AI quotas, transaction 
 
 Recommended Firestore rules: deny all direct client reads/writes and access these collections only through the Admin SDK server gateway.
 
+
+### Flutterwave v4 troubleshooting
+
+WyDev generates alphanumeric `X-Trace-Id` and `X-Idempotency-Key` values as required by Flutterwave v4. A `10403 FORBIDDEN` response is surfaced with the endpoint, environment, and trace ID so the account/API permission issue can be identified without exposing credentials.
