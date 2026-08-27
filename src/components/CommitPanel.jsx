@@ -1,2 +1,0 @@
-import {useState} from "react";
-export default function CommitPanel({count,onCommit,busy}){const [msg,setMsg]=useState("");return <div className="commitBar"><span>{count} changed</span><input value={msg} onChange={e=>setMsg(e.target.value)} placeholder="Commit message"/><button disabled={!msg||!count||busy} onClick={()=>onCommit(msg)}>{busy?"Pushing…":"Commit & Push"}</button></div>}
