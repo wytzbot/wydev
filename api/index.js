@@ -16,10 +16,11 @@ try{
 
 const GH="https://api.github.com";
 const FLW_TOKEN="https://idp.flutterwave.com/realms/flutterwave/protocol/openid-connect/token";
-const FLW_LIVE=/^(production|prod|live)$/i.test(String(process.env.FLW_ENV||"sandbox"));
-const FLW_BASE=FLW_LIVE
+const FLW_ENV=String(process.env.FLW_ENV||"live").trim().toLowerCase();
+const FLW_LIVE=/^(production|prod|live)$/i.test(FLW_ENV);
+const FLW_BASE=String(process.env.FLW_BASE_URL||"").trim().replace(/\/$/,"") || (FLW_LIVE
   ?"https://f4bexperience.flutterwave.com"
-  :"https://developersandbox-api.flutterwave.com";
+  :"https://developersandbox-api.flutterwave.com");
 
 const memory={usage:new Map(),entitlements:new Map(),transactions:new Map(),preferences:new Map(),cache:new Map()};
 async function getEntitlement(userId){
@@ -131,7 +132,7 @@ async function flw(path,opts={}){
     const detail=d?.error?.message||d?.error?.type||d?.message||d?.error_description||`HTTP ${r.status}`;
     const code=d?.error?.code||d?.code||null;
     let message=code?`Flutterwave ${code}: ${detail}`:`Flutterwave request failed (${r.status}): ${detail}`;
-    if(r.status===403||String(code)==="10403")message+=` [Forbidden at ${path}. Environment: ${FLW_LIVE?"production":"sandbox"}. Trace: ${trace}]`;
+    if(r.status===403||String(code)==="10403")message+=` [Forbidden at ${path}. Environment: ${FLW_LIVE?"production":"sandbox"}. Base: ${FLW_BASE}. Check that FLW_ENV matches your v4 credential environment and that the live account has the required API permissions/KYC. Trace: ${trace}]`;
     const err=new Error(message);
     throw Object.assign(err,{status:r.status,data:d,flutterwaveCode:code,traceId:trace,endpoint:path});
   }
@@ -290,7 +291,7 @@ async function handler(req,res){
     }
     if(p==="/ai/diagnose"&&req.method==="POST"){const b=await body(req);return json(res,200,await aiDiagnose(s,b));}
     if(p==="/billing/status"&&req.method==="GET"){const e=await getEntitlement(s.id);return json(res,200,{plan:await entitlement(s),expiresAt:e?.expiresAt||null});}
-    if(p==="/billing/config"&&req.method==="GET")return json(res,200,{usd:Number(process.env.FLW_PRO_USD||9.99),ngn:Number(process.env.FLW_PRO_NGN||9000),environment:process.env.FLW_ENV||"sandbox",encryptionKey:process.env.FLW_ENCRYPTION_KEY||""});
+    if(p==="/billing/config"&&req.method==="GET")return json(res,200,{usd:Number(process.env.FLW_PRO_USD||9.99),ngn:Number(process.env.FLW_PRO_NGN||9000),environment:FLW_LIVE?"live":"sandbox",encryptionKey:process.env.FLW_ENCRYPTION_KEY||""});
     if(p==="/billing/verify"&&req.method==="POST"){const b=await body(req);if(!b.id||!b.reference)return json(res,400,{error:"Transaction id and reference required"});return json(res,200,await verifyCharge(s,b.id,b.reference));}
     if(p==="/billing/checkout"&&req.method==="POST"){const b=await body(req);b.req=req;const d=await createBillingCheckout(s,b);return json(res,200,d);}
     return json(res,404,{error:"Route not found"});
