@@ -140,13 +140,44 @@ async function flw(path,opts={}){
 }
 function amountFor(currency){if(currency==="NGN"){const n=Number(process.env.FLW_PRO_NGN||9000);if(!n)throw new Error("FLW_PRO_NGN is required for NGN checkout");return n}return Number(process.env.FLW_PRO_USD||9.99);}
 
+async function findCustomerByEmail(email){
+  // Flutterwave v4 does not document a customer-search endpoint consistently across environments,
+  // so this tries the conventional filter param and falls back to a full list scan if unsupported.
+  try{
+    const q=await flw(`/customers?email=${encodeURIComponent(email)}`);
+    const hit=(Array.isArray(q.data)?q.data:[q.data]).find(c=>c&&String(c.email||"").toLowerCase()===email.toLowerCase());
+    if(hit?.id)return hit.id;
+  }catch{}
+  try{
+    const all=await flw("/customers");
+    const hit=(Array.isArray(all.data)?all.data:[]).find(c=>String(c?.email||"").toLowerCase()===email.toLowerCase());
+    if(hit?.id)return hit.id;
+  }catch{}
+  return null;
+}
+async function resolveCustomerId(customerPayload){
+  try{
+    const customer=await flw("/customers",{method:"POST",body:JSON.stringify(customerPayload)});
+    const customerId=customer.data?.id;
+    if(!customerId)throw new Error("Flutterwave did not return a customer id");
+    return customerId;
+  }catch(e){
+    const alreadyExists=String(e.flutterwaveCode)==="1203409"||/already exists/i.test(e.message||"");
+    if(!alreadyExists)throw e;
+    // The error body itself sometimes carries the existing customer id (varies by account/version);
+    // check there first before falling back to a lookup call.
+    const inline=e.data?.error?.data?.id||e.data?.data?.id||e.data?.error?.id;
+    if(inline)return inline;
+    const found=await findCustomerByEmail(customerPayload.email);
+    if(found)return found;
+    throw Object.assign(new Error(`Flutterwave reports a customer already exists for ${customerPayload.email}, but WyDev could not look up its ID to reuse it. Trace: ${e.traceId||"n/a"}`),{status:e.status||500});
+  }
+}
 async function createBillingCheckout(s,payload){
   const currency=payload.currency==="NGN"?"NGN":"USD", amount=amountFor(currency), reference=`WYDEV-PRO-${s.id}-${crypto.randomUUID()}`;
   const customerPayload={email:payload.email||`${s.login}@users.noreply.github.com`,name:{first:s.name||s.login},meta:{github_id:String(s.id)}};
   if(payload.payment_method?.type!=="card")throw new Error("Select card checkout.");
-  const customer=await flw("/customers",{method:"POST",body:JSON.stringify(customerPayload)});
-  const customerId=customer.data?.id;
-  if(!customerId)throw new Error("Flutterwave did not return a customer id");
+  const customerId=await resolveCustomerId(customerPayload);
   const pm=await flw("/payment-methods",{method:"POST",body:JSON.stringify({type:"card",card:payload.payment_method.card})});
   const paymentMethodId=pm.data?.id;
   if(!paymentMethodId)throw new Error("Flutterwave did not return a payment method id");
