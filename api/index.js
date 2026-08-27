@@ -16,7 +16,8 @@ try{
 
 const GH="https://api.github.com";
 const FLW_TOKEN="https://idp.flutterwave.com/realms/flutterwave/protocol/openid-connect/token";
-const FLW_BASE=process.env.FLW_ENV==="production"
+const FLW_LIVE=/^(production|prod|live)$/i.test(String(process.env.FLW_ENV||"sandbox"));
+const FLW_BASE=FLW_LIVE
   ?"https://f4bexperience.flutterwave.com"
   :"https://developersandbox-api.flutterwave.com";
 
@@ -105,7 +106,7 @@ async function aiDiagnose(s,payload){
 }
 
 async function flwToken(){const r=await fetch(FLW_TOKEN,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({client_id:process.env.FLW_CLIENT_ID||"",client_secret:process.env.FLW_CLIENT_SECRET||"",grant_type:"client_credentials"})});const d=await r.json();if(!r.ok||!d.access_token)throw new Error(d.error_description||"Flutterwave authentication failed");return d.access_token;}
-async function flw(path,opts={}){const token=await flwToken();const trace=crypto.randomUUID();const r=await fetch(FLW_BASE+path,{...opts,headers:{"Authorization":`Bearer ${token}`,"Content-Type":"application/json","X-Trace-Id":trace,"X-Idempotency-Key":crypto.randomUUID(),...(opts.headers||{})}});const t=await r.text();let d;try{d=JSON.parse(t)}catch{d={message:t}}if(!r.ok)throw Object.assign(new Error(d.message||"Flutterwave request failed"),{status:r.status,data:d});return d;}
+async function flw(path,opts={}){const token=await flwToken();const trace=crypto.randomUUID();const r=await fetch(FLW_BASE+path,{...opts,headers:{"Authorization":`Bearer ${token}`,"Content-Type":"application/json","X-Trace-Id":trace,"X-Idempotency-Key":crypto.randomUUID(),...(opts.headers||{})}});const t=await r.text();let d;try{d=JSON.parse(t)}catch{d={message:t}}if(!r.ok){const detail=d?.error?.message||d?.error?.type||d?.message||d?.error_description||`HTTP ${r.status}`;const code=d?.error?.code||d?.code;const err=new Error(code?`Flutterwave ${code}: ${detail}`:`Flutterwave request failed (${r.status}): ${detail}`);throw Object.assign(err,{status:r.status,data:d,flutterwaveCode:code||null});}return d;}
 function amountFor(currency){if(currency==="NGN"){const n=Number(process.env.FLW_PRO_NGN||9000);if(!n)throw new Error("FLW_PRO_NGN is required for NGN checkout");return n}return Number(process.env.FLW_PRO_USD||9.99);}
 
 async function createBillingCheckout(s,payload){
