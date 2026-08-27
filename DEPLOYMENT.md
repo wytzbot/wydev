@@ -30,7 +30,7 @@ Server-only secrets:
 
 Browser-safe:
 - `VITE_API_BASE_URL`
-- `VITE_FLW_ENCRYPTION_KEY`
+- `FLW_ENCRYPTION_KEY`
 
 Never prefix server secrets with `VITE_`.
 
@@ -51,7 +51,7 @@ Collections:
 No repository source is intentionally stored in Firestore.
 
 ## Flutterwave
-Use sandbox first. Configure the production callback/redirect URL required by the selected v4 payment flow. Set the merchant encryption key as `VITE_FLW_ENCRYPTION_KEY`.
+Use sandbox first. Configure the production callback/redirect URL required by the selected v4 payment flow. Set the merchant encryption key as `FLW_ENCRYPTION_KEY`. WyDev reads it server-side through `/billing/config`, so no `VITE_`-prefixed Flutterwave encryption variable is required in Vercel.
 
 Never activate Pro from a frontend redirect alone. The gateway verifies the payment and/or processes a trusted webhook.
 

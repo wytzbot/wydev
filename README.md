@@ -83,7 +83,9 @@ The Firebase Admin credentials are server-only. Do not put them in `VITE_*` vari
 The browser encrypts card number, expiry month/year and CVV with the Flutterwave AES-256 encryption key before the request reaches the WyDev backend. Flutterwave's current v4 docs require encrypted card fields plus a 12-character nonce. The backend then sends only encrypted card data to Flutterwave.
 
 Set the merchant encryption key as:
-`VITE_FLW_ENCRYPTION_KEY`
+`FLW_ENCRYPTION_KEY`
+
+WyDev reads this server environment variable through `/billing/config` so the Vite frontend does not require a `VITE_`-prefixed environment variable.
 
 This is deliberately different from `FLW_CLIENT_SECRET`. Never put `FLW_CLIENT_SECRET` in a VITE variable.
 

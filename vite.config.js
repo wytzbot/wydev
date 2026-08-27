@@ -19,6 +19,7 @@ const ROOT_ASSETS = [
   "icon-512.png",
   "manifest.webmanifest",
   "sw.js",
+  "offline.html",
 ];
 
 function copyRootAssets() {

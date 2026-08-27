@@ -14,12 +14,14 @@ import Billing from "./pages/Billing";
 import Project from "./pages/Project";
 import SearchPage from "./pages/Search";
 import LegalPage from "./pages/Legal";
+import Offline from "./pages/Offline";
 import { github } from "./github";
 import { loadState, saveState } from "./storage";
 
 export default function App() {
   const [user, setUser] = useState(null),
-    [page, setPage] = useState("home"),
+    [offline, setOffline] = useState(() => !navigator.onLine),
+    [page, setPage] = useState(() => window.history.state?.wydevPage || "home"),
     [repos, setRepos] = useState([]),
     [repoLimit, setRepoLimit] = useState(null),
     [repo, setRepo] = useState(null),
@@ -36,6 +38,47 @@ export default function App() {
         setRepoLimit({ total: d.total, limit: d.limit, plan: d.plan });
       })
       .catch((e) => toastError(e));
+
+  useEffect(() => {
+    const onOnline = () => setOffline(false);
+    const onOffline = () => setOffline(true);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+    };
+  }, []);
+
+  // Keep app navigation inside browser history so Android/iOS back returns to the
+  // previous WyDev screen instead of closing the PWA/web app.
+  useEffect(() => {
+    if (!window.history.state?.wydevPage) {
+      window.history.replaceState({ wydevPage: "home" }, "", window.location.href);
+    }
+    const onPopState = (event) => {
+      const next = event.state?.wydevPage;
+      if (next) setPage(next);
+      else {
+        // Never let the browser back action leave WyDev from its root screen.
+        window.history.pushState({ wydevPage: "home" }, "", window.location.href);
+        setPage("home");
+      }
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  const navigate = (next) => {
+    if (!next || next === page) return;
+    window.history.pushState({ wydevPage: next }, "", `#${next}`);
+    setPage(next);
+    closeMenu();
+  };
+  const goBack = () => {
+    if (page === "home") return;
+    window.history.back();
+  };
 
   useEffect(() => {
     document.documentElement.style.setProperty("--ui-font", loadState("fontSize", 16) + "px");
@@ -58,15 +101,16 @@ export default function App() {
     }
   }, [repo]);
 
+  if (offline) return <Offline />;
   if (loading) return <div className="loading">Loading WyDev…</div>;
   if (!user) return <Login />;
 
   const open = (r) => {
     if (r) {
       setRepo(r);
-      setPage("project");
+      navigate("project");
       saveState("recentProjects", [{ id: r.id, full_name: r.full_name, repo: r }, ...loadState("recentProjects", []).filter((x) => x.id !== r.id)].slice(0, 10));
-    } else setPage("repos");
+    } else navigate("repos");
   };
   const createRepo = async (payload) => {
     const r = await github.createRepo(payload);
@@ -78,7 +122,7 @@ export default function App() {
   const openFile = (path) => {
     if (repo) {
       setOpenPath(path);
-      setPage("project");
+      navigate("project");
       setWorking((w) => (w ? { ...w, selected: path } : w));
     }
   };
@@ -87,24 +131,29 @@ export default function App() {
 
   return (
     <div className="app">
-      <TopBar user={user} onMenu={openMenu} onSearch={() => setPage("search")} onAvatar={() => setPage("settings")} />
-      <Menu page={page} setPage={setPage} onSearch={(q) => setSearchQuery(q)} onLogout={async () => { await github.logout(); location.reload(); }} />
+      <TopBar user={user} onMenu={openMenu} onSearch={() => navigate("search")} onAvatar={() => navigate("settings")} />
+      <Menu page={page} setPage={navigate} onSearch={(q) => setSearchQuery(q)} onLogout={async () => { await github.logout(); location.reload(); }} />
       <div className="menuScrim" onClick={closeMenu} />
       <section className="content">
+        {page !== "home" && page !== "project" && (
+          <button className="pageBack" type="button" onClick={goBack} aria-label="Go back">
+            <span aria-hidden="true">‹</span> Back
+          </button>
+        )}
         {page === "home" && <Home repos={repos} onOpen={open} onCreate={createRepo} />}
         {page === "repos" && <Repositories repos={repos} repoLimit={repoLimit} onOpen={open} onCreate={createRepo} />}
         {page === "changes" && <Changes changes={workingChanges} onSelect={openFile} onDiscard={working?.discard} />}
         {page === "settings" && <Settings />}
         {page === "billing" && <Billing />}
-        {page === "project" && repo && <Project repo={repo} openPath={openPath} onBack={() => setPage("repos")} onWorkingState={setWorking} />}
-        {page === "search" && <SearchPage repos={repos} onOpen={open} onNavigate={setPage} query={searchQuery} repoFiles={working?.files || {}} onOpenFile={openFile} />}
+        {page === "project" && repo && <Project repo={repo} openPath={openPath} onBack={() => navigate("repos")} onWorkingState={setWorking} />}
+        {page === "search" && <SearchPage repos={repos} onOpen={open} onNavigate={navigate} query={searchQuery} repoFiles={working?.files || {}} onOpenFile={openFile} />}
         {page === "recent" && <Recent onOpen={open} />}
         {page === "help" && <Help />}
         {page === "privacy" && <LegalPage type="privacy" />}
         {page === "terms" && <LegalPage type="terms" />}
         {page === "about" && <LegalPage type="about" />}
       </section>
-      <TabBar page={page} setPage={setPage} onMore={openMenu} />
+      <TabBar page={page} setPage={navigate} onMore={openMenu} />
       <DialogHost />
       <ToastHost />
     </div>

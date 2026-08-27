@@ -1,6 +1,7 @@
-const CACHE = "wydev-static-v1";
+const CACHE = "wydev-static-v2";
 const APP_SHELL = [
   "/",
+  "/offline.html",
   "/manifest.webmanifest",
   "/favicon.svg",
   "/favicon-32.png",
@@ -32,22 +33,18 @@ self.addEventListener("fetch", (event) => {
 
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
-
-  // Never intercept the API gateway: auth cookies, OAuth redirects, billing,
-  // AI diagnostics and GitHub calls must always hit the network directly.
   if (url.pathname.startsWith("/api/")) return;
 
-  // Navigations: network-first so users always get the latest deployed shell,
-  // falling back to the cached shell only when offline.
   if (req.mode === "navigate") {
     event.respondWith(
-      fetch(req).catch(() => caches.match("/"))
+      fetch(req).catch(async () => {
+        const cachedShell = await caches.match("/");
+        return cachedShell || caches.match("/offline.html");
+      })
     );
     return;
   }
 
-  // Static built assets (hashed JS/CSS chunks, icons): cache-first, then
-  // update the cache in the background from the network.
   event.respondWith(
     caches.match(req).then((cached) => {
       const network = fetch(req)
