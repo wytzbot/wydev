@@ -12,14 +12,23 @@ export default function Billing(){
  const redirectFrom=data=>data?.next_action?.redirect_url?.url||data?.next_action?.redirect_url||data?.authurl||data?.auth_url||data?.meta?.authorization?.redirect||data?.meta?.authorization?.url||data?.data?.next_action?.redirect_url?.url||data?.data?.next_action?.redirect_url||null;
  const describeAuth=(data)=>{
    const next=data?.data?.next_action||data?.next_action||{};
-   const type=String(next?.type||next?.authorization?.type||data?.data?.authmodel||data?.authmodel||data?.meta?.authorization?.mode||data?.meta?.authorization?.type||"").toLowerCase();
+   const authorization=next?.authorization||data?.data?.authorization||data?.authorization||{};
+   const actionType=String(next?.type||data?.data?.authmodel||data?.authmodel||data?.meta?.authorization?.mode||"").toLowerCase();
+   const authType=String(authorization?.type||next?.authorization?.type||data?.data?.authmodel||data?.authmodel||data?.meta?.authorization?.type||"").toLowerCase();
+   const type=authType||actionType;
    const msg=String(data?.message||data?.data?.message||data?.data?.processor_response?.message||data?.data?.issuer_response?.message||"");
-   const pin=next?.requires_pin||next?.authorization?.pin||null;
-   const otp=next?.requires_otp||next?.authorization?.otp||null;
-   if(type.includes("redirect")||redirectFrom(data))return {kind:"redirect",type:"redirect_url",message:msg};
-   if(type.includes("additional")||next?.requires_additional_fields)return {kind:"fields",type:"requires_additional_fields",fields:next?.requires_additional_fields?.fields||[] ,message:msg};
-   if(type.includes("pin")||pin)return {kind:"pin",type:"requires_pin",nonce:pin?.nonce||null,message:msg};
-   if(type.includes("otp")||otp||/\b(otp|one[- ]time|password|passcode|verification code)\b/i.test(msg))return {kind:"otp",type:"requires_otp",message:msg};
+   const pin=next?.requires_pin||authorization?.pin||null;
+   const otp=next?.requires_otp||authorization?.otp||null;
+   const redirect=redirectFrom(data);
+   if(actionType.includes("redirect")||redirect)return {kind:"redirect",type:"redirect_url",message:msg};
+   if(actionType.includes("additional")||next?.requires_additional_fields)return {kind:"fields",type:"requires_additional_fields",fields:next?.requires_additional_fields?.fields||[] ,message:msg};
+   // Flutterwave may describe an OTP/password challenge as an `authorize` action
+   // with `next_action.authorization.type` set to otp/password/soft_token. A
+   // bank password in this flow is the OTP/soft-token value and must be sent
+   // back as authorization.type = otp, not as a hosted-page redirect.
+   if(authType.includes("pin")||pin||actionType.includes("pin"))return {kind:"pin",type:"requires_pin",nonce:pin?.nonce||null,message:msg};
+   if(authType.includes("otp")||authType.includes("password")||authType.includes("passcode")||authType.includes("soft_token")||otp||actionType.includes("otp")||actionType.includes("password")||actionType.includes("passcode")||/\b(otp|one[- ]time|password|passcode|soft[- ]token|verification code)\b/i.test(msg))return {kind:"otp",type:"requires_otp",message:msg};
+   if(actionType==="authorize"&&authorization&&Object.keys(authorization).length===0)return {kind:"otp",type:"requires_otp",message:msg||"Enter the password or OTP sent by your bank."};
    if(type||msg)return {kind:"unknown",type:type||"authorization",message:msg};
    return null;
  };
@@ -29,12 +38,12 @@ export default function Billing(){
    if(redirect){location.href=redirect;return true}
    const a=describeAuth(d);
    if(a?.kind==="redirect"){const u=redirectFrom(d);if(u){location.href=u;return true}}
-   if(data.id&&a){setAuth({id:data.id,reference:data.reference||reference,type:a.type,kind:a.kind,nonce:a.nonce||null,fields:a.fields||[]});setAuthMessage(a.message||"");return true}
+   if(data.id&&a){setAuth({id:data.id,reference:data.reference||reference,type:a.type,kind:a.kind,nonce:a.nonce||null,fields:a.fields||[],redirect:redirect||null});setAuthMessage(a.message||"");return true}
    if(data.id)return await verify(data.id,data.reference||reference);
    return false;
  };
  const pay=async()=>{setBusy(true);setErr("");try{const [month,year]=card.expiry.split("/");if(!/^\d{1,2}$/.test(month)||!/^\d{2}$/.test(year)||card.number.length<12||card.cvv.length<3)throw new Error("Enter a valid card number, MM/YY and CVV.");const enc=await encryptCard({number:card.number,month,year,cvv:card.cvv},cfg.encryptionKey);const d=await billing.checkout({currency,email:status.email||undefined,payment_method:{type:"card",card:enc}});const ok=await handleChargeResponse(d);if(!ok)throw new Error("Flutterwave did not return a payment action or charge status.")}catch(e){setErr(e?.message||"Flutterwave payment failed. Check the payment details and your v4 credentials.")}finally{setBusy(false)}};
- const authorize=async()=>{setBusy(true);setErr("");try{if(!authValue.trim())throw new Error("Enter the verification value sent by your bank.");let authorization;if(auth.kind==="pin"||auth.type==="requires_pin"||auth.type==="authorize"){const raw=await keyBytes(cfg.encryptionKey),ns=auth.nonce||nonce();authorization={type:"pin",pin:{nonce:ns,encrypted_pin:await encryptField(authValue.trim(),raw,ns)}}}else if(auth.kind==="otp"||auth.type==="requires_otp"){authorization={type:"otp",otp:{code:authValue.trim()}}}else if(auth.kind==="fields"){const avs={address:{city:authFields.city||"",country:authFields.country||"",line1:authFields.line1||"",line2:authFields.line2||"",postal_code:authFields.postal_code||"",state:authFields.state||""}};authorization={type:"avs",avs};}else throw new Error("Flutterwave returned an authorization method that requires its hosted authorization page. Please use the bank/Flutterwave verification page if a redirect is provided.");const d=await billing.authorize({id:auth.id,authorization});setAuth(null);setAuthValue("");setAuthFields({});setAuthMessage("");const ok=await handleChargeResponse(d,auth.reference);if(!ok)setErr("Authorization submitted. The payment is still pending; complete any additional bank verification if requested.")}catch(e){setErr(e.message)}finally{setBusy(false)}};
+ const authorize=async()=>{setBusy(true);setErr("");try{if(auth.kind!=="fields"&&!authValue.trim())throw new Error("Enter the verification value sent by your bank.");let authorization;if(auth.kind==="pin"||auth.type==="requires_pin"){const raw=await keyBytes(cfg.encryptionKey),ns=auth.nonce||nonce();authorization={type:"pin",pin:{nonce:ns,encrypted_pin:await encryptField(authValue.trim(),raw,ns)}}}else if(auth.kind==="otp"||auth.type==="requires_otp"){authorization={type:"otp",otp:{code:authValue.trim()}}}else if(auth.kind==="fields"){const avs={address:{city:authFields.city||"",country:authFields.country||"",line1:authFields.line1||"",line2:authFields.line2||"",postal_code:authFields.postal_code||"",state:authFields.state||""}};authorization={type:"avs",avs};}else if(auth.kind==="redirect"){const u=auth.redirect||redirectFrom(auth);if(u){location.href=u;return}throw new Error("Flutterwave did not provide an authorization URL.");}else throw new Error("Flutterwave returned an unsupported authorization method. Please retry the payment so the required bank verification can be requested again.");const d=await billing.authorize({id:auth.id,authorization});setAuth(null);setAuthValue("");setAuthFields({});setAuthMessage("");const ok=await handleChargeResponse(d,auth.reference);if(!ok)setErr("Authorization submitted. The payment is still pending; complete any additional bank verification if requested.")}catch(e){setErr(e.message)}finally{setBusy(false)}};
  const authLabel=auth?.kind==="pin"?"Card PIN":auth?.kind==="fields"?"Billing address":(auth?.kind==="otp"?"Password / OTP":"Bank verification");
  const authPlaceholder=auth?.kind==="pin"?"Enter card PIN":auth?.kind==="otp"?"Enter the password or OTP sent by your bank":"Enter verification value";
  if(status.plan==="pro")return <div className="page"><header><div><span className="eyebrow">BILLING</span><h1>WyDev Pro</h1></div></header><section className="panel"><h3>PLAN</h3><p><b>Pro active</b>{status.expiresAt&&` · active until ${new Date(status.expiresAt).toLocaleDateString()}`}</p><p className="muted">Monthly renewal is handled automatically when a reusable payment method is available.</p></section></div>;
