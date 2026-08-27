@@ -327,3 +327,5 @@ select:focus{border-color:var(--accent)}
 .offlineCard > p { max-width: 390px; margin: 0 auto 22px; color: var(--muted, #8b95a7); line-height: 1.65; }
 .offlineRetry { min-width: 130px; }
 .offlineHint { font-size: 12px; margin-top: 18px !important; opacity: .75; }
+
+.authBox{display:grid;gap:12px;margin-top:8px}.authBox .ghost{min-height:44px;border:1px solid var(--border,#30343b);background:transparent;color:inherit;border-radius:12px;font:inherit;font-weight:600}.authBox .ghost:disabled{opacity:.6}
