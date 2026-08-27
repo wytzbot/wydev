@@ -83,7 +83,7 @@ function redactSecrets(value){let s=String(value||"");return s
 function parseGeminiText(data){return data?.candidates?.[0]?.content?.parts?.map(p=>p.text||"").join("")||"";}
 async function geminiDiagnose(prompt,schema){
   const key=process.env.GEMINI_API_KEY;if(!key)throw new Error("GEMINI_API_KEY is not configured");
-  const model=process.env.GEMINI_MODEL||"gemini-2.5-flash-lite";
+  const model=process.env.GEMINI_MODEL||"gemini-3.5-flash-lite";
   const url=`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
   const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{role:"user",parts:[{text:prompt}]}],generationConfig:{temperature:0.1,maxOutputTokens:900,responseMimeType:"application/json",responseSchema:schema}})});
   const data=await r.json().catch(()=>({}));
