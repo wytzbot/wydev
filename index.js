@@ -271,7 +271,7 @@ function validWebhook(req,raw){const sig=req.headers["flutterwave-signature"];if
 
 async function handler(req,res){
   try{
-    const rawUrl=String(req.url||"/"), original=String(req.headers?.["x-original-url"]||req.headers?.["x-vercel-original-url"]||req.headers?.["x-forwarded-uri"]||rawUrl), url=new URL(original,origin(req)); let p=url.pathname.replace(/^\/api(?:\/index\.js)?/,"")||"/";
+    const rawUrl=String(req.url||"/"), original=String(req.headers?.["x-original-url"]||req.headers?.["x-vercel-original-url"]||req.headers?.["x-forwarded-uri"]||rawUrl), url=new URL(original,origin(req)); let p=url.pathname.replace(/^\/api(?:\/index\.js)?/,"")||"/"; p=p.replace(/\/+$/,"")||"/";
     if(p==="/auth/github"&&req.method==="GET")return oauthStart(req,res);
     if(p==="/auth/github/callback"&&req.method==="GET")return oauthCallback(req,res);
     if(p==="/auth/me"&&req.method==="GET"){const s=session(req);return json(res,200,s?{user:{id:s.id,login:s.login,name:s.name,avatar:s.avatar}}:{user:null});}
@@ -387,28 +387,31 @@ async function handler(req,res){
       for(const c of changes) safePath(c.path);
       let ref;
       let emptyRepo=false;
+      const encodedOwner=encodeURIComponent(owner),encodedRepo=encodeURIComponent(repo);
+      const refPath=(name)=>`/repos/${encodedOwner}/${encodedRepo}/git/ref/heads/${encodeURIComponent(name)}`;
       try {
-        ref=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(branch)}`);
+        ref=await gh(s.token,refPath(branch));
       } catch(e) {
         if(e.status===404){
-          // New repositories can briefly expose the repository before their
-          // default branch ref is readable. Resolve the live default branch.
-          const remote=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
-          const liveBranch=remote.default_branch||branch;
-          if(liveBranch!==branch) return json(res,409,{error:`The repository is ready, but branch "${branch}" does not exist. Its default branch is "${liveBranch}". Reload the repository and try again.`,code:"BRANCH_NOT_FOUND",branch:liveBranch});
+          // Resolve the repository's live default branch. This also handles
+          // freshly-created repositories whose branch ref is not immediately
+          // visible through the Git database API.
+          const remote=await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}`);
+          const liveBranch=String(remote.default_branch||branch);
+          if(liveBranch!==branch) return json(res,409,{error:`Branch "${branch}" was not found on GitHub. The repository default branch is "${liveBranch}". Reload the repository and select that branch before pushing.`,code:"BRANCH_NOT_FOUND",branch:liveBranch});
           try {
-            ref=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(liveBranch)}`);
+            ref=await gh(s.token,refPath(liveBranch));
           } catch(e2) {
-            // Still 404 even for the repository's own default branch: this is
-            // a genuinely empty repository (0 commits, e.g. created on
-            // GitHub without "Add a README"). There is no ref, no base tree,
-            // and no parent commit to build on — that has to be created here.
+            // A repository with no commits has no branch ref yet. The first
+            // commit below will create it.
             if(e2.status===404) emptyRepo=true; else throw e2;
           }
         } else throw e;
       }
-      if(!emptyRepo&&b.expectedSha&&ref.object.sha!==b.expectedSha)return json(res,409,{error:"Remote changes detected. Review the latest GitHub changes before pushing.",code:"REMOTE_CHANGED",remoteSha:ref.object.sha});
-      const head=emptyRepo?null:await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits/${ref.object.sha}`);
+      const expectedSha=String(b.expectedSha||"").trim();
+      if(!emptyRepo&&expectedSha&&ref.object.sha!==expectedSha)return json(res,409,{error:"GitHub has newer changes on this branch. Pull/reload the latest repository state before pushing your local changes.",code:"REMOTE_CHANGED",remoteSha:ref.object.sha,localSha:expectedSha});
+      const initialSha=emptyRepo?"":String(ref.object.sha||"");
+      const head=emptyRepo?null:await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/commits/${initialSha}`);
       const entries=[];
       const uploads=[];
       for(const c of changes){
@@ -431,35 +434,81 @@ async function handler(req,res){
         return {path:c.path,mode:"100644",type:"blob",sha:blob.sha};
       }));
       entries.push(...blobResults);
-      // Git has a deterministic, well-known SHA for "the empty tree" —
-      // 4b825dc642cb6eb9a060e54bf8d69288fbee4904 — that already exists in
-      // every repository without needing to be created. Asking GitHub's
-      // Trees API to *build* an empty tree (POST {tree:[]}) is a known rough
-      // edge that it can reject outright ("invalid tree info"), so when the
-      // resulting tree has zero entries (a commit that's 100% deletions, or
-      // an empty repo's first commit with nothing added), reuse the
-      // well-known SHA directly instead of calling the API.
+      // Deleting every remaining file via base_tree + a full set of sha:null
+      // entries is a known rough edge in GitHub's Trees API — it can reject
+      // the request instead of producing the (perfectly valid) empty tree.
+      // A commit that's 100% deletions always results in an empty tree
+      // regardless of what base_tree held, so build that directly instead of
+      // diffing against it.
+      // Deleting every remaining file always results in git's canonical empty
+      // tree. That object is a fixed constant that exists in every repository
+      // — it doesn't need to be created — and GitHub's Trees API has rejected
+      // both ways of asking it to build one explicitly here (an empty `tree`
+      // array with no base_tree, and a base_tree diffed down to nothing).
+      // Skip tree creation entirely for this case and use the constant
+      // directly when creating the commit below.
       const EMPTY_TREE_SHA="4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-      let treeSha;
-      if(entries.length===0){
-        treeSha=EMPTY_TREE_SHA;
-      } else if(emptyRepo){
-        // First commit into a brand-new repository: there's no base_tree to
-        // diff against yet, so the full set of entries becomes the tree.
-        const tree=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees`,{method:"POST",body:JSON.stringify({tree:entries})});
-        treeSha=tree.sha;
-      } else {
-        const tree=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees`,{method:"POST",body:JSON.stringify({base_tree:head.tree.sha,tree:entries})});
-        treeSha=tree.sha;
+      const allDeletions=changes.length>0&&changes.every((c)=>c.status==="D");
+      const treeSha=emptyRepo||allDeletions?EMPTY_TREE_SHA:(await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/trees`,{method:"POST",body:JSON.stringify({base_tree:head.tree.sha,tree:entries})})).sha;
+      // Re-check the branch after blob creation and immediately before making
+      // the tree/commit. ZIP uploads can take long enough for another GitHub
+      // change to land while we are uploading blobs. Never build a commit on
+      // top of a stale parent.
+      if(!emptyRepo){
+        try {
+          const latest=await gh(s.token,refPath(branch));
+          if(String(latest.object?.sha||"")!==initialSha){
+            return json(res,409,{error:"GitHub changed this branch while WyDev was preparing your push. Your local changes were kept. Review or reload the latest repository state before pushing again.",code:"PUSH_RACE",remoteSha:latest.object?.sha||"",localSha:initialSha});
+          }
+        } catch(e){
+          if(e.status===404)return json(res,409,{error:`Branch "${branch}" no longer exists on GitHub. Your local changes were kept. Refresh the repository and select an existing branch.`,code:"BRANCH_NOT_FOUND",branch});
+          throw e;
+        }
       }
-      const commitBody=emptyRepo?{message,tree:treeSha}:{message,tree:treeSha,parents:[ref.object.sha]};
-      const commit=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits`,{method:"POST",body:JSON.stringify(commitBody)});
-      if(emptyRepo){
-        await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/refs`,{method:"POST",body:JSON.stringify({ref:`refs/heads/${branch}`,sha:commit.sha})});
-      } else {
-        await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/refs/heads/${encodeURIComponent(branch)}`,{method:"PATCH",body:JSON.stringify({sha:commit.sha,force:false})});
+      const commitBody=emptyRepo?{message,tree:treeSha}:{message,tree:treeSha,parents:[initialSha]};
+      const commit=await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/commits`,{method:"POST",body:JSON.stringify(commitBody)});
+      try {
+        if(emptyRepo){
+          // For an empty repository the branch is created only after the first
+          // commit. A concurrent first push is detected as a conflict.
+          await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/refs`,{method:"POST",body:JSON.stringify({ref:`refs/heads/${branch}`,sha:commit.sha})});
+        } else {
+          // Final read-before-write closes the normal race window. The update
+          // is never forced; GitHub still protects the ref if it moves between
+          // this read and PATCH.
+          let latest;
+          try {
+            latest=await gh(s.token,refPath(branch));
+          } catch(e){
+            if(e.status!==404) throw e;
+            // The branch existed when this request started (we already read
+            // it once above) but isn't visible right now — a known
+            // eventual-consistency gap on brand-new repositories. Recreate
+            // the ref instead of failing outright; if it genuinely exists,
+            // this fails with 422 and we fall back to a normal read+PATCH.
+            try {
+              await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/refs`,{method:"POST",body:JSON.stringify({ref:`refs/heads/${branch}`,sha:commit.sha})});
+              latest=null;
+            } catch(e2){
+              if(e2.status!==422) throw e2;
+              latest=await gh(s.token,refPath(branch));
+            }
+          }
+          if(latest){
+            if(String(latest.object?.sha||"")!==initialSha){
+              return json(res,409,{error:"GitHub changed this branch while WyDev was committing. Your local changes were kept and no force-push was performed.",code:"PUSH_RACE",remoteSha:latest.object?.sha||"",localSha:initialSha});
+            }
+            await gh(s.token,refPath(branch),{method:"PATCH",body:JSON.stringify({sha:commit.sha,force:false})});
+          }
+        }
+      } catch(e) {
+        if(e.status===404)return json(res,409,{error:`Branch "${branch}" could not be found while pushing. Your local changes were kept. Refresh the repository and try again.`,code:"BRANCH_NOT_FOUND",branch,details:e.data||null});
+        if(e.status===422 || e.status===409){
+          return json(res,409,{error:"GitHub changed the branch during the push. Your local changes were kept and WyDev did not force-push. Refresh the repository, review the remote changes, then try again.",code:"PUSH_RACE",details:e.data||null});
+        }
+        throw e;
       }
-      return json(res,200,{ok:true,commitSha:commit.sha,html_url:commit.html_url});
+      return json(res,200,{ok:true,commitSha:commit.sha,html_url:commit.html_url,branch});
     }
     if(p==="/ai/diagnose"&&req.method==="POST"){const b=await body(req);return json(res,200,await aiDiagnose(s,b));}
     if(p==="/billing/status"&&req.method==="GET"){

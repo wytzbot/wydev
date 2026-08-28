@@ -177,10 +177,25 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
     setBusy(true);
     try {
       if(!changes.length){ toastInfo("There are no changes to commit."); return; }
+      // Always preflight against the live branch immediately before pushing.
+      // Cached project state can survive a previous session or a GitHub-side
+      // upload, so using the cached SHA alone can make an otherwise valid push
+      // look like a missing/failed action. We preserve local edits and only
+      // replace the base SHA when the working tree has not diverged remotely.
       let sha=baseSha;
-      if(!sha){
-        const t=await load({silent:true,retries:5});
-        sha=t.baseSha;
+      const live=await github.tree(repo.owner.login, repo.name, branch);
+      const liveSha=String(live.baseSha||"");
+      if(!sha && liveSha){
+        sha=liveSha;
+        setBaseSha(liveSha);
+      }
+      if(sha && liveSha && liveSha!==sha){
+        setRemoteConflict({
+          message:"GitHub has newer changes on this branch. Reload the latest repository state before pushing your local changes.",
+          remoteSha:liveSha,
+          localSha:sha
+        });
+        return;
       }
       // Upload file contents as Git blobs first. Keeping blob creation out of
       // the final commit request prevents large ZIP imports from exceeding the
@@ -214,8 +229,17 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
       try { await load({silent:true,retries:2}); } catch {}
       localStorage.removeItem("wydev:project:" + repo.id);
     } catch (e) {
-      if (e.status === 409 || e.code === "REMOTE_CHANGED") setRemoteConflict({ message: e.message, remoteSha: e.details?.remoteSha || "" });
-      else toastError(e.message || "Commit failed. Pull the latest changes and try again.");
+      if (e.status === 409 || e.code === "REMOTE_CHANGED" || e.code === "PUSH_RACE" || e.code === "BRANCH_NOT_FOUND") {
+        // Keep every local edit intact. Refresh only the remote metadata so the
+        // conflict sheet can tell the user what happened without overwriting
+        // their working tree.
+        let remoteSha = e.details?.remoteSha || "";
+        try {
+          const remote = await github.tree(repo.owner.login, repo.name, branch);
+          remoteSha = remote?.baseSha || remoteSha;
+        } catch {}
+        setRemoteConflict({ message: e.message || "GitHub changed the remote branch while pushing.", remoteSha });
+      } else toastError(e.message || "Commit failed. Your local changes were kept. Try again.");
     } finally {
       setBusy(false);
     }
@@ -496,22 +520,28 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
       return;
     }
     try {
+      // Most files sit in state as `null` placeholders until the user actually
+      // opens them (lazy loading), and binary files are stored as
+      // {__wydevBinary,base64,...} wrapper objects rather than raw bytes.
+      // Zipping `files` directly was handing JSZip a pile of nulls and
+      // wrapper objects — every entry came out empty or corrupted, which is
+      // why the downloaded archive was empty. Fetch anything unloaded and
+      // unwrap binary content before adding it to the archive.
+      const paths = Object.keys(files);
+      const resolved = await Promise.all(
+        paths.map(async (path) => {
+          const current = files[path];
+          if (current !== null && current !== undefined) return [path, current];
+          const f = await github.file(repo.owner.login, repo.name, path, branch);
+          return [path, f.content ?? ""];
+        })
+      );
       const JSZip = (await import("jszip")).default;
-      // Files are loaded lazily: any file the user hasn't opened yet still
-      // sits in state as null. Fetch those now so the export doesn't ship
-      // 0-byte entries for everything that was never clicked into.
-      const missing = Object.entries(files).filter(([, content]) => content === null || content === undefined);
-      if (missing.length) toastInfo(`Fetching ${missing.length} file${missing.length === 1 ? "" : "s"} for export…`);
-      const fetched = await Promise.all(missing.map(async ([path]) => {
-        const f = await github.file(repo.owner.login, repo.name, path, branch);
-        return [path, f.content ?? ""];
-      }));
-      const snapshot = { ...files, ...Object.fromEntries(fetched) };
       const zip = new JSZip();
-      Object.entries(snapshot).forEach(([path, content]) => {
+      resolved.forEach(([path, content]) => {
         const binary = content && typeof content === "object" && content.__wydevBinary === true;
         if (binary) zip.file(path, content.base64 || "", { base64: true });
-        else zip.file(path, content ?? "");
+        else zip.file(path, String(content ?? ""));
       });
       const blob = await zip.generateAsync({ type: "blob" });
       const url = URL.createObjectURL(blob);
