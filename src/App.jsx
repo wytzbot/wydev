@@ -19,9 +19,10 @@ import { github } from "./github";
 import { loadState, saveState } from "./storage";
 
 export default function App() {
+  const initialBillingReturn = new URLSearchParams(window.location.search).get("billing") === "return";
   const [user, setUser] = useState(null),
     [offline, setOffline] = useState(() => !navigator.onLine),
-    [page, setPage] = useState(() => window.history.state?.wydevPage || "home"),
+    [page, setPage] = useState(() => initialBillingReturn ? "billing" : (window.history.state?.wydevPage || (window.location.hash.replace("#","") || "home"))),
     [repos, setRepos] = useState([]),
     [repoLimit, setRepoLimit] = useState(null),
     [repo, setRepo] = useState(null),
@@ -54,7 +55,7 @@ export default function App() {
   // previous WyDev screen instead of closing the PWA/web app.
   useEffect(() => {
     if (!window.history.state?.wydevPage) {
-      window.history.replaceState({ wydevPage: "home" }, "", window.location.href);
+      window.history.replaceState({ wydevPage: initialBillingReturn ? "billing" : page }, "", window.location.href);
     }
     const onPopState = (event) => {
       const next = event.state?.wydevPage;

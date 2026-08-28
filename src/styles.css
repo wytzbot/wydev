@@ -329,3 +329,17 @@ select:focus{border-color:var(--accent)}
 .offlineHint { font-size: 12px; margin-top: 18px !important; opacity: .75; }
 
 .authBox{display:grid;gap:12px;margin-top:8px}.authBox .ghost{min-height:44px;border:1px solid var(--border,#30343b);background:transparent;color:inherit;border-radius:12px;font:inherit;font-weight:600}.authBox .ghost:disabled{opacity:.6}
+
+/* ---------- payment success celebration ---------- */
+.paymentSuccessOverlay{position:fixed;inset:0;z-index:300;background:rgba(4,7,11,.82);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;padding:22px;animation:successFade .2s ease}
+.paymentSuccessCard{width:min(100%,390px);background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:30px 22px 24px;text-align:center;box-shadow:0 24px 80px #000b;animation:successPop .28s cubic-bezier(.2,.9,.25,1.2)}
+.paymentSuccessCard h2{margin:16px 0 8px;font-size:24px;letter-spacing:-.4px}
+.paymentSuccessCard p{margin:0 0 20px;color:var(--muted);line-height:1.55}
+.successCheck{width:82px;height:82px;margin:0 auto;position:relative;border-radius:50%;display:grid;place-items:center;border:3px solid var(--success);animation:successCircle .45s ease-out both}
+.successCheck::after{content:"";position:absolute;inset:-9px;border:2px solid #2ea04355;border-radius:50%;animation:successRing .8s ease-out both}
+.successCheck span{font-size:48px;line-height:1;color:#7ee787;font-weight:800;transform:scale(0);animation:successTick .35s .22s cubic-bezier(.2,.9,.25,1.4) forwards}
+@keyframes successFade{from{opacity:0}to{opacity:1}}
+@keyframes successPop{from{transform:scale(.9) translateY(10px);opacity:0}to{transform:scale(1) translateY(0);opacity:1}}
+@keyframes successCircle{from{transform:scale(.55);opacity:0}to{transform:scale(1);opacity:1}}
+@keyframes successTick{to{transform:scale(1)}}
+@keyframes successRing{from{transform:scale(.65);opacity:.8}to{transform:scale(1.18);opacity:0}}

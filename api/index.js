@@ -181,7 +181,7 @@ async function createBillingCheckout(s,payload){
   const pm=await flw("/payment-methods",{method:"POST",body:JSON.stringify({type:"card",card:payload.payment_method.card})});
   const paymentMethodId=pm.data?.id;
   if(!paymentMethodId)throw new Error("Flutterwave did not return a payment method id");
-  const charge=await flw("/charges",{method:"POST",body:JSON.stringify({amount,currency,reference,customer_id:customerId,payment_method_id:paymentMethodId,redirect_url:`${origin(payload.req)}/?billing=return&tx_ref=${encodeURIComponent(reference)}`,recurring:false})});
+  const charge=await flw("/charges",{method:"POST",body:JSON.stringify({amount,currency,reference,customer_id:customerId,payment_method_id:paymentMethodId,redirect_url:`${origin(payload.req)}/?billing=return&tx_ref=${encodeURIComponent(reference)}#billing`,recurring:false})});
   await setTransaction(reference,{userId:String(s.id),amount,currency,status:charge.data?.status||"pending",chargeId:charge.data?.id,customerId,paymentMethodId,createdAt:Date.now()});
   return charge;
 }
@@ -205,7 +205,19 @@ async function renewDue(){
   }
   return processed;
 }
-async function verifyCharge(s,id,reference){const d=await flw(`/charges/${encodeURIComponent(id)}`);const x=d.data||{};const expected=await getTransaction(reference);if(!expected||String(expected.userId)!==String(s.id))throw new Error("Transaction does not belong to this account");if(x.status==="succeeded"&&Number(x.amount)===Number(expected.amount)&&x.currency===expected.currency){await setEntitlement(s.id,{status:"active",expiresAt:Date.now()+31*86400000,renewAt:Date.now()+31*86400000,reference,customerId:expected.customerId,paymentMethodId:expected.paymentMethodId,currency:expected.currency,updatedAt:Date.now()});return {active:true,status:x.status}}return {active:false,status:x.status||"pending"};}
+async function verifyCharge(s,id,reference){
+  let expected=await getTransaction(reference);
+  if(!expected||String(expected.userId)!==String(s.id))throw new Error("Transaction does not belong to this account");
+  const chargeId=id||expected.chargeId;
+  if(!chargeId)throw Object.assign(new Error("Payment transaction is still being created. Please wait a moment and try again."),{status:409});
+  const d=await flw(`/charges/${encodeURIComponent(chargeId)}`),x=d.data||{};
+  await setTransaction(reference,{status:x.status||"pending",chargeId,updatedAt:Date.now()});
+  if(x.status==="succeeded"&&Number(x.amount)===Number(expected.amount)&&x.currency===expected.currency){
+    await setEntitlement(s.id,{status:"active",expiresAt:Date.now()+31*86400000,renewAt:Date.now()+31*86400000,reference,customerId:expected.customerId,paymentMethodId:expected.paymentMethodId,currency:expected.currency,updatedAt:Date.now()});
+    return {active:true,status:x.status,expiresAt:Date.now()+31*86400000};
+  }
+  return {active:false,status:x.status||"pending"};
+}
 function validWebhook(req,raw){const sig=req.headers["flutterwave-signature"];if(!sig||!process.env.FLW_WEBHOOK_SECRET_HASH)return false;const h=crypto.createHmac("sha256",process.env.FLW_WEBHOOK_SECRET_HASH).update(raw).digest("base64");const a=Buffer.from(h),b=Buffer.from(String(sig));return a.length===b.length&&crypto.timingSafeEqual(a,b);}
 
 async function handler(req,res){
@@ -231,7 +243,7 @@ async function handler(req,res){
       else memory.preferences.set(String(s.id),preferences);
       return json(res,200,{ok:true,preferences});
     }
-    if(p==="/billing/webhook"&&req.method==="POST"){let raw="";for await(const c of req)raw+=c;if(!validWebhook(req,raw))return json(res,401,{error:"Invalid Flutterwave signature"});let data;try{data=JSON.parse(raw)}catch{return json(res,400,{error:"Invalid JSON"})}const tx=data.data||{};if(tx.id){try{const d=await flw(`/charges/${encodeURIComponent(tx.id)}`),x=d.data||{};const ref=x.reference||tx.reference,rec=await getTransaction(ref);if(rec&&x.status==="succeeded"&&Number(x.amount)===Number(rec.amount)&&x.currency===rec.currency){await setEntitlement(rec.userId,{status:"active",expiresAt:Date.now()+31*86400000,renewAt:Date.now()+31*86400000,reference:ref,customerId:rec.customerId,paymentMethodId:rec.paymentMethodId,currency:rec.currency,updatedAt:Date.now()})}}catch{} }return json(res,200,{received:true});}
+    if(p==="/billing/webhook"&&req.method==="POST"){let raw="";for await(const c of req)raw+=c;if(!validWebhook(req,raw))return json(res,401,{error:"Invalid Flutterwave signature"});let data;try{data=JSON.parse(raw)}catch{return json(res,400,{error:"Invalid JSON"})}const tx=data.data||{};if(tx.id){try{const d=await flw(`/charges/${encodeURIComponent(tx.id)}`),x=d.data||{};const ref=x.reference||tx.reference,rec=await getTransaction(ref);if(rec){await setTransaction(ref,{status:x.status||"pending",chargeId:tx.id,updatedAt:Date.now()});if(x.status==="succeeded"&&Number(x.amount)===Number(rec.amount)&&x.currency===rec.currency){await setEntitlement(rec.userId,{status:"active",expiresAt:Date.now()+31*86400000,renewAt:Date.now()+31*86400000,reference:ref,customerId:rec.customerId,paymentMethodId:rec.paymentMethodId,currency:rec.currency,updatedAt:Date.now()})}}}catch{} }return json(res,200,{received:true});}
     if(p==="/billing/renew"&&req.method==="POST"){const auth=req.headers.authorization||"";if(!process.env.CRON_SECRET||auth!==`Bearer ${process.env.CRON_SECRET}`)return json(res,401,{error:"Unauthorized"});return json(res,200,{processed:await renewDue()});}
     if(p==="/billing/authorize"&&req.method==="POST"){const s=requireSession(req,res);if(!s)return;const b=await body(req);return json(res,200,await authorizeCharge(s,b.id,b.authorization));}
     if(p==="/github/repos"&&req.method==="GET"){
@@ -323,7 +335,12 @@ async function handler(req,res){
     if(p==="/ai/diagnose"&&req.method==="POST"){const b=await body(req);return json(res,200,await aiDiagnose(s,b));}
     if(p==="/billing/status"&&req.method==="GET"){const e=await getEntitlement(s.id);return json(res,200,{plan:await entitlement(s),expiresAt:e?.expiresAt||null});}
     if(p==="/billing/config"&&req.method==="GET")return json(res,200,{usd:Number(process.env.FLW_PRO_USD||9.99),ngn:Number(process.env.FLW_PRO_NGN||9000),environment:FLW_LIVE?"live":"sandbox",encryptionKey:process.env.FLW_ENCRYPTION_KEY||""});
-    if(p==="/billing/verify"&&req.method==="POST"){const b=await body(req);if(!b.id||!b.reference)return json(res,400,{error:"Transaction id and reference required"});return json(res,200,await verifyCharge(s,b.id,b.reference));}
+    if(p==="/billing/verify"&&req.method==="POST"){const b=await body(req);if(!b.reference)return json(res,400,{error:"Transaction reference required"});return json(res,200,await verifyCharge(s,b.id,b.reference));}
+    if(p==="/billing/resolve"&&req.method==="POST"){
+      const b=await body(req);const reference=String(b.reference||"").trim();if(!reference)return json(res,400,{error:"Transaction reference required"});
+      const tx=await getTransaction(reference);if(!tx||String(tx.userId)!==String(s.id))return json(res,404,{error:"Payment transaction not found"});
+      return json(res,200,await verifyCharge(s,tx.chargeId,reference));
+    }
     if(p==="/billing/checkout"&&req.method==="POST"){const b=await body(req);b.req=req;const d=await createBillingCheckout(s,b);return json(res,200,d);}
     return json(res,404,{error:"Route not found"});
   }catch(e){return json(res,e.status||500,{error:e.message||"Server error",code:e.code,limit:e.limit,used:e.used,remaining:e.remaining,plan:e.plan});}
