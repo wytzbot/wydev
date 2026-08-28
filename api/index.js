@@ -348,7 +348,24 @@ async function handler(req,res){
       const owner=decodeURIComponent(m[1]),repo=decodeURIComponent(m[2]),kind=m[3];
       if(kind==="branches")return json(res,200,await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches?per_page=100`));
       if(kind==="file"){const path=safePath(url.searchParams.get("path")||"") ,branch=url.searchParams.get("branch")||"HEAD";const d=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(branch)}`);if(Array.isArray(d))return json(res,400,{error:"The selected path is a directory, not a file."});if(isBinaryPath(path))return json(res,200,{path,content:{__wydevBinary:true,base64:String(d.content||"").replace(/\n/g,""),mime:mimeForPath(path),size:d.size||0},sha:d.sha,size:d.size});return json(res,200,{path,content:d.encoding==="base64"?Buffer.from(d.content.replace(/\n/g,""),"base64").toString("utf8"):d.content||"",sha:d.sha,size:d.size});}
-      const branch=url.searchParams.get("branch")||"HEAD";const ref=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(branch)}`);const commit=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits/${ref.object.sha}`);const tree=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees/${commit.tree.sha}?recursive=1`);return json(res,200,{branch,baseSha:ref.object.sha,treeSha:commit.tree.sha,files:(tree.tree||[]).filter(x=>x.type==="blob").map(x=>({path:x.path,sha:x.sha,size:x.size}))});}
+      const branch=url.searchParams.get("branch")||"HEAD";
+      try {
+        const ref=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(branch)}`);
+        const commit=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits/${ref.object.sha}`);
+        const tree=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees/${commit.tree.sha}?recursive=1`);
+        return json(res,200,{branch,baseSha:ref.object.sha,treeSha:commit.tree.sha,files:(tree.tree||[]).filter(x=>x.type==="blob").map(x=>({path:x.path,sha:x.sha,size:x.size}))});
+      } catch(e) {
+        // A repository with zero commits (created without "Initialize with a
+        // README") has no ref to read at all. Treat that as a valid, empty
+        // workspace instead of surfacing a raw 404 — there's simply nothing
+        // to list yet, and the first commit will create the branch.
+        if(e.status===404){
+          const remote=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
+          return json(res,200,{branch:remote.default_branch||branch,baseSha:"",treeSha:"",files:[]});
+        }
+        throw e;
+      }
+    }
     const bm2=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/blob$/);
     if(bm2&&req.method==="POST"){
       const owner=decodeURIComponent(bm2[1]),repo=decodeURIComponent(bm2[2]),b=await body(req);
@@ -369,6 +386,7 @@ async function handler(req,res){
       if(changes.length>300)return json(res,413,{error:"Too many changed files in one push. Split the work into smaller commits."});
       for(const c of changes) safePath(c.path);
       let ref;
+      let emptyRepo=false;
       try {
         ref=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(branch)}`);
       } catch(e) {
@@ -378,16 +396,27 @@ async function handler(req,res){
           const remote=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
           const liveBranch=remote.default_branch||branch;
           if(liveBranch!==branch) return json(res,409,{error:`The repository is ready, but branch "${branch}" does not exist. Its default branch is "${liveBranch}". Reload the repository and try again.`,code:"BRANCH_NOT_FOUND",branch:liveBranch});
-          ref=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(liveBranch)}`);
+          try {
+            ref=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(liveBranch)}`);
+          } catch(e2) {
+            // Still 404 even for the repository's own default branch: this is
+            // a genuinely empty repository (0 commits, e.g. created on
+            // GitHub without "Add a README"). There is no ref, no base tree,
+            // and no parent commit to build on — that has to be created here.
+            if(e2.status===404) emptyRepo=true; else throw e2;
+          }
         } else throw e;
       }
-      if(b.expectedSha&&ref.object.sha!==b.expectedSha)return json(res,409,{error:"Remote changes detected. Review the latest GitHub changes before pushing.",code:"REMOTE_CHANGED",remoteSha:ref.object.sha});
-      const head=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits/${ref.object.sha}`);
+      if(!emptyRepo&&b.expectedSha&&ref.object.sha!==b.expectedSha)return json(res,409,{error:"Remote changes detected. Review the latest GitHub changes before pushing.",code:"REMOTE_CHANGED",remoteSha:ref.object.sha});
+      const head=emptyRepo?null:await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits/${ref.object.sha}`);
       const entries=[];
       const uploads=[];
       for(const c of changes){
         if(!c.path) continue;
-        if(c.status==="D"){entries.push({path:c.path,mode:"100644",type:"blob",sha:null});continue}
+        // Nothing exists yet in an empty repository, so a "delete" entry has
+        // nothing to remove — including it would just confuse the Trees API,
+        // which has no base_tree to delete from.
+        if(c.status==="D"){if(!emptyRepo)entries.push({path:c.path,mode:"100644",type:"blob",sha:null});continue}
         if(c.blobSha){entries.push({path:c.path,mode:"100644",type:"blob",sha:String(c.blobSha)});continue}
         const binary=c.content&&typeof c.content==="object"&&c.content.__wydevBinary===true;
         if(binary&&!c.content.base64)return json(res,400,{error:`Binary file ${c.path} has no data.`});
@@ -402,9 +431,15 @@ async function handler(req,res){
         return {path:c.path,mode:"100644",type:"blob",sha:blob.sha};
       }));
       entries.push(...blobResults);
-      const tree=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees`,{method:"POST",body:JSON.stringify({base_tree:head.tree.sha,tree:entries})});
-      const commit=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits`,{method:"POST",body:JSON.stringify({message,tree:tree.sha,parents:[ref.object.sha]})});
-      await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/refs/heads/${encodeURIComponent(branch)}`,{method:"PATCH",body:JSON.stringify({sha:commit.sha,force:false})});
+      const treeBody=emptyRepo?{tree:entries}:{base_tree:head.tree.sha,tree:entries};
+      const tree=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees`,{method:"POST",body:JSON.stringify(treeBody)});
+      const commitBody=emptyRepo?{message,tree:tree.sha}:{message,tree:tree.sha,parents:[ref.object.sha]};
+      const commit=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits`,{method:"POST",body:JSON.stringify(commitBody)});
+      if(emptyRepo){
+        await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/refs`,{method:"POST",body:JSON.stringify({ref:`refs/heads/${branch}`,sha:commit.sha})});
+      } else {
+        await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/refs/heads/${encodeURIComponent(branch)}`,{method:"PATCH",body:JSON.stringify({sha:commit.sha,force:false})});
+      }
       return json(res,200,{ok:true,commitSha:commit.sha,html_url:commit.html_url});
     }
     if(p==="/ai/diagnose"&&req.method==="POST"){const b=await body(req);return json(res,200,await aiDiagnose(s,b));}
