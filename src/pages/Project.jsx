@@ -177,10 +177,25 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
     setBusy(true);
     try {
       if(!changes.length){ toastInfo("There are no changes to commit."); return; }
+      // Always preflight against the live branch immediately before pushing.
+      // Cached project state can survive a previous session or a GitHub-side
+      // upload, so using the cached SHA alone can make an otherwise valid push
+      // look like a missing/failed action. We preserve local edits and only
+      // replace the base SHA when the working tree has not diverged remotely.
       let sha=baseSha;
-      if(!sha){
-        const t=await load({silent:true,retries:5});
-        sha=t.baseSha;
+      const live=await github.tree(repo.owner.login, repo.name, branch);
+      const liveSha=String(live.baseSha||"");
+      if(!sha && liveSha){
+        sha=liveSha;
+        setBaseSha(liveSha);
+      }
+      if(sha && liveSha && liveSha!==sha){
+        setRemoteConflict({
+          message:"GitHub has newer changes on this branch. Reload the latest repository state before pushing your local changes.",
+          remoteSha:liveSha,
+          localSha:sha
+        });
+        return;
       }
       // Upload file contents as Git blobs first. Keeping blob creation out of
       // the final commit request prevents large ZIP imports from exceeding the
@@ -214,8 +229,17 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
       try { await load({silent:true,retries:2}); } catch {}
       localStorage.removeItem("wydev:project:" + repo.id);
     } catch (e) {
-      if (e.status === 409 || e.code === "REMOTE_CHANGED") setRemoteConflict({ message: e.message, remoteSha: e.details?.remoteSha || "" });
-      else toastError(e.message || "Commit failed. Pull the latest changes and try again.");
+      if (e.status === 409 || e.code === "REMOTE_CHANGED" || e.code === "PUSH_RACE" || e.code === "BRANCH_NOT_FOUND") {
+        // Keep every local edit intact. Refresh only the remote metadata so the
+        // conflict sheet can tell the user what happened without overwriting
+        // their working tree.
+        let remoteSha = e.details?.remoteSha || "";
+        try {
+          const remote = await github.tree(repo.owner.login, repo.name, branch);
+          remoteSha = remote?.baseSha || remoteSha;
+        } catch {}
+        setRemoteConflict({ message: e.message || "GitHub changed the remote branch while pushing.", remoteSha });
+      } else toastError(e.message || "Commit failed. Your local changes were kept. Try again.");
     } finally {
       setBusy(false);
     }

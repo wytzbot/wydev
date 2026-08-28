@@ -271,7 +271,7 @@ function validWebhook(req,raw){const sig=req.headers["flutterwave-signature"];if
 
 async function handler(req,res){
   try{
-    const rawUrl=String(req.url||"/"), original=String(req.headers?.["x-original-url"]||req.headers?.["x-vercel-original-url"]||req.headers?.["x-forwarded-uri"]||rawUrl), url=new URL(original,origin(req)); let p=url.pathname.replace(/^\/api(?:\/index\.js)?/,"")||"/";
+    const rawUrl=String(req.url||"/"), original=String(req.headers?.["x-original-url"]||req.headers?.["x-vercel-original-url"]||req.headers?.["x-forwarded-uri"]||rawUrl), url=new URL(original,origin(req)); let p=url.pathname.replace(/^\/api(?:\/index\.js)?/,"")||"/"; p=p.replace(/\/+$/,"")||"/";
     if(p==="/auth/github"&&req.method==="GET")return oauthStart(req,res);
     if(p==="/auth/github/callback"&&req.method==="GET")return oauthCallback(req,res);
     if(p==="/auth/me"&&req.method==="GET"){const s=session(req);return json(res,200,s?{user:{id:s.id,login:s.login,name:s.name,avatar:s.avatar}}:{user:null});}
@@ -387,28 +387,31 @@ async function handler(req,res){
       for(const c of changes) safePath(c.path);
       let ref;
       let emptyRepo=false;
+      const encodedOwner=encodeURIComponent(owner),encodedRepo=encodeURIComponent(repo);
+      const refPath=(name)=>`/repos/${encodedOwner}/${encodedRepo}/git/ref/heads/${encodeURIComponent(name)}`;
       try {
-        ref=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(branch)}`);
+        ref=await gh(s.token,refPath(branch));
       } catch(e) {
         if(e.status===404){
-          // New repositories can briefly expose the repository before their
-          // default branch ref is readable. Resolve the live default branch.
-          const remote=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
-          const liveBranch=remote.default_branch||branch;
-          if(liveBranch!==branch) return json(res,409,{error:`The repository is ready, but branch "${branch}" does not exist. Its default branch is "${liveBranch}". Reload the repository and try again.`,code:"BRANCH_NOT_FOUND",branch:liveBranch});
+          // Resolve the repository's live default branch. This also handles
+          // freshly-created repositories whose branch ref is not immediately
+          // visible through the Git database API.
+          const remote=await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}`);
+          const liveBranch=String(remote.default_branch||branch);
+          if(liveBranch!==branch) return json(res,409,{error:`Branch "${branch}" was not found on GitHub. The repository default branch is "${liveBranch}". Reload the repository and select that branch before pushing.`,code:"BRANCH_NOT_FOUND",branch:liveBranch});
           try {
-            ref=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(liveBranch)}`);
+            ref=await gh(s.token,refPath(liveBranch));
           } catch(e2) {
-            // Still 404 even for the repository's own default branch: this is
-            // a genuinely empty repository (0 commits, e.g. created on
-            // GitHub without "Add a README"). There is no ref, no base tree,
-            // and no parent commit to build on — that has to be created here.
+            // A repository with no commits has no branch ref yet. The first
+            // commit below will create it.
             if(e2.status===404) emptyRepo=true; else throw e2;
           }
         } else throw e;
       }
-      if(!emptyRepo&&b.expectedSha&&ref.object.sha!==b.expectedSha)return json(res,409,{error:"Remote changes detected. Review the latest GitHub changes before pushing.",code:"REMOTE_CHANGED",remoteSha:ref.object.sha});
-      const head=emptyRepo?null:await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits/${ref.object.sha}`);
+      const expectedSha=String(b.expectedSha||"").trim();
+      if(!emptyRepo&&expectedSha&&ref.object.sha!==expectedSha)return json(res,409,{error:"GitHub has newer changes on this branch. Pull/reload the latest repository state before pushing your local changes.",code:"REMOTE_CHANGED",remoteSha:ref.object.sha,localSha:expectedSha});
+      const initialSha=emptyRepo?"":String(ref.object.sha||"");
+      const head=emptyRepo?null:await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/commits/${initialSha}`);
       const entries=[];
       const uploads=[];
       for(const c of changes){
@@ -439,15 +442,47 @@ async function handler(req,res){
       // diffing against it.
       const allDeletions=changes.length>0&&changes.every((c)=>c.status==="D");
       const treeBody=emptyRepo||allDeletions?{tree:[]}:{base_tree:head.tree.sha,tree:entries};
-      const tree=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees`,{method:"POST",body:JSON.stringify(treeBody)});
-      const commitBody=emptyRepo?{message,tree:tree.sha}:{message,tree:tree.sha,parents:[ref.object.sha]};
-      const commit=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits`,{method:"POST",body:JSON.stringify(commitBody)});
-      if(emptyRepo){
-        await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/refs`,{method:"POST",body:JSON.stringify({ref:`refs/heads/${branch}`,sha:commit.sha})});
-      } else {
-        await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/refs/heads/${encodeURIComponent(branch)}`,{method:"PATCH",body:JSON.stringify({sha:commit.sha,force:false})});
+      // Re-check the branch after blob creation and immediately before making
+      // the tree/commit. ZIP uploads can take long enough for another GitHub
+      // change to land while we are uploading blobs. Never build a commit on
+      // top of a stale parent.
+      if(!emptyRepo){
+        try {
+          const latest=await gh(s.token,refPath(branch));
+          if(String(latest.object?.sha||"")!==initialSha){
+            return json(res,409,{error:"GitHub changed this branch while WyDev was preparing your push. Your local changes were kept. Review or reload the latest repository state before pushing again.",code:"PUSH_RACE",remoteSha:latest.object?.sha||"",localSha:initialSha});
+          }
+        } catch(e){
+          if(e.status===404)return json(res,409,{error:`Branch "${branch}" no longer exists on GitHub. Your local changes were kept. Refresh the repository and select an existing branch.`,code:"BRANCH_NOT_FOUND",branch});
+          throw e;
+        }
       }
-      return json(res,200,{ok:true,commitSha:commit.sha,html_url:commit.html_url});
+      const tree=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees`,{method:"POST",body:JSON.stringify(treeBody)});
+      const commitBody=emptyRepo?{message,tree:tree.sha}:{message,tree:tree.sha,parents:[initialSha]};
+      const commit=await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/commits`,{method:"POST",body:JSON.stringify(commitBody)});
+      try {
+        if(emptyRepo){
+          // For an empty repository the branch is created only after the first
+          // commit. A concurrent first push is detected as a conflict.
+          await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/refs`,{method:"POST",body:JSON.stringify({ref:`refs/heads/${branch}`,sha:commit.sha})});
+        } else {
+          // Final read-before-write closes the normal race window. The update
+          // is never forced; GitHub still protects the ref if it moves between
+          // this read and PATCH.
+          const latest=await gh(s.token,refPath(branch));
+          if(String(latest.object?.sha||"")!==initialSha){
+            return json(res,409,{error:"GitHub changed this branch while WyDev was committing. Your local changes were kept and no force-push was performed.",code:"PUSH_RACE",remoteSha:latest.object?.sha||"",localSha:initialSha});
+          }
+          await gh(s.token,refPath(branch),{method:"PATCH",body:JSON.stringify({sha:commit.sha,force:false})});
+        }
+      } catch(e) {
+        if(e.status===404)return json(res,409,{error:`Branch "${branch}" could not be found while pushing. Your local changes were kept. Refresh the repository and try again.`,code:"BRANCH_NOT_FOUND",branch,details:e.data||null});
+        if(e.status===422 || e.status===409){
+          return json(res,409,{error:"GitHub changed the branch during the push. Your local changes were kept and WyDev did not force-push. Refresh the repository, review the remote changes, then try again.",code:"PUSH_RACE",details:e.data||null});
+        }
+        throw e;
+      }
+      return json(res,200,{ok:true,commitSha:commit.sha,html_url:commit.html_url,branch});
     }
     if(p==="/ai/diagnose"&&req.method==="POST"){const b=await body(req);return json(res,200,await aiDiagnose(s,b));}
     if(p==="/billing/status"&&req.method==="GET"){
