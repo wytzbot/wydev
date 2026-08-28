@@ -273,25 +273,50 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
     toastSuccess(`Folder ${safe} created${movedLabel}`);
   };
   const deleteFolder = async () => {
+    const allPaths = Object.keys(files).sort();
+    if (!allPaths.length) {
+      toastInfo("There's nothing to delete yet.");
+      return;
+    }
+    // Every directory prefix that any file lives under, e.g. "src/pages/Foo.jsx"
+    // contributes "src" and "src/pages" as pickable folder entries.
+    const folderSet = new Set();
+    allPaths.forEach((p) => {
+      const parts = p.split("/");
+      for (let i = 1; i < parts.length; i++) folderSet.add(parts.slice(0, i).join("/"));
+    });
+    const options = [
+      ...[...folderSet].sort().map((p) => ({ value: `dir:${p}`, label: `📁 ${p}/` })),
+      ...allPaths.map((p) => ({ value: `file:${p}`, label: p })),
+    ];
     const result = await promptDialog({
-      title: "Delete folder",
+      title: "Delete files & folders",
       confirmLabel: "Continue",
-      fields: [{ key: "path", label: "Folder path to delete", placeholder: "src/old-feature" }],
+      fields: [{ key: "targets", type: "multiselect", label: "Select what to delete", options }],
     });
     if (!result) return;
-    const from = result.path.trim();
-    if (!from) return;
-    const prefix = from.replace(/\/$/, "") + "/";
+    const targets = result.targets || [];
+    if (!targets.length) return;
+    const dirTargets = targets.filter((t) => t.startsWith("dir:")).map((t) => t.slice(4));
+    const fileTargets = targets.filter((t) => t.startsWith("file:")).map((t) => t.slice(5));
+    const toDelete = new Set(fileTargets);
+    allPaths.forEach((p) => {
+      if (dirTargets.some((d) => p === d || p.startsWith(`${d}/`))) toDelete.add(p);
+    });
+    if (!toDelete.size) return;
     const ok = await confirmDialog({
-      title: "Delete folder",
-      message: `Delete all files under ${from}? This will be included in the next commit.`,
+      title: "Delete files & folders",
+      message: `Delete ${toDelete.size} file${toDelete.size === 1 ? "" : "s"}? This will be included in the next commit.`,
       confirmLabel: "Delete",
       danger: true,
     });
     if (!ok) return;
-    applyFiles(Object.fromEntries(Object.entries(files).filter(([p]) => !p.startsWith(prefix))), `Deleted folder ${from}`);
-    setSelected("");
-    toastSuccess(`Folder ${from} deleted`);
+    applyFiles(
+      Object.fromEntries(Object.entries(files).filter(([p]) => !toDelete.has(p))),
+      `Deleted ${toDelete.size} file${toDelete.size === 1 ? "" : "s"}`
+    );
+    if (selected && toDelete.has(selected)) setSelected("");
+    toastSuccess(`${toDelete.size} file${toDelete.size === 1 ? "" : "s"} deleted`);
   };
   const deleteSelected = async () => {
     if (!selected) return;
@@ -607,7 +632,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
         </button>
         <button onClick={deleteFolder}>
           <Trash2 size={16} />
-          Delete folder
+          Delete files
         </button>
         <button onClick={exportZip}>
           <Upload size={16} />

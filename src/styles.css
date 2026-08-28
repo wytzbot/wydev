@@ -226,6 +226,7 @@ select:focus{border-color:var(--accent)}
 .modalDropdownList{max-height:180px;overflow-y:auto;border:1px solid var(--border,#333);border-radius:8px;padding:8px 12px;margin-top:6px}
 .modalDropdownList .modalCheckbox{margin-bottom:8px}
 .modalDropdownList .modalCheckbox:last-child{margin-bottom:0}
+.modalCheckboxAll{font-weight:600;padding-bottom:8px;margin-bottom:8px!important;border-bottom:1px solid var(--border,#333)}
 .modalRefs{max-height:160px;overflow:auto;margin-bottom:8px}
 .modalActions{display:flex;justify-content:flex-end;gap:8px;margin-top:6px}
 .modalCancel{padding:10px 16px;border-radius:8px;border:1px solid var(--line);background:var(--panel2);min-height:42px}

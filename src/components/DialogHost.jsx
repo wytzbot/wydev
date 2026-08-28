@@ -76,24 +76,39 @@ export default function DialogHost() {
               </summary>
               <div className="modalDropdownList">
                 {(f.options || []).length ? (
-                  f.options.map((o) => (
-                    <label className="modalCheckbox" key={o.value}>
+                  <>
+                    <label className="modalCheckbox modalCheckboxAll">
                       <input
                         type="checkbox"
-                        checked={(values[f.key] || []).includes(o.value)}
+                        checked={(values[f.key] || []).length === f.options.length}
                         onChange={(e) =>
-                          setValues((v) => {
-                            const cur = v[f.key] || [];
-                            return {
-                              ...v,
-                              [f.key]: e.target.checked ? [...cur, o.value] : cur.filter((x) => x !== o.value),
-                            };
-                          })
+                          setValues((v) => ({
+                            ...v,
+                            [f.key]: e.target.checked ? f.options.map((o) => o.value) : [],
+                          }))
                         }
                       />
-                      <span>{o.label}</span>
+                      <span>All</span>
                     </label>
-                  ))
+                    {f.options.map((o) => (
+                      <label className="modalCheckbox" key={o.value}>
+                        <input
+                          type="checkbox"
+                          checked={(values[f.key] || []).includes(o.value)}
+                          onChange={(e) =>
+                            setValues((v) => {
+                              const cur = v[f.key] || [];
+                              return {
+                                ...v,
+                                [f.key]: e.target.checked ? [...cur, o.value] : cur.filter((x) => x !== o.value),
+                              };
+                            })
+                          }
+                        />
+                        <span>{o.label}</span>
+                      </label>
+                    ))}
+                  </>
                 ) : (
                   <p className="muted">Nothing available to pick.</p>
                 )}
