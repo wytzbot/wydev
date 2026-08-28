@@ -27,6 +27,8 @@ Server-only secrets:
 - `FLW_WEBHOOK_SECRET_HASH`
 - `FIREBASE_PRIVATE_KEY`
 - `FIREBASE_CLIENT_EMAIL`
+- `FIREBASE_PROJECT_ID`
+- `FIREBASE_SERVICE_ACCOUNT_JSON` (recommended alternative to the individual Firebase service-account fields; set either this JSON or the individual fields)
 
 Browser-safe:
 - `VITE_API_BASE_URL`

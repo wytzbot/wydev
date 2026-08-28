@@ -4,15 +4,21 @@ const require=createRequire(import.meta.url);
 let db=null;
 try{
   const admin=require("firebase-admin");
-  if(!admin.apps.length && process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY){
-    admin.initializeApp({credential:admin.credential.cert({
-      projectId:process.env.FIREBASE_PROJECT_ID,
-      clientEmail:process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey:process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g,"\n")
-    })});
+  if(!admin.apps.length){
+    const jsonCred=String(process.env.FIREBASE_SERVICE_ACCOUNT_JSON||"").trim();
+    if(jsonCred){
+      const c=JSON.parse(jsonCred);
+      admin.initializeApp({credential:admin.credential.cert(c)});
+    }else if(process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY){
+      admin.initializeApp({credential:admin.credential.cert({
+        projectId:process.env.FIREBASE_PROJECT_ID,
+        clientEmail:process.env.FIREBASE_CLIENT_EMAIL,
+        privateKey:process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g,"\n")
+      })});
+    }
   }
   if(admin.apps.length) db=admin.firestore();
-}catch(e){ console.warn("Firebase Admin unavailable; persistence disabled:",e.message); }
+}catch(e){ console.error("Firebase Admin initialization failed:",e.message); }
 
 const GH="https://api.github.com";
 const FLW_TOKEN="https://idp.flutterwave.com/realms/flutterwave/protocol/openid-connect/token";
@@ -46,6 +52,15 @@ async function setTransaction(reference,data){
 async function getTransaction(reference){
   if(db){const d=await db.collection("wydev_transactions").doc(reference).get();return d.exists?d.data():null}
   return memory.transactions.get(reference)||null;
+}
+
+function requirePersistence(){
+  if(!db) throw Object.assign(new Error("WyDev billing storage is not configured. Set FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY in Vercel before accepting payments."),{status:503,code:"BILLING_STORAGE_NOT_CONFIGURED"});
+}
+async function findRecentTransactions(userId){
+  if(!db)return [];
+  const snap=await db.collection("wydev_transactions").where("userId","==",String(userId)).limit(25).get();
+  return snap.docs.map(d=>({reference:d.id,...d.data()})).sort((a,b)=>(Number(b.createdAt)||0)-(Number(a.createdAt)||0));
 }
 
 
@@ -174,6 +189,7 @@ async function resolveCustomerId(customerPayload){
   }
 }
 async function createBillingCheckout(s,payload){
+  requirePersistence();
   const currency=payload.currency==="NGN"?"NGN":"USD", amount=amountFor(currency), reference=`WYDEV-${String(s.id).slice(0,12)}-${Date.now().toString(36)}-${crypto.randomBytes(5).toString("hex")}`;
   const customerPayload={email:payload.email||`${s.login}@users.noreply.github.com`,name:{first:s.name||s.login},meta:{github_id:String(s.id)}};
   if(payload.payment_method?.type!=="card")throw new Error("Select card checkout.");
@@ -205,6 +221,39 @@ async function renewDue(){
   }
   return processed;
 }
+async function recoverEntitlement(s,requestedReference=""){
+  requirePersistence();
+  const existing=await getEntitlement(s.id);
+  if(existing?.status==="active"&&(!existing.expiresAt||existing.expiresAt>Date.now()))return {active:true,expiresAt:existing.expiresAt,recovered:false};
+  let transactions=await findRecentTransactions(s.id);
+  const wanted=String(requestedReference||"").trim();
+  if(wanted && wanted.startsWith(`WYDEV-${String(s.id).slice(0,12)}-`) && !transactions.some(t=>t.reference===wanted)){
+    try{
+      const list=await flw(`/charges?reference=${encodeURIComponent(wanted)}`);
+      const rows=Array.isArray(list.data)?list.data:(list.data?[list.data]:[]);
+      const hit=rows.find(x=>String(x.reference||"")===wanted);
+      if(hit?.id){
+        const tx={reference:wanted,userId:String(s.id),amount:Number(hit.amount),currency:String(hit.currency||""),status:hit.status||"pending",chargeId:hit.id,customerId:hit.customer_id||hit.customerId||null,paymentMethodId:hit.payment_method_details?.id||hit.payment_method_id||null,createdAt:Date.now(),recoveredFromFlutterwave:true};
+        await setTransaction(wanted,tx);
+        transactions=[tx,...transactions];
+      }
+    }catch{}
+  }
+  for(const tx of transactions){
+    if(!tx.chargeId||!tx.amount||!tx.currency)continue;
+    try{
+      const d=await flw(`/charges/${encodeURIComponent(tx.chargeId)}`),x=d.data||{};
+      await setTransaction(tx.reference,{status:x.status||"pending",chargeId:tx.chargeId,updatedAt:Date.now()});
+      if(x.status==="succeeded"&&Number(x.amount)===Number(tx.amount)&&String(x.currency)===String(tx.currency)){
+        const expiresAt=Date.now()+31*86400000;
+        await setEntitlement(s.id,{status:"active",expiresAt,renewAt:expiresAt,reference:tx.reference,customerId:tx.customerId||x.customer_id||null,paymentMethodId:tx.paymentMethodId||x.payment_method_details?.id||null,currency:tx.currency,updatedAt:Date.now(),recoveredAt:Date.now()});
+        return {active:true,expiresAt,recovered:true,reference:tx.reference};
+      }
+    }catch{}
+  }
+  return {active:false,expiresAt:null,recovered:false};
+}
+
 async function verifyCharge(s,id,reference){
   let expected=await getTransaction(reference);
   if(!expected||String(expected.userId)!==String(s.id))throw new Error("Transaction does not belong to this account");
@@ -333,9 +382,15 @@ async function handler(req,res){
       return json(res,200,{ok:true,commitSha:commit.sha,html_url:commit.html_url});
     }
     if(p==="/ai/diagnose"&&req.method==="POST"){const b=await body(req);return json(res,200,await aiDiagnose(s,b));}
-    if(p==="/billing/status"&&req.method==="GET"){const e=await getEntitlement(s.id);return json(res,200,{plan:await entitlement(s),expiresAt:e?.expiresAt||null});}
+    if(p==="/billing/status"&&req.method==="GET"){
+      let recovered=null;
+      if(db){try{recovered=await recoverEntitlement(s)}catch(e){console.warn("Billing recovery failed:",e.message)}}
+      const e=await getEntitlement(s.id);
+      return json(res,200,{plan:await entitlement(s),expiresAt:e?.expiresAt||null,recovered:!!recovered?.recovered});
+    }
     if(p==="/billing/config"&&req.method==="GET")return json(res,200,{usd:Number(process.env.FLW_PRO_USD||9.99),ngn:Number(process.env.FLW_PRO_NGN||9000),environment:FLW_LIVE?"live":"sandbox",encryptionKey:process.env.FLW_ENCRYPTION_KEY||""});
     if(p==="/billing/verify"&&req.method==="POST"){const b=await body(req);if(!b.reference)return json(res,400,{error:"Transaction reference required"});return json(res,200,await verifyCharge(s,b.id,b.reference));}
+    if(p==="/billing/recover"&&req.method==="POST"){const b=await body(req);return json(res,200,await recoverEntitlement(s,String(b.reference||"")));}
     if(p==="/billing/resolve"&&req.method==="POST"){
       const b=await body(req);const reference=String(b.reference||"").trim();if(!reference)return json(res,400,{error:"Transaction reference required"});
       const tx=await getTransaction(reference);if(!tx||String(tx.userId)!==String(s.id))return json(res,404,{error:"Payment transaction not found"});

@@ -36,11 +36,12 @@ export default function Billing(){
    try{
      const v=await billing.resolve({reference});
      if(v.active){showSuccess();return true}
-     return false;
-   }catch(e){
-     if(e?.status===404) return false;
-     return false;
-   }
+   }catch{}
+   try{
+     const v=await billing.recover(reference);
+     if(v.active){showSuccess();return true}
+   }catch{}
+   return false;
  };
  const startPolling=reference=>{
    if(!reference)return;
@@ -52,7 +53,11 @@ export default function Billing(){
  };
 
  useEffect(()=>{
-   billing.status().then(s=>{setStatus(s);if(s.plan==="pro")setSuccess(false)}).catch(e=>setErr(e.message));
+   billing.status().then(async s=>{
+     if(s.plan!=="pro"){try{s=await billing.recover(localStorage.getItem("wydev:pendingPayment")||"")}catch{} }
+     setStatus(s);
+     if(s.plan==="pro")setSuccess(false);
+   }).catch(e=>setErr(e.message));
    billing.config().then(setCfg).catch(()=>{});
    const params=new URLSearchParams(location.search),ref=params.get("tx_ref")||params.get("reference")||"";
    let saved="";try{saved=localStorage.getItem("wydev:pendingPayment")||""}catch{}
