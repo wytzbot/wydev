@@ -431,7 +431,14 @@ async function handler(req,res){
         return {path:c.path,mode:"100644",type:"blob",sha:blob.sha};
       }));
       entries.push(...blobResults);
-      const treeBody=emptyRepo?{tree:entries}:{base_tree:head.tree.sha,tree:entries};
+      // Deleting every remaining file via base_tree + a full set of sha:null
+      // entries is a known rough edge in GitHub's Trees API — it can reject
+      // the request instead of producing the (perfectly valid) empty tree.
+      // A commit that's 100% deletions always results in an empty tree
+      // regardless of what base_tree held, so build that directly instead of
+      // diffing against it.
+      const allDeletions=changes.length>0&&changes.every((c)=>c.status==="D");
+      const treeBody=emptyRepo||allDeletions?{tree:[]}:{base_tree:head.tree.sha,tree:entries};
       const tree=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees`,{method:"POST",body:JSON.stringify(treeBody)});
       const commitBody=emptyRepo?{message,tree:tree.sha}:{message,tree:tree.sha,parents:[ref.object.sha]};
       const commit=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits`,{method:"POST",body:JSON.stringify(commitBody)});
