@@ -1,3 +1,11 @@
-import {API_BASE_URL} from "./config";
-const call=(p,o={})=>fetch(`${API_BASE_URL}${p}`,{credentials:"include",headers:{"Content-Type":"application/json",...(o.headers||{})},...o}).then(async r=>{const d=await r.json();if(!r.ok)throw new Error(d.error||"Billing request failed");return d});
-export const billing={status:()=>call("/billing/status"),config:()=>call("/billing/config"),checkout:p=>call("/billing/checkout",{method:"POST",body:JSON.stringify(p)}),verify:p=>call("/billing/verify",{method:"POST",body:JSON.stringify(p)}),authorize:p=>call("/billing/authorize",{method:"POST",body:JSON.stringify(p)}),resolve:p=>call("/billing/resolve",{method:"POST",body:JSON.stringify(p)}),recover:p=>call("/billing/recover",{method:"POST",body:JSON.stringify({reference:p||""})})};
+import {api} from './github';
+
+export const DEFAULT_PLANS={free:{label:'FREE',ngn:0,usd:0,builds:5},pro:{label:'PRO',ngn:15000,usd:9.99,builds:50},proPlus:{label:'PRO+',ngn:30000,usd:19.99,builds:200}};
+
+export const getBillingStatus=()=>api('/api/billing/status');
+
+export function openWyDevBilling(){
+  const url=import.meta.env.VITE_WYDEV_BILLING_URL;
+  if(!url) throw new Error('WyDev billing URL is not configured.');
+  window.location.assign(url);
+}

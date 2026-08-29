@@ -1,681 +1,648 @@
-import crypto from "node:crypto";
-import {createRequire} from "node:module";
-const require=createRequire(import.meta.url);
-let db=null;
-try{
-  const admin=require("firebase-admin");
-  if(!admin.apps.length){
-    const jsonCred=String(process.env.FIREBASE_SERVICE_ACCOUNT_JSON||"").trim();
-    if(jsonCred){
-      const c=JSON.parse(jsonCred);
-      admin.initializeApp({credential:admin.credential.cert(c)});
-    }else if(process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY){
-      admin.initializeApp({credential:admin.credential.cert({
-        projectId:process.env.FIREBASE_PROJECT_ID,
-        clientEmail:process.env.FIREBASE_CLIENT_EMAIL,
-        privateKey:process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g,"\n")
-      })});
-    }
+import crypto from 'node:crypto';
+
+const COOKIE = 'wybuild_session';
+const STATE_COOKIE = 'wybuild_oauth_state';
+const GH = 'https://api.github.com';
+const SESSION_DAYS = 7;
+const MAX_REPO_PAGES = 20;
+const MAX_BRANCH_PAGES = 20;
+const MAX_RUN_PAGES = 10;
+const MAX_RELEASE_PAGES = 10;
+const DEFAULT_FREE_LIMIT = 5;
+
+const json = (res, status, body) => {
+  res.statusCode = status;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.end(JSON.stringify(body));
+};
+
+const urlOf = req => new URL(req.url, `http://${req.headers.host}`);
+
+async function body(req) {
+  let s = '';
+  for await (const c of req) s += c;
+  if (!s) return {};
+  try { return JSON.parse(s); }
+  catch { throw Object.assign(new Error('Invalid JSON body'), { status: 400 }); }
+}
+
+function key() {
+  return crypto.createHash('sha256')
+    .update(process.env.SESSION_SECRET || 'development-only-change-me')
+    .digest();
+}
+
+function seal(obj) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key(), iv);
+  const raw = Buffer.from(JSON.stringify({ ...obj, exp: Date.now() + SESSION_DAYS * 86400000 }));
+  const enc = Buffer.concat([cipher.update(raw), cipher.final()]);
+  return [iv, cipher.getAuthTag(), enc].map(x => x.toString('base64url')).join('.');
+}
+
+function unseal(v) {
+  try {
+    const [a, b, c] = v.split('.');
+    if (!a || !b || !c) return null;
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key(), Buffer.from(a, 'base64url'));
+    decipher.setAuthTag(Buffer.from(b, 'base64url'));
+    const x = JSON.parse(Buffer.concat([
+      decipher.update(Buffer.from(c, 'base64url')),
+      decipher.final()
+    ]));
+    return x.exp > Date.now() ? x : null;
+  } catch {
+    return null;
   }
-  if(admin.apps.length) db=admin.firestore();
-}catch(e){ console.error("Firebase Admin initialization failed:",e.message); }
-
-const GH="https://api.github.com";
-const FLW_TOKEN="https://idp.flutterwave.com/realms/flutterwave/protocol/openid-connect/token";
-const FLW_ENV=String(process.env.FLW_ENV||"live").trim().toLowerCase();
-const FLW_LIVE=/^(production|prod|live)$/i.test(FLW_ENV);
-const FLW_BASE=String(process.env.FLW_BASE_URL||"").trim().replace(/\/$/,"") || (FLW_LIVE
-  ?"https://f4bexperience.flutterwave.com"
-  :"https://developersandbox-api.flutterwave.com");
-
-const memory={usage:new Map(),entitlements:new Map(),transactions:new Map(),preferences:new Map(),cache:new Map()};
-async function getEntitlement(userId){
-  if(db){const d=await db.collection("wydev_entitlements").doc(String(userId)).get();return d.exists?d.data():null}
-  return memory.entitlements.get(String(userId))||null;
-}
-async function setEntitlement(userId,data){
-  if(db){await db.collection("wydev_entitlements").doc(String(userId)).set(data,{merge:true});return}
-  memory.entitlements.set(String(userId),data);
-}
-async function getUsage(userId,day){
-  if(db){const d=await db.collection("wydev_ai_usage").doc(`${userId}_${day}`).get();return d.exists?(d.data().count||0):0}
-  return memory.usage.get(`${userId}:${day}`)||0;
-}
-async function incrementUsage(userId,day){
-  if(db){const ref=db.collection("wydev_ai_usage").doc(`${userId}_${day}`);await db.runTransaction(async tx=>{const d=await tx.get(ref);tx.set(ref,{count:(d.exists?(d.data().count||0):0)+1,updatedAt:Date.now()},{merge:true})});return}
-  const k=`${userId}:${day}`;memory.usage.set(k,(memory.usage.get(k)||0)+1);
-}
-async function setTransaction(reference,data){
-  if(db){await db.collection("wydev_transactions").doc(reference).set(data,{merge:true});return}
-  memory.transactions.set(reference,data);
-}
-async function getTransaction(reference){
-  if(db){const d=await db.collection("wydev_transactions").doc(reference).get();return d.exists?d.data():null}
-  return memory.transactions.get(reference)||null;
 }
 
-function requirePersistence(){
-  if(!db) throw Object.assign(new Error("WyDev billing storage is not configured. Set FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY in Vercel before accepting payments."),{status:503,code:"BILLING_STORAGE_NOT_CONFIGURED"});
-}
-async function findRecentTransactions(userId){
-  if(!db)return [];
-  const snap=await db.collection("wydev_transactions").where("userId","==",String(userId)).limit(25).get();
-  return snap.docs.map(d=>({reference:d.id,...d.data()})).sort((a,b)=>(Number(b.createdAt)||0)-(Number(a.createdAt)||0));
-}
-
-
-async function listDueEntitlements(){
-  if(!db)return [];
-  const snap=await db.collection("wydev_entitlements").where("status","==","active").where("renewAt","<=",Date.now()).limit(20).get();
-  return snap.docs.map(d=>({id:d.id,...d.data()}));
+function cookies(req) {
+  return Object.fromEntries(
+    (req.headers.cookie || '')
+      .split(';')
+      .filter(Boolean)
+      .map(x => {
+        const i = x.indexOf('=');
+        return [i < 0 ? x.trim() : x.slice(0, i).trim(), decodeURIComponent(i < 0 ? '' : x.slice(i + 1))];
+      })
+  );
 }
 
-function json(res,status,data){res.statusCode=status;res.setHeader("Content-Type","application/json");res.end(JSON.stringify(data));}
-function redirect(res,url){res.statusCode=302;res.setHeader("Location",url);res.end();}
-function parseCookies(req){return Object.fromEntries((req.headers.cookie||"").split(";").map(x=>x.trim()).filter(Boolean).map(x=>{const i=x.indexOf("=");return [x.slice(0,i),decodeURIComponent(x.slice(i+1))]}));}
-async function body(req){if(req._body)return req._body;let s="";for await(const c of req)s+=c;try{return req._body=s?JSON.parse(s):{}}catch{return {}}}
-function b64(v){return Buffer.from(v).toString("base64url");}
-function unb64(v){return Buffer.from(v,"base64url").toString();}
-function secret(){if(!process.env.SESSION_SECRET)throw new Error("SESSION_SECRET is not configured");return crypto.createHash("sha256").update(process.env.SESSION_SECRET).digest();}
-function seal(obj){const iv=crypto.randomBytes(12),key=secret(),c=crypto.createCipheriv("aes-256-gcm",key,iv);const enc=Buffer.concat([c.update(JSON.stringify(obj),"utf8"),c.final()]);return [b64(iv),b64(enc),b64(c.getAuthTag())].join(".");}
-function openCookie(v){try{const [iv,enc,tag]=v.split(".");const d=crypto.createDecipheriv("aes-256-gcm",secret(),Buffer.from(iv,"base64url"));d.setAuthTag(Buffer.from(tag,"base64url"));return JSON.parse(Buffer.concat([d.update(Buffer.from(enc,"base64url")),d.final()]).toString())}catch{return null}}
-function setSession(res,user){const value=seal(user);res.setHeader("Set-Cookie",`wydev_session=${encodeURIComponent(value)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800`);}
-function clearSession(res){res.setHeader("Set-Cookie","wydev_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0");}
-function session(req){const c=parseCookies(req).wydev_session;return c?openCookie(c):null;}
-function requireSession(req,res){const s=session(req);if(!s?.token||!s?.login){json(res,401,{error:"GitHub authentication required"});return null}return s;}
-function ghHeaders(token){return{"Authorization":`Bearer ${token}`,"Accept":"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28","User-Agent":"WyDev-Mobile-Editor"};}
-async function gh(token,path,opts={}){const r=await fetch(GH+path,{...opts,headers:{...ghHeaders(token),...(opts.headers||{})}});const text=await r.text();let data;try{data=JSON.parse(text)}catch{data={message:text}}if(!r.ok)throw Object.assign(new Error(data.message||`GitHub request failed (${r.status})`),{status:r.status,data});return data;}
+function session(req) {
+  const v = cookies(req)[COOKIE];
+  return v ? unseal(v) : null;
+}
 
-function origin(req){const proto=(req.headers["x-forwarded-proto"]||"https").split(",")[0];const host=req.headers["x-forwarded-host"]||req.headers.host;return `${proto}://${host}`;}
-function oauthStart(req,res){const state=b64(crypto.randomBytes(24));const redirectUri=process.env.GITHUB_REDIRECT_URI||`${origin(req)}/api/auth/github/callback`;const url=new URL("https://github.com/login/oauth/authorize");url.searchParams.set("client_id",process.env.GITHUB_CLIENT_ID||"");url.searchParams.set("redirect_uri",redirectUri);url.searchParams.set("scope","read:user repo workflow");url.searchParams.set("state",state);res.setHeader("Set-Cookie",`wydev_oauth_state=${state}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`);redirect(res,url.toString());}
-async function oauthCallback(req,res){const q=new URL(req.url,origin(req)).searchParams;const state=q.get("state"),code=q.get("code");const cookies=parseCookies(req);if(!state||state!==cookies.wydev_oauth_state)return json(res,400,{error:"Invalid OAuth state"});if(!code)return json(res,400,{error:"GitHub did not return an authorization code"});const redirectUri=process.env.GITHUB_REDIRECT_URI||`${origin(req)}/api/auth/github/callback`;const r=await fetch("https://github.com/login/oauth/access_token",{method:"POST",headers:{"Accept":"application/json","Content-Type":"application/json"},body:JSON.stringify({client_id:process.env.GITHUB_CLIENT_ID,client_secret:process.env.GITHUB_CLIENT_SECRET,code,redirect_uri:redirectUri})});const token=await r.json();if(!r.ok||!token.access_token)return json(res,502,{error:"GitHub token exchange failed"});const me=await gh(token.access_token,"/user");setSession(res,{token:token.access_token,refresh_token:token.refresh_token||null,login:me.login,id:me.id,name:me.name,avatar:me.avatar_url,scope:token.scope});res.setHeader("Set-Cookie",[res.getHeader("Set-Cookie"),"wydev_oauth_state=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0"].filter(Boolean));redirect(res,"/");}
+function setCookie(res, name, value, maxAge = 604800) {
+  const cookie = `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
+  const existing = res.getHeader('Set-Cookie');
+  const values = existing ? (Array.isArray(existing) ? existing : [existing]) : [];
+  res.setHeader('Set-Cookie', [...values, cookie]);
+}
 
-function limitKey(s){return `${s.id||s.login}:${new Date().toISOString().slice(0,10)}`;}
-async function entitlement(s){const e=await getEntitlement(s.id);return e?.status==="active"&&(!e.expiresAt||e.expiresAt>Date.now())?"pro":"free";}
-async function checkAIQuota(s){const day=new Date().toISOString().slice(0,10),used=await getUsage(s.id,day),plan=await entitlement(s),limit=plan==="pro"?Number(process.env.AI_PRO_DAILY_LIMIT||20):Number(process.env.AI_FREE_DAILY_LIMIT||5);if(used>=limit)throw Object.assign(new Error(`Daily AI diagnostic limit reached (${limit}). Try again tomorrow.`),{status:429,code:"AI_QUOTA_EXCEEDED",limit,used,plan});return {day,plan,limit,used};}
-function redactSecrets(value){let s=String(value||"");return s
- .replace(/-----BEGIN [^-]+ PRIVATE KEY-----[\s\S]*?-----END [^-]+ PRIVATE KEY-----/gi,"[REDACTED_PRIVATE_KEY]")
- .replace(/(ghp_|github_pat_|sk-[A-Za-z0-9_-]+|AIza[0-9A-Za-z_-]{20,})[A-Za-z0-9_-]*/g,"[REDACTED_TOKEN]")
- .replace(/(api[_-]?key|secret|password|token|authorization)\s*[:=]\s*["']?[^\s"',}]+/gi,"$1=[REDACTED]");return s;}
-function parseGeminiText(data){return data?.candidates?.[0]?.content?.parts?.map(p=>p.text||"").join("")||"";}
-async function geminiDiagnose(prompt,schema){
-  const key=process.env.GEMINI_API_KEY;if(!key)throw new Error("GEMINI_API_KEY is not configured");
-  const model=process.env.GEMINI_MODEL||"gemini-3.5-flash-lite";
-  const url=`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
-  const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{role:"user",parts:[{text:prompt}]}],generationConfig:{temperature:0.1,maxOutputTokens:900,responseMimeType:"application/json",responseSchema:schema}})});
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok)throw Object.assign(new Error(data?.error?.message||`Gemini request failed (${r.status})`),{status:r.status,provider:"gemini"});
-  const text=parseGeminiText(data);if(!text)throw new Error("Gemini returned an empty diagnostic");
-  let out;try{out=JSON.parse(text)}catch{throw new Error("Gemini returned invalid diagnostic JSON")}
-  if(!out.root_cause||!Array.isArray(out.affected_files)||!Array.isArray(out.evidence))throw new Error("AI response validation failed");
+function clearCookie(res, name) {
+  setCookie(res, name, '', 0);
+}
+
+async function gh(path, token, options = {}) {
+  const r = await fetch(GH + path, {
+    ...options,
+    headers: {
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      Authorization: `Bearer ${token}`,
+      ...(options.headers || {})
+    }
+  });
+
+  const text = await r.text();
+  let data = {};
+  try { data = JSON.parse(text); }
+  catch { data = { message: text }; }
+
+  if (!r.ok) {
+    const error = Object.assign(
+      new Error(data.message || `GitHub request failed (${r.status})`),
+      { status: r.status, data }
+    );
+    if (r.headers.get('x-ratelimit-remaining') === '0') error.rateLimited = true;
+    throw error;
+  }
+  return data;
+}
+
+function withPage(path, page, perPage = 100) {
+  const u = new URL(path, 'https://wybuild.internal');
+  u.searchParams.set('per_page', String(perPage));
+  u.searchParams.set('page', String(page));
+  return `${u.pathname}${u.search}`;
+}
+
+async function ghList(path, token, { keyName = null, maxPages = 10, perPage = 100 } = {}) {
+  const out = [];
+  for (let page = 1; page <= maxPages; page += 1) {
+    const data = await gh(withPage(path, page, perPage), token);
+    const items = keyName ? (Array.isArray(data?.[keyName]) ? data[keyName] : []) : (Array.isArray(data) ? data : []);
+    out.push(...items);
+    if (items.length < perPage) break;
+  }
   return out;
 }
-async function aiDiagnose(s,payload){
-  const quota=await checkAIQuota(s);
-  const files=Array.isArray(payload.relatedFiles)?payload.relatedFiles.slice(0,8):[];
-  const context=JSON.stringify({error:redactSecrets(payload.error),logs:redactSecrets(String(payload.logs||"").slice(0,12000)),file:redactSecrets(payload.file),content:redactSecrets(String(payload.content||"").slice(0,24000)),relatedFiles:files.map(x=>({path:redactSecrets(x.path),content:redactSecrets(String(x.content||"").slice(0,10000))})),package:redactSecrets(payload.package)});
-  const schema={type:"object",properties:{title:{type:"string"},severity:{type:"string"},root_cause:{type:"string"},affected_files:{type:"array",items:{type:"string"}},affected_lines:{type:"array",items:{type:"string"}},evidence:{type:"array",items:{type:"string"}},likely_reason:{type:"string"},recommended_action:{type:"string"},confidence:{type:"number"}},required:["title","severity","root_cause","affected_files","affected_lines","evidence","likely_reason","recommended_action","confidence"]};
-  const prompt=`You are WyDev Diagnostic Engine. Diagnose only. NEVER edit code, generate patches, replace files, commit, push, rename files, or perform autonomous actions. Identify the exact problem from the supplied minimum context. If evidence is insufficient, say so. Return only valid JSON matching the supplied schema. Keep the diagnosis concise and developer-readable.\nCONTEXT:\n${context}`;
-  const out=await geminiDiagnose(prompt,schema);
-  await incrementUsage(s.id,quota.day);
-  return {...out,usage:{used:quota.used+1,limit:quota.limit,remaining:Math.max(0,quota.limit-quota.used-1),plan:quota.plan}};
+
+const configured = () => !!(
+  process.env.GITHUB_CLIENT_ID &&
+  process.env.GITHUB_CLIENT_SECRET &&
+  process.env.SESSION_SECRET
+);
+
+function callback(req) {
+  const u = urlOf(req);
+  const base = (process.env.APP_URL || `${u.protocol}//${u.host}`).replace(/\/$/, '');
+  return `${base}/api/auth/github/callback`;
 }
 
-function flwRequestId(prefix){return `${prefix}${crypto.randomBytes(18).toString("hex")}`;}
-async function flwToken(){
-  const clientId=String(process.env.FLW_CLIENT_ID||"").trim();
-  const clientSecret=String(process.env.FLW_CLIENT_SECRET||"").trim();
-  if(!clientId||!clientSecret)throw Object.assign(new Error("Flutterwave v4 credentials are not configured. Set FLW_CLIENT_ID and FLW_CLIENT_SECRET in Vercel."),{status:500,code:"FLW_CREDENTIALS_MISSING"});
-  const r=await fetch(FLW_TOKEN,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded","Accept":"application/json"},body:new URLSearchParams({client_id:clientId,client_secret:clientSecret,grant_type:"client_credentials"})});
-  const text=await r.text();let d={};try{d=text?JSON.parse(text):{}}catch{d={message:text}}
-  if(!r.ok||!d.access_token){
-    const detail=d?.error_description||d?.error?.message||d?.message||`HTTP ${r.status}`;
-    throw Object.assign(new Error(`Flutterwave authentication failed (${r.status}): ${detail}`),{status:r.status,code:d?.error?.code||d?.error||"FLW_AUTH_FAILED"});
-  }
-  return d.access_token;
-}
-async function flw(path,opts={}){
-  const token=await flwToken();
-  const trace=flwRequestId("WYTRACE");
-  const idempotency=flwRequestId("WYREQ");
-  const headers={"Authorization":`Bearer ${token}`,"Accept":"application/json","Content-Type":"application/json","X-Trace-Id":trace,"X-Idempotency-Key":idempotency,...(opts.headers||{})};
-  if(process.env.FLW_SCENARIO_KEY)headers["X-Scenario-Key"]=String(process.env.FLW_SCENARIO_KEY);
-  const url=FLW_BASE+path;
-  const r=await fetch(url,{...opts,headers});
-  const t=await r.text();let d;try{d=t?JSON.parse(t):{}}catch{d={message:t}}
-  if(!r.ok){
-    const validation=Array.isArray(d?.error?.validation_errors)?d.error.validation_errors.map(v=>`${v.field_name}: ${v.message}`).join("; "):""; const detail=validation||d?.error?.message||d?.error?.type||d?.message||d?.error_description||`HTTP ${r.status}`;
-    const code=d?.error?.code||d?.code||null;
-    let message=code?`Flutterwave ${code}: ${detail}`:`Flutterwave request failed (${r.status}): ${detail}`;
-    if(r.status===403||String(code)==="10403")message+=` [Forbidden at ${path}. Environment: ${FLW_LIVE?"production":"sandbox"}. Base: ${FLW_BASE}. Check that FLW_ENV matches your v4 credential environment and that the live account has the required API permissions/KYC. Trace: ${trace}]`;
-    const err=new Error(message);
-    throw Object.assign(err,{status:r.status,data:d,flutterwaveCode:code,traceId:trace,endpoint:path});
-  }
-  return d;
-}
-function amountFor(currency){if(currency==="NGN"){const n=Number(process.env.FLW_PRO_NGN||9000);if(!n)throw new Error("FLW_PRO_NGN is required for NGN checkout");return n}return Number(process.env.FLW_PRO_USD||9.99);}
-
-async function findCustomerByEmail(email){
-  // Flutterwave v4 does not document a customer-search endpoint consistently across environments,
-  // so this tries the conventional filter param and falls back to a full list scan if unsupported.
-  try{
-    const q=await flw(`/customers?email=${encodeURIComponent(email)}`);
-    const hit=(Array.isArray(q.data)?q.data:[q.data]).find(c=>c&&String(c.email||"").toLowerCase()===email.toLowerCase());
-    if(hit?.id)return hit.id;
-  }catch{}
-  try{
-    const all=await flw("/customers");
-    const hit=(Array.isArray(all.data)?all.data:[]).find(c=>String(c?.email||"").toLowerCase()===email.toLowerCase());
-    if(hit?.id)return hit.id;
-  }catch{}
-  return null;
-}
-async function resolveCustomerId(customerPayload){
-  try{
-    const customer=await flw("/customers",{method:"POST",body:JSON.stringify(customerPayload)});
-    const customerId=customer.data?.id;
-    if(!customerId)throw new Error("Flutterwave did not return a customer id");
-    return customerId;
-  }catch(e){
-    const alreadyExists=String(e.flutterwaveCode)==="1203409"||/already exists/i.test(e.message||"");
-    if(!alreadyExists)throw e;
-    // The error body itself sometimes carries the existing customer id (varies by account/version);
-    // check there first before falling back to a lookup call.
-    const inline=e.data?.error?.data?.id||e.data?.data?.id||e.data?.error?.id;
-    if(inline)return inline;
-    const found=await findCustomerByEmail(customerPayload.email);
-    if(found)return found;
-    throw Object.assign(new Error(`Flutterwave reports a customer already exists for ${customerPayload.email}, but WyDev could not look up its ID to reuse it. Trace: ${e.traceId||"n/a"}`),{status:e.status||500});
-  }
-}
-async function createBillingCheckout(s,payload){
-  requirePersistence();
-  const currency=payload.currency==="NGN"?"NGN":"USD", amount=amountFor(currency), reference=`WYDEV-${String(s.id).slice(0,12)}-${Date.now().toString(36)}-${crypto.randomBytes(5).toString("hex")}`;
-  const customerPayload={email:payload.email||`${s.login}@users.noreply.github.com`,name:{first:s.name||s.login},meta:{github_id:String(s.id)}};
-  if(payload.payment_method?.type!=="card")throw new Error("Select card checkout.");
-  const customerId=await resolveCustomerId(customerPayload);
-  const pm=await flw("/payment-methods",{method:"POST",body:JSON.stringify({type:"card",card:payload.payment_method.card})});
-  const paymentMethodId=pm.data?.id;
-  if(!paymentMethodId)throw new Error("Flutterwave did not return a payment method id");
-  const charge=await flw("/charges",{method:"POST",body:JSON.stringify({amount,currency,reference,customer_id:customerId,payment_method_id:paymentMethodId,redirect_url:`${origin(payload.req)}/?billing=return&tx_ref=${encodeURIComponent(reference)}#billing`,recurring:false})});
-  await setTransaction(reference,{userId:String(s.id),amount,currency,status:charge.data?.status||"pending",chargeId:charge.data?.id,customerId,paymentMethodId,createdAt:Date.now()});
-  return charge;
-}
-async function authorizeCharge(s,id,authorization){
-  if(!id||!authorization?.type)throw Object.assign(new Error("Charge id and authorization are required"),{status:400});
-  const d=await flw(`/charges/${encodeURIComponent(id)}`,{method:"PUT",body:JSON.stringify({authorization})});
-  return d;
-}
-async function renewDue(){
-  const due=await listDueEntitlements(); let processed=0;
-  for(const e of due){
-    if(!e.customerId||!e.paymentMethodId||!e.currency)continue;
-    try{
-      const reference=`WYDEV-R-${String(e.id).slice(0,12)}-${Date.now().toString(36)}-${crypto.randomBytes(5).toString("hex")}`,amount=amountFor(e.currency);
-      const d=await flw("/charges",{method:"POST",body:JSON.stringify({reference,currency:e.currency,amount,customer_id:e.customerId,payment_method_id:e.paymentMethodId,recurring:true})});
-      const status=d.data?.status||"pending"; await setTransaction(reference,{userId:e.id,amount,currency:e.currency,status,chargeId:d.data?.id,customerId:e.customerId,paymentMethodId:e.paymentMethodId,createdAt:Date.now(),renewal:true});
-      if(status==="succeeded")await setEntitlement(e.id,{status:"active",expiresAt:Date.now()+31*86400000,renewAt:Date.now()+31*86400000,updatedAt:Date.now(),lastRenewalReference:reference});
-      else await setEntitlement(e.id,{status:"past_due",updatedAt:Date.now(),lastRenewalReference:reference});
-      processed++;
-    }catch{await setEntitlement(e.id,{status:"past_due",updatedAt:Date.now()});}
-  }
-  return processed;
-}
-async function recoverEntitlement(s,requestedReference=""){
-  requirePersistence();
-  const existing=await getEntitlement(s.id);
-  if(existing?.status==="active"&&(!existing.expiresAt||existing.expiresAt>Date.now()))return {active:true,expiresAt:existing.expiresAt,recovered:false};
-  let transactions=await findRecentTransactions(s.id);
-  const wanted=String(requestedReference||"").trim();
-  if(wanted && wanted.startsWith(`WYDEV-${String(s.id).slice(0,12)}-`) && !transactions.some(t=>t.reference===wanted)){
-    try{
-      const list=await flw(`/charges?reference=${encodeURIComponent(wanted)}`);
-      const rows=Array.isArray(list.data)?list.data:(list.data?[list.data]:[]);
-      const hit=rows.find(x=>String(x.reference||"")===wanted);
-      if(hit?.id){
-        const tx={reference:wanted,userId:String(s.id),amount:Number(hit.amount),currency:String(hit.currency||""),status:hit.status||"pending",chargeId:hit.id,customerId:hit.customer_id||hit.customerId||null,paymentMethodId:hit.payment_method_details?.id||hit.payment_method_id||null,createdAt:Date.now(),recoveredFromFlutterwave:true};
-        await setTransaction(wanted,tx);
-        transactions=[tx,...transactions];
-      }
-    }catch{}
-  }
-  for(const tx of transactions){
-    if(!tx.chargeId||!tx.amount||!tx.currency)continue;
-    try{
-      const d=await flw(`/charges/${encodeURIComponent(tx.chargeId)}`),x=d.data||{};
-      await setTransaction(tx.reference,{status:x.status||"pending",chargeId:tx.chargeId,updatedAt:Date.now()});
-      if(x.status==="succeeded"&&Number(x.amount)===Number(tx.amount)&&String(x.currency)===String(tx.currency)){
-        const expiresAt=Date.now()+31*86400000;
-        await setEntitlement(s.id,{status:"active",expiresAt,renewAt:expiresAt,reference:tx.reference,customerId:tx.customerId||x.customer_id||null,paymentMethodId:tx.paymentMethodId||x.payment_method_details?.id||null,currency:tx.currency,updatedAt:Date.now(),recoveredAt:Date.now()});
-        return {active:true,expiresAt,recovered:true,reference:tx.reference};
-      }
-    }catch{}
-  }
-  return {active:false,expiresAt:null,recovered:false};
+function appBase(req) {
+  const u = urlOf(req);
+  return (process.env.APP_URL || `${u.protocol}//${u.host}`).replace(/\/$/, '');
 }
 
-async function verifyCharge(s,id,reference){
-  let expected=await getTransaction(reference);
-  if(!expected||String(expected.userId)!==String(s.id))throw new Error("Transaction does not belong to this account");
-  const chargeId=id||expected.chargeId;
-  if(!chargeId)throw Object.assign(new Error("Payment transaction is still being created. Please wait a moment and try again."),{status:409});
-  const d=await flw(`/charges/${encodeURIComponent(chargeId)}`),x=d.data||{};
-  await setTransaction(reference,{status:x.status||"pending",chargeId,updatedAt:Date.now()});
-  if(x.status==="succeeded"&&Number(x.amount)===Number(expected.amount)&&x.currency===expected.currency){
-    await setEntitlement(s.id,{status:"active",expiresAt:Date.now()+31*86400000,renewAt:Date.now()+31*86400000,reference,customerId:expected.customerId,paymentMethodId:expected.paymentMethodId,currency:expected.currency,updatedAt:Date.now()});
-    return {active:true,status:x.status,expiresAt:Date.now()+31*86400000};
+function requireSession(req, res) {
+  const s = session(req);
+  if (!s) {
+    json(res, 401, { error: 'GitHub connection required', code: 'AUTH_REQUIRED' });
+    return null;
   }
-  return {active:false,status:x.status||"pending"};
+  return s;
 }
-function validWebhook(req,raw){const sig=req.headers["flutterwave-signature"];if(!sig||!process.env.FLW_WEBHOOK_SECRET_HASH)return false;const h=crypto.createHmac("sha256",process.env.FLW_WEBHOOK_SECRET_HASH).update(raw).digest("base64");const a=Buffer.from(h),b=Buffer.from(String(sig));return a.length===b.length&&crypto.timingSafeEqual(a,b);}
 
-async function handler(req,res){
-  try{
-    const rawUrl=String(req.url||"/"), original=String(req.headers?.["x-original-url"]||req.headers?.["x-vercel-original-url"]||req.headers?.["x-forwarded-uri"]||rawUrl), url=new URL(original,origin(req)); let p=url.pathname.replace(/^\/api(?:\/index\.js)?/,"")||"/"; p=p.replace(/\/+$/,"")||"/";
-    if(p==="/auth/github"&&req.method==="GET")return oauthStart(req,res);
-    if(p==="/auth/github/callback"&&req.method==="GET")return oauthCallback(req,res);
-    if(p==="/auth/me"&&req.method==="GET"){const s=session(req);return json(res,200,s?{user:{id:s.id,login:s.login,name:s.name,avatar:s.avatar}}:{user:null});}
-    if(p==="/auth/logout"&&req.method==="POST"){clearSession(res);return json(res,200,{ok:true});}
-    const s=requireSession(req,res);if(!s)return;
-    if(p==="/preferences"&&req.method==="GET") {
-      const ref=db?.collection("wydev_preferences").doc(String(s.id));
-      if(!ref) return json(res,200,{preferences:memory.preferences.get(String(s.id))||{}});
-      const d=await ref.get();
-      return json(res,200,{preferences:d.exists?(d.data().preferences||{}):{}});
+function safePart(value, label) {
+  if (typeof value !== 'string' || !value || value.length > 200) {
+    throw Object.assign(new Error(`${label} is invalid`), { status: 400 });
+  }
+  return value;
+}
+
+async function wydevEntitlement(s) {
+  const api = process.env.WYDEV_BILLING_API_URL?.replace(/\/$/, '');
+  if (!api) return { configured: false, plan: 'FREE', buildLimit: DEFAULT_FREE_LIMIT };
+
+  const r = await fetch(`${api}/entitlement`, {
+    headers: {
+      Authorization: `Bearer ${process.env.WYDEV_BILLING_SERVICE_TOKEN || ''}`,
+      'X-GitHub-User': s.user.login,
+      'X-GitHub-User-Id': String(s.user.id)
     }
-    if(p==="/preferences"&&req.method==="PUT") {
-      const b=await body(req), incoming=b?.preferences&&typeof b.preferences==="object"?b.preferences:{};
-      const allowed=["fontSize","wordWrap","reducedMotion","density"];
-      const preferences={};
-      for(const k of allowed) if(Object.prototype.hasOwnProperty.call(incoming,k)) preferences[k]=incoming[k];
-      if(db) await db.collection("wydev_preferences").doc(String(s.id)).set({preferences,updatedAt:Date.now()},{merge:true});
-      else memory.preferences.set(String(s.id),preferences);
-      return json(res,200,{ok:true,preferences});
-    }
-    if(p==="/billing/webhook"&&req.method==="POST"){let raw="";for await(const c of req)raw+=c;if(!validWebhook(req,raw))return json(res,401,{error:"Invalid Flutterwave signature"});let data;try{data=JSON.parse(raw)}catch{return json(res,400,{error:"Invalid JSON"})}const tx=data.data||{};if(tx.id){try{const d=await flw(`/charges/${encodeURIComponent(tx.id)}`),x=d.data||{};const ref=x.reference||tx.reference,rec=await getTransaction(ref);if(rec){await setTransaction(ref,{status:x.status||"pending",chargeId:tx.id,updatedAt:Date.now()});if(x.status==="succeeded"&&Number(x.amount)===Number(rec.amount)&&x.currency===rec.currency){await setEntitlement(rec.userId,{status:"active",expiresAt:Date.now()+31*86400000,renewAt:Date.now()+31*86400000,reference:ref,customerId:rec.customerId,paymentMethodId:rec.paymentMethodId,currency:rec.currency,updatedAt:Date.now()})}}}catch{} }return json(res,200,{received:true});}
-    if(p==="/billing/renew"&&req.method==="POST"){const auth=req.headers.authorization||"";if(!process.env.CRON_SECRET||auth!==`Bearer ${process.env.CRON_SECRET}`)return json(res,401,{error:"Unauthorized"});return json(res,200,{processed:await renewDue()});}
-    if(p==="/billing/authorize"&&req.method==="POST"){const s=requireSession(req,res);if(!s)return;const b=await body(req);return json(res,200,await authorizeCharge(s,b.id,b.authorization));}
-    if(p==="/github/repos"&&req.method==="GET"){
-      const all=await gh(s.token,"/user/repos?per_page=100&sort=updated");
-      const plan=await entitlement(s);
-      const limit=plan==="pro"?null:Number(process.env.FREE_REPO_LIMIT||10);
-      const repos=limit!=null?all.slice(0,limit):all;
-      return json(res,200,{repos,total:all.length,limit,plan});
-    }
-    if(p==="/github/repos"&&req.method==="POST"){
-      const b=await body(req);
-      const name=String(b.name||"").trim();
-      if(!/^[A-Za-z0-9._-]{1,100}$/.test(name))return json(res,400,{error:"Repository name may only contain letters, numbers, dots, dashes and underscores."});
-      const plan=await entitlement(s);
-      if(plan!=="pro"){
-        const limit=Number(process.env.FREE_REPO_LIMIT||10);
-        const existing=await gh(s.token,"/user/repos?per_page=100");
-        if(existing.length>=limit)return json(res,403,{error:`Free plan is limited to ${limit} repositories. Upgrade to WyDev Pro for unlimited repositories.`,code:"REPO_LIMIT"});
-      }
-      const payload={name,private:!!b.private,auto_init:true};
-      if(b.description)payload.description=String(b.description).slice(0,350);
-      const created=await gh(s.token,"/user/repos",{method:"POST",body:JSON.stringify(payload)});
-      return json(res,201,created);
-    }
-    const bm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/branches$/);
-    if(bm&&req.method==="POST"){const owner=decodeURIComponent(bm[1]),repo=decodeURIComponent(bm[2]),b=await body(req);const name=String(b.name||"").trim();const from=String(b.from||"").trim();if(!/^[A-Za-z0-9._\/-]{1,120}$/.test(name)||name.startsWith("-")||name.endsWith("/"))return json(res,400,{error:"Invalid branch name"});const ref=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(from)}`);const created=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/refs`,{method:"POST",body:JSON.stringify({ref:`refs/heads/${name}`,sha:ref.object.sha})});return json(res,201,{name,sha:created.object.sha});}
-    // Pull requests are proxied the same way as everything else — the user's own
-    // GitHub token does the work, so this costs nothing extra to run. Gated to
-    // Pro as a plan perk (see checkAIQuota/entitlement for the same pattern).
-    const prm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/pulls$/);
-    if(prm){
-      const owner=decodeURIComponent(prm[1]),repo=decodeURIComponent(prm[2]);
-      const plan=await entitlement(s);
-      if(plan!=="pro")return json(res,402,{error:"Pull requests are a WyDev Pro feature. Upgrade to create and manage pull requests.",code:"PRO_REQUIRED"});
-      if(req.method==="GET")return json(res,200,await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?state=all&per_page=30`));
-      if(req.method==="POST"){
-        const b=await body(req);
-        const title=String(b.title||"").trim(),head=String(b.head||"").trim(),base=String(b.base||"").trim();
-        if(!title||!head||!base)return json(res,400,{error:"Title, head branch and base branch are required"});
-        if(head===base)return json(res,400,{error:"Head and base branches must be different"});
-        const payload={title,head,base};
-        if(b.body)payload.body=String(b.body).slice(0,5000);
-        const created=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls`,{method:"POST",body:JSON.stringify(payload)});
-        return json(res,201,created);
-      }
-    }
-    const safePath=(value)=>{const x=String(value||"").replaceAll("\\","/").replace(/^\/+/,"");const parts=x.split("/").filter(Boolean);if(!x||parts.some(v=>v===".."||v==="."))throw Object.assign(new Error("Invalid repository path."),{status:400});return parts.join("/")};
-     const hasOAuthScope=(session,scope)=>String(session?.scope||"").split(/[ ,]+/).filter(Boolean).includes(scope);
-     const isWorkflowPath=(path)=>String(path||"").replaceAll("\\","/").toLowerCase().startsWith(".github/workflows/");
-    const binaryExt=new Set(["png","jpg","jpeg","gif","webp","ico","bmp","svgz","pdf","zip","gz","tar","7z","rar","woff","woff2","ttf","otf","eot","mp3","mp4","mov","avi","webm","wav","exe","dll","so","dylib","class","jar","psd","ai","sqlite","db"]);
-    const isBinaryPath=(p)=>binaryExt.has(String(p).split(".").pop()?.toLowerCase()||"");
-    const mimeForPath=(p)=>({png:"image/png",jpg:"image/jpeg",jpeg:"image/jpeg",gif:"image/gif",webp:"image/webp",ico:"image/x-icon",bmp:"image/bmp",svg:"image/svg+xml",pdf:"application/pdf",woff:"font/woff",woff2:"font/woff2",ttf:"font/ttf",otf:"font/otf",eot:"application/vnd.ms-fontobject",mp3:"audio/mpeg",mp4:"video/mp4",mov:"video/quicktime",webm:"video/webm",wav:"audio/wav"}[String(p).split(".").pop()?.toLowerCase()||""]||"application/octet-stream");
-    const m=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/(tree|file|branches)$/);
-    if(m){
-      const owner=decodeURIComponent(m[1]),repo=decodeURIComponent(m[2]),kind=m[3];
-      if(kind==="branches")return json(res,200,await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches?per_page=100`));
-      if(kind==="file"){const path=safePath(url.searchParams.get("path")||"") ,branch=url.searchParams.get("branch")||"HEAD";const d=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(branch)}`);if(Array.isArray(d))return json(res,400,{error:"The selected path is a directory, not a file."});if(isBinaryPath(path))return json(res,200,{path,content:{__wydevBinary:true,base64:String(d.content||"").replace(/\n/g,""),mime:mimeForPath(path),size:d.size||0},sha:d.sha,size:d.size});return json(res,200,{path,content:d.encoding==="base64"?Buffer.from(d.content.replace(/\n/g,""),"base64").toString("utf8"):d.content||"",sha:d.sha,size:d.size});}
-      const branch=url.searchParams.get("branch")||"HEAD";
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    throw Object.assign(
+      new Error(d.message || d.error || 'WyDev billing service unavailable'),
+      { status: 502 }
+    );
+  }
+
+  const plan = String(d.plan || 'FREE').toUpperCase();
+  const planDefaults = { FREE: 5, PRO: 50, 'PRO+': 200, PROPLUS: 200 };
+  const parsedLimit = Number(d.buildLimit);
+  return {
+    configured: true,
+    ...d,
+    plan,
+    buildLimit: Number.isFinite(parsedLimit) && parsedLimit >= 0 ? parsedLimit : (planDefaults[plan] ?? DEFAULT_FREE_LIMIT)
+  };
+}
+
+function monthStartISO() {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+}
+
+async function countMonthlyBuilds(s) {
+  const repos = await ghList('/user/repos?sort=updated&affiliation=owner,collaborator,organization_member', s.token, {
+    maxPages: MAX_REPO_PAGES,
+    perPage: 100
+  });
+  const created = encodeURIComponent(`>=${monthStartISO()}`);
+  let count = 0;
+
+  for (let i = 0; i < repos.length; i += 5) {
+    const chunk = repos.slice(i, i + 5);
+    const results = await Promise.all(chunk.map(async repo => {
       try {
-        const ref=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(branch)}`);
-        const commit=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits/${ref.object.sha}`);
-        const tree=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees/${commit.tree.sha}?recursive=1`);
-        return json(res,200,{branch,baseSha:ref.object.sha,treeSha:commit.tree.sha,files:(tree.tree||[]).filter(x=>x.type==="blob").map(x=>({path:x.path,sha:x.sha,size:x.size}))});
-      } catch(e) {
-        // A repository with zero commits (created without "Initialize with a
-        // README") has no ref to read at all. Treat that as a valid, empty
-        // workspace instead of surfacing a raw 404 — there's simply nothing
-        // to list yet, and the first commit will create the branch.
-        if(e.status===404){
-          const remote=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
-          return json(res,200,{branch:remote.default_branch||branch,baseSha:"",treeSha:"",files:[]});
-        }
-        throw e;
+        const runs = await ghList(
+          `/repos/${encodeURIComponent(repo.owner.login)}/${encodeURIComponent(repo.name)}/actions/runs?created=${created}`,
+          s.token,
+          { keyName: 'workflow_runs', maxPages: 2, perPage: 100 }
+        );
+        return runs.filter(run => run.name === 'WyBuild').length;
+      } catch {
+        return 0;
       }
-    }
-    const bm2=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/blob$/);
-    if(bm2&&req.method==="POST"){
-      const owner=decodeURIComponent(bm2[1]),repo=decodeURIComponent(bm2[2]),b=await body(req);
-      const path=safePath(b.path);
-      const encoding=b.encoding==="base64"?"base64":"utf-8";
-      const content=String(b.content??"");
-      if(!content && encoding==="base64") return json(res,400,{error:`Binary file ${path} has no data.`});
-      // Keep individual requests safely below common serverless request limits.
-      if(Buffer.byteLength(content,"utf8")>5_500_000) return json(res,413,{error:`File ${path} is too large for this upload path. Split it into smaller files.`});
-      const blob=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/blobs`,{method:"POST",body:JSON.stringify({content,encoding})});
-      return json(res,201,{sha:blob.sha,path});
-    }
-    if(p==="/github/repos/commit"&&req.method==="POST"){const b=await body(req);return json(res,400,{error:"Use /github/repos/:owner/:repo/commit"});}
-    const cm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/commit$/);
-    if(cm&&req.method==="POST"){
-      const owner=decodeURIComponent(cm[1]),repo=decodeURIComponent(cm[2]),b=await body(req); let branch=String(b.branch||"").trim(); const message=String(b.message||"").trim(),changes=Array.isArray(b.changes)?b.changes:[];
-      if(!branch||!message||message.length>200)return json(res,400,{error:"A commit message (1-200 characters) is required"});
-      if(changes.length>300)return json(res,413,{error:"Too many changed files in one push. Split the work into smaller commits."});
-      for(const c of changes) safePath(c.path);
-      if(changes.some(c=>isWorkflowPath(c.path))&&!hasOAuthScope(s,"workflow")) return json(res,403,{error:"GitHub requires the workflow permission to add or update files under .github/workflows/. Sign out and sign in again so WyDev can request the GitHub Actions workflow permission.",code:"GITHUB_WORKFLOW_SCOPE_REQUIRED"});
-      let ref;
-      let emptyRepo=false;
-      const encodedOwner=encodeURIComponent(owner),encodedRepo=encodeURIComponent(repo);
-      const refPath=(name)=>`/repos/${encodedOwner}/${encodedRepo}/git/ref/heads/${encodeURIComponent(name)}`;
-      // GitHub's Git Database API splits this across two different paths:
-      // reading a ref uses the singular "ref" (refPath above), but updating
-      // one requires the plural "refs" — PATCHing the singular path 404s
-      // even when the branch genuinely exists. Using refPath for the PATCH
-      // below was the actual cause of "Branch could not be found while
-      // pushing": every push would create the commit successfully, then
-      // fail forever trying to move the branch pointer onto it.
-      const updateRefPath=(name)=>`/repos/${encodedOwner}/${encodedRepo}/git/refs/heads/${encodeURIComponent(name)}`;
-      // GitHub can briefly return 404 for refs immediately after repository
-      // creation/branch operations (or just from read-replica lag on a busy
-      // push), so a single failed GET/PATCH must never be reported as
-      // "branch not found" on its own. Defined up front so every ref check
-      // below — not just the final PATCH — benefits from the same retries.
-      const readBranchRefWithRetry = async (name, attempts=7) => {
-        let lastError;
-        for(let attempt=0; attempt<attempts; attempt++){
-          try { return await gh(s.token,refPath(name)); }
-          catch(e){
-            lastError=e;
-            if(e.status!==404 || attempt===attempts-1) throw e;
-            await new Promise(resolve=>setTimeout(resolve,250*(attempt+1)));
-          }
-        }
-        throw lastError;
-      };
-      const patchBranchWithRetry = async (name, expectedTip, newSha) => {
-        let lastError;
-        for(let attempt=0; attempt<5; attempt++){
-          try {
-            const live=await readBranchRefWithRetry(name,4);
-            if(String(live.object?.sha||"")!==String(expectedTip||"")){
-              return {race:true,remoteSha:live.object?.sha||""};
-            }
-            await gh(s.token,updateRefPath(name),{
-              method:"PATCH",
-              body:JSON.stringify({sha:newSha,force:false})
-            });
-            return {ok:true};
-          } catch(e){
-            lastError=e;
-            if(e.status!==404 || attempt===4) throw e;
-            await new Promise(resolve=>setTimeout(resolve,300*(attempt+1)));
-          }
-        }
-        throw lastError;
-      };
-      try {
-        ref=await gh(s.token,refPath(branch));
-      } catch(e) {
-        if(e.status===404){
-          // A cached branch can disappear after a rename/deletion. Do not try
-          // to manufacture a stale branch on every commit: use the repository
-          // default branch, which is the branch GitHub itself treats as the
-          // canonical target for normal repository writes.
-          const remote=await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}`);
-          const liveBranch=String(remote.default_branch||"").trim();
-          if(liveBranch){
-            try {
-              ref=await gh(s.token,refPath(liveBranch));
-              branch=liveBranch;
-            } catch(liveErr) {
-              if(liveErr.status!==404) throw liveErr;
-              // No default-branch ref means the repository has no commits yet.
-              emptyRepo=true;
-              branch=liveBranch;
-            }
-          } else {
-            emptyRepo=true;
-          }
-        } else throw e;
-      }
-      const expectedSha=String(b.expectedSha||"").trim();
-      const baseFiles=Array.isArray(b.baseFiles)?b.baseFiles:[];
-      let initialSha=emptyRepo?"":String(ref.object.sha||"");
-      let head=emptyRepo?null:await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/commits/${initialSha}`);
+    }));
+    count += results.reduce((a, b) => a + b, 0);
+  }
+  return count;
+}
 
-      // If the branch moved since WyDev loaded the project, safely replay the
-      // user's local changes on top of the newer remote tree. A conflict is
-      // reported only when the same path was also changed remotely. Unrelated
-      // remote commits therefore no longer cause a false "REMOTE CHANGES
-      // DETECTED" block, while we still never overwrite another user's edit.
-      if(!emptyRepo&&expectedSha&&initialSha!==expectedSha){
-        const baseByPath=new Map(baseFiles.map(x=>[String(x?.path||""),String(x?.sha||"")]));
-        const latestCommit=await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/commits/${initialSha}`);
-        const latestTree=await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/trees/${latestCommit.tree.sha}?recursive=1`);
-        const remoteByPath=new Map((latestTree.tree||[]).filter(x=>x.type==="blob").map(x=>[String(x.path),String(x.sha||"")]));
-        const conflicts=[];
-        for(const c of changes){
-          const path=String(c.path||"");
-          const before=baseByPath.get(path)||"";
-          const remote=remoteByPath.get(path)||"";
-          if(c.status==="A"){
-            if(remote) conflicts.push(path);
-          }else if(c.status==="D"){
-            if(remote&&before&&remote!==before) conflicts.push(path);
-          }else if(c.status==="M") {
-            if(remote!==before) conflicts.push(path);
-          }
-        }
-        if(conflicts.length){
-          return json(res,409,{error:"GitHub changed the same files you changed. Review the conflicts before pushing.",code:"REMOTE_CONFLICT",remoteSha:initialSha,localSha:expectedSha,conflicts:conflicts.slice(0,50)});
-        }
-        head=latestCommit;
+const WORKFLOW = `name: WyBuild
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: APK or AAB
+        required: true
+        default: apk
+      build_mode:
+        description: debug or release
+        required: true
+        default: debug
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate project
+        run: |
+          if [ ! -f ./gradlew ]; then
+            echo "::error::No gradlew found. WyBuild requires a repository with a configured Android Gradle project."
+            exit 1
+          fi
+          chmod +x ./gradlew
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - name: Build APK
+        if: inputs.build_type == 'apk'
+        run: ./gradlew assemble\${{ inputs.build_mode == 'release' && 'Release' || 'Debug' }} --no-daemon
+      - name: Build AAB
+        if: inputs.build_type == 'aab'
+        run: ./gradlew bundleRelease --no-daemon
+      - name: Upload APK
+        if: inputs.build_type == 'apk'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wybuild-apk
+          path: '**/build/outputs/apk/**/*.apk'
+          if-no-files-found: error
+      - name: Upload AAB
+        if: inputs.build_type == 'aab'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wybuild-aab
+          path: '**/build/outputs/bundle/**/*.aab'
+          if-no-files-found: error`;
+
+export default async function handler(req, res) {
+  try {
+    const u = urlOf(req);
+    const route = u.pathname.replace(/^\/api\/?/, '');
+
+    if (req.method === 'GET' && route === 'health') {
+      return json(res, 200, { ok: true, service: 'wybuild' });
+    }
+
+    if (req.method === 'GET' && route === 'auth/github') {
+      if (!configured()) {
+        return json(res, 503, { error: 'GitHub authentication is not configured. Set APP_URL, SESSION_SECRET, GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET.' });
       }
-      const entries=[];
-      const uploads=[];
-      for(const c of changes){
-        if(!c.path) continue;
-        // Nothing exists yet in an empty repository, so a "delete" entry has
-        // nothing to remove — including it would just confuse the Trees API,
-        // which has no base_tree to delete from.
-        if(c.status==="D"){if(!emptyRepo)entries.push({path:c.path,mode:"100644",type:"blob",sha:null});continue}
-        if(c.blobSha){entries.push({path:c.path,mode:"100644",type:"blob",sha:String(c.blobSha)});continue}
-        const binary=c.content&&typeof c.content==="object"&&c.content.__wydevBinary===true;
-        if(binary&&!c.content.base64)return json(res,400,{error:`Binary file ${c.path} has no data.`});
-        uploads.push({c,binary});
+      const state = crypto.randomBytes(24).toString('hex');
+      setCookie(res, STATE_COOKIE, state, 600);
+      const p = new URLSearchParams({
+        client_id: process.env.GITHUB_CLIENT_ID,
+        redirect_uri: callback(req),
+        state,
+        scope: 'read:user user:email repo workflow'
+      });
+      res.statusCode = 302;
+      res.setHeader('Location', `https://github.com/login/oauth/authorize?${p}`);
+      return res.end();
+    }
+
+    if (req.method === 'GET' && route === 'auth/github/callback') {
+      if (!configured()) return json(res, 503, { error: 'GitHub authentication is not configured.' });
+      const c = cookies(req);
+      const code = u.searchParams.get('code');
+      const state = u.searchParams.get('state');
+      if (!code || !state || state !== c[STATE_COOKIE]) {
+        return json(res, 400, { error: 'GitHub connection failed: invalid OAuth state.' });
       }
-      // Backwards-compatible fallback for older clients that still send file
-      // contents directly to the commit endpoint.
-      const blobResults=await Promise.all(uploads.map(async ({c,binary})=>{
-        const raw=binary?String(c.content.base64):String(c.content??"");
-        if(Buffer.byteLength(raw,"utf8")>5_500_000) throw Object.assign(new Error(`File ${c.path} is too large for the commit request. Re-upload with the latest WyDev version.`),{status:413});
-        const blob=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/blobs`,{method:"POST",body:JSON.stringify({content:raw,encoding:binary?"base64":"utf-8"})});
-        return {path:c.path,mode:"100644",type:"blob",sha:blob.sha};
+
+      const tr = await fetch('https://github.com/login/oauth/access_token', {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_id: process.env.GITHUB_CLIENT_ID,
+          client_secret: process.env.GITHUB_CLIENT_SECRET,
+          code,
+          redirect_uri: callback(req)
+        })
+      });
+      const token = await tr.json();
+      if (!token.access_token) throw new Error(token.error_description || 'GitHub token exchange failed');
+
+      const me = await gh('/user', token.access_token);
+      setCookie(res, COOKIE, seal({
+        token: token.access_token,
+        user: { id: me.id, login: me.login, name: me.name, avatar: me.avatar_url }
       }));
-      entries.push(...blobResults);
-      // Deleting every remaining file via base_tree + a full set of sha:null
-      // entries is a known rough edge in GitHub's Trees API — it can reject
-      // the request instead of producing the (perfectly valid) empty tree.
-      // A commit that's 100% deletions always results in an empty tree
-      // regardless of what base_tree held, so build that directly instead of
-      // diffing against it.
-      // Deleting every remaining file always results in git's canonical empty
-      // tree. That object is a fixed constant that exists in every repository
-      // — it doesn't need to be created — and GitHub's Trees API has rejected
-      // both ways of asking it to build one explicitly here (an empty `tree`
-      // array with no base_tree, and a base_tree diffed down to nothing).
-      // Skip tree creation entirely for this case and use the constant
-      // directly when creating the commit below.
-      const EMPTY_TREE_SHA="4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-      // Only use Git's canonical empty tree when the local deletion set covers
-      // every file that was actually loaded as the base. A single-file delete
-      // must be applied on top of the existing tree; otherwise one deletion
-      // would accidentally erase the whole repository.
-      const basePaths=new Set(baseFiles.map(x=>String(x?.path||"")).filter(Boolean));
-      const deletedPaths=new Set(changes.filter(c=>c.status==="D").map(c=>String(c.path||"")).filter(Boolean));
-      const allLoadedFilesDeleted=!emptyRepo&&basePaths.size>0&&[...basePaths].every(path=>deletedPaths.has(path));
-      const allDeletions=allLoadedFilesDeleted&&changes.every((c)=>c.status==="D");
-      const treeSha=allDeletions
-        ? EMPTY_TREE_SHA
-        : (await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/trees`,{method:"POST",body:JSON.stringify(emptyRepo?{tree:entries}:{base_tree:head.tree.sha,tree:entries})})).sha;
-      // Re-check the branch after blob creation and immediately before making
-      // the tree/commit. ZIP uploads can take long enough for another GitHub
-      // change to land while we are uploading blobs. Never build a commit on
-      // top of a stale parent. This now shares the same retrying reader as the
-      // final PATCH below, so a single transient 404 here can no longer abort
-      // an otherwise-healthy push.
-      if(!emptyRepo){
-        try {
-          const latest=await readBranchRefWithRetry(branch,5);
-          if(String(latest.object?.sha||"")!==initialSha){
-            return json(res,409,{error:"GitHub changed this branch while WyDev was preparing your push. Your local changes were kept. Review or reload the latest repository state before pushing again.",code:"PUSH_RACE",remoteSha:latest.object?.sha||"",localSha:initialSha});
-          }
-        } catch(e){
-          if(e.status===404)return json(res,409,{error:`Branch "${branch}" no longer exists on GitHub. Your local changes were kept. Refresh the repository and select an existing branch.`,code:"BRANCH_NOT_FOUND",branch});
-          throw e;
-        }
-      }
-      const commitBody=emptyRepo?{message,tree:treeSha}:{message,tree:treeSha,parents:[initialSha]};
-      const commit=await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/commits`,{method:"POST",body:JSON.stringify(commitBody)});
-      // Publish the commit atomically against the branch tip we validated.
+      clearCookie(res, STATE_COOKIE);
+      res.statusCode = 302;
+      res.setHeader('Location', `${appBase(req)}/projects`);
+      return res.end();
+    }
+
+    if (req.method === 'POST' && route === 'auth/logout') {
+      clearCookie(res, COOKIE);
+      return json(res, 200, { ok: true });
+    }
+
+    if (req.method === 'GET' && route === 'auth/me') {
+      const s = session(req);
+      if (!s) return json(res, 200, { authenticated: false });
       try {
-        if(emptyRepo){
-          // A commit object can be created before the first branch exists.
-          // Create the ref only after the commit has been created. If another
-          // client wins the first-push race, never overwrite its branch.
-          try {
-            await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/refs`,{
-              method:"POST",
-              body:JSON.stringify({ref:`refs/heads/${branch}`,sha:commit.sha})
-            });
-          } catch(e){
-            if(e.status===422){
-              const live=await readBranchRefWithRetry(branch,5);
-              return json(res,409,{
-                error:"Another commit was pushed to this repository while WyDev was creating the first branch. Your local changes were kept and no force-push was performed.",
-                code:"PUSH_RACE",
-                remoteSha:live.object?.sha||"",
-                localSha:""
-              });
-            }
-            throw e;
-          }
-        } else {
-          const result=await patchBranchWithRetry(branch,initialSha,commit.sha);
-          if(result?.race){
-            return json(res,409,{
-              error:"GitHub changed this branch while WyDev was committing. Your local changes were kept and no force-push was performed.",
-              code:"PUSH_RACE",
-              remoteSha:result.remoteSha,
-              localSha:initialSha
-            });
-          }
-        }
-      } catch(e) {
-        if(e.status===404){
-          // Re-resolve the repository metadata before declaring the branch
-          // genuinely missing. This also handles a renamed default branch.
-          try {
-            const remote=await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}`);
-            const liveBranch=String(remote.default_branch||"").trim();
-            if(liveBranch && liveBranch!==branch){
-              try {
-                const live=await readBranchRefWithRetry(liveBranch,5);
-                return json(res,409,{
-                  error:`Branch "${branch}" no longer exists on GitHub. The repository now uses "${liveBranch}" as its default branch. Reload the repository to continue on the current branch.`,
-                  code:"BRANCH_NOT_FOUND",
-                  branch,
-                  currentBranch:liveBranch,
-                  remoteSha:live.object?.sha||""
-                });
-              } catch(liveErr) {
-                if(liveErr.status!==404) throw liveErr;
-              }
-            }
-            // The repository itself still reports this exact branch as its
-            // default. GitHub would never report a nonexistent branch as the
-            // default branch, so the preceding run of 404s was read-replica
-            // lag, not a real deletion. Give the push one final, generously
-            // retried attempt instead of discarding a healthy commit.
-            if(liveBranch && liveBranch===branch){
-              try {
-                const retryResult=await patchBranchWithRetry(branch,initialSha,commit.sha);
-                if(retryResult?.race){
-                  return json(res,409,{
-                    error:"GitHub changed this branch while WyDev was committing. Your local changes were kept and no force-push was performed.",
-                    code:"PUSH_RACE",
-                    remoteSha:retryResult.remoteSha,
-                    localSha:initialSha
-                  });
-                }
-                return json(res,200,{ok:true,commitSha:commit.sha,html_url:commit.html_url,branch});
-              } catch(retryErr) {
-                if(retryErr.status!==404) throw retryErr;
-              }
-            }
-          } catch(resolveErr) {
-            console.warn("Branch re-resolution failed:",resolveErr.message);
-          }
-          return json(res,409,{
-            error:`Branch "${branch}" could not be found while pushing. GitHub did not accept the ref update, so your local changes were kept. Reload the repository and try again.`,
-            code:"BRANCH_NOT_FOUND",
-            branch,
-            details:e.data||null
-          });
-        }
-        if(e.status===422 || e.status===409){
-          return json(res,409,{
-            error:"GitHub changed or rejected the branch during the push. Your local changes were kept and WyDev did not force-push.",
-            code:"PUSH_RACE",
-            details:e.data||null
-          });
-        }
+        const me = await gh('/user', s.token);
+        return json(res, 200, { authenticated: true, user: { id: me.id, login: me.login, name: me.name, avatar: me.avatar_url } });
+      } catch {
+        clearCookie(res, COOKIE);
+        return json(res, 401, { authenticated: false, error: 'GitHub session expired or revoked.' });
+      }
+    }
+
+    const s = requireSession(req, res);
+    if (!s) return;
+
+    if (req.method === 'GET' && route === 'billing/status') {
+      try {
+        const d = await wydevEntitlement(s);
+        return json(res, 200, {
+          ...d,
+          plan: String(d.plan || 'FREE').toUpperCase(),
+          buildsUsed: Number.isFinite(Number(d.buildsUsed)) ? Number(d.buildsUsed) : 0,
+          source: 'wydev',
+          billingUrl: d.billingUrl || process.env.WYDEV_BILLING_URL || undefined
+        });
+      } catch (e) {
+        return json(res, e.status || 502, { error: e.message || 'WyDev billing service unavailable' });
+      }
+    }
+
+    if (req.method === 'GET' && route === 'github/repos') {
+      const repos = await ghList('/user/repos?sort=updated&affiliation=owner,collaborator,organization_member', s.token, {
+        maxPages: MAX_REPO_PAGES,
+        perPage: 100
+      });
+      return json(res, 200, repos);
+    }
+
+    if (req.method === 'GET' && route === 'github/branches') {
+      const o = safePart(u.searchParams.get('owner'), 'owner');
+      const r = safePart(u.searchParams.get('repo'), 'repo');
+      const branches = await ghList(`/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/branches`, s.token, {
+        maxPages: MAX_BRANCH_PAGES,
+        perPage: 100
+      });
+      return json(res, 200, branches);
+    }
+
+    if (req.method === 'GET' && route === 'github/workflow') {
+      const o = safePart(u.searchParams.get('owner'), 'owner');
+      const r = safePart(u.searchParams.get('repo'), 'repo');
+      const ref = safePart(u.searchParams.get('ref'), 'ref');
+
+      let exists = false;
+      try {
+        await gh(`/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/contents/.github/workflows/wybuild.yml?ref=${encodeURIComponent(ref)}`, s.token);
+        exists = true;
+      } catch (e) {
+        if (e.status !== 404) throw e;
+      }
+
+      // File-existence on this ref isn't enough: GitHub only lets you dispatch a
+      // workflow_dispatch run once the workflow is registered, which only happens once
+      // the file is on the default branch. Check the real Actions registry too.
+      let dispatchable = false;
+      try {
+        const workflows = await ghList(`/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/actions/workflows`, s.token, {
+          keyName: 'workflows',
+          maxPages: 3,
+          perPage: 100
+        });
+        dispatchable = workflows.some(w => w.path === '.github/workflows/wybuild.yml' && w.state === 'active');
+      } catch { /* leave dispatchable false; UI will prompt to install/merge */ }
+
+      return json(res, 200, { exists, dispatchable });
+    }
+
+
+    if (req.method === 'POST' && route === 'github/install-workflow') {
+      const b = await body(req);
+      const owner = safePart(b.owner, 'owner');
+      const repo = safePart(b.repo, 'repo');
+      const ref = safePart(b.ref, 'ref');
+      const branch = `wybuild/setup-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+      const repoInfo = await gh(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, s.token);
+      const defaultBranch = repoInfo.default_branch;
+      const baseRef = await gh(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(ref)}`, s.token);
+
+      await gh(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/refs`, s.token, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: baseRef.object.sha })
+      });
+
+      try {
+        await gh(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/.github/workflows/wybuild.yml`, s.token, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: 'chore: add WyBuild workflow',
+            content: Buffer.from(WORKFLOW).toString('base64'),
+            branch
+          })
+        });
+      } catch (e) {
+        // Best-effort cleanup if workflow creation fails.
+        try { await gh(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/refs/heads/${encodeURIComponent(branch)}`, s.token, { method: 'DELETE' }); } catch {}
         throw e;
       }
-      return json(res,200,{ok:true,commitSha:commit.sha,html_url:commit.html_url,branch});
+
+      // GitHub only ever registers a workflow_dispatch-triggerable workflow once the
+      // file exists on the repo's default branch - a copy on a side branch is invisible
+      // to the dispatch endpoint no matter what ref you pass it. Open a PR into the
+      // default branch and try to merge it automatically so builds work immediately;
+      // if that's blocked (branch protection, permissions, existing PR), fall back to
+      // surfacing the PR link so the user can merge it themselves.
+      let prUrl, merged = false;
+      if (branch !== defaultBranch) {
+        try {
+          const pr = await gh(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls`, s.token, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              title: 'Add WyBuild workflow',
+              head: branch,
+              base: defaultBranch,
+              body: 'Adds the WyBuild GitHub Actions workflow.\n\nGitHub only allows manually-triggered (`workflow_dispatch`) workflows to run once they exist on the default branch, so this needs to be merged before WyBuild can start builds.'
+            })
+          });
+          prUrl = pr.html_url;
+          try {
+            await gh(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pr.number}/merge`, s.token, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ merge_method: 'squash' })
+            });
+            merged = true;
+          } catch { /* protected branch, no permission, etc - user merges manually via prUrl */ }
+        } catch { /* PR creation failed - still return the branch so the user can act on it */ }
+      }
+
+      return json(res, 201, {
+        ok: true,
+        branch,
+        defaultBranch,
+        prUrl,
+        merged,
+        message: merged
+          ? 'WyBuild workflow installed and merged into the default branch. You can build now.'
+          : prUrl
+            ? `WyBuild workflow committed and a pull request opened into ${defaultBranch}. Merge it before building - GitHub only allows manual builds for workflows on the default branch.`
+            : `WyBuild workflow committed to ${branch}, but WyBuild could not open a pull request automatically. Open one into ${defaultBranch} and merge it before building.`
+      });
     }
-    if(p==="/ai/diagnose"&&req.method==="POST"){const b=await body(req);return json(res,200,await aiDiagnose(s,b));}
-    if(p==="/billing/status"&&req.method==="GET"){
-      let recovered=null;
-      if(db){try{recovered=await recoverEntitlement(s)}catch(e){console.warn("Billing recovery failed:",e.message)}}
-      const e=await getEntitlement(s.id);
-      return json(res,200,{plan:await entitlement(s),expiresAt:e?.expiresAt||null,recovered:!!recovered?.recovered});
+
+    if (req.method === 'GET' && route === 'github/runs') {
+      const o = safePart(u.searchParams.get('owner'), 'owner');
+      const r = safePart(u.searchParams.get('repo'), 'repo');
+      const created = u.searchParams.get('created');
+      const query = created ? `?created=${encodeURIComponent(created)}` : '';
+      const runs = await ghList(`/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/actions/runs${query}`, s.token, {
+        keyName: 'workflow_runs',
+        maxPages: MAX_RUN_PAGES,
+        perPage: 100
+      });
+      return json(res, 200, { total_count: runs.length, workflow_runs: runs });
     }
-    if(p==="/billing/config"&&req.method==="GET")return json(res,200,{usd:Number(process.env.FLW_PRO_USD||9.99),ngn:Number(process.env.FLW_PRO_NGN||9000),environment:FLW_LIVE?"live":"sandbox",encryptionKey:process.env.FLW_ENCRYPTION_KEY||""});
-    if(p==="/billing/verify"&&req.method==="POST"){const b=await body(req);if(!b.reference)return json(res,400,{error:"Transaction reference required"});return json(res,200,await verifyCharge(s,b.id,b.reference));}
-    if(p==="/billing/recover"&&req.method==="POST"){const b=await body(req);return json(res,200,await recoverEntitlement(s,String(b.reference||"")));}
-    if(p==="/billing/resolve"&&req.method==="POST"){
-      const b=await body(req);const reference=String(b.reference||"").trim();if(!reference)return json(res,400,{error:"Transaction reference required"});
-      const tx=await getTransaction(reference);if(!tx||String(tx.userId)!==String(s.id))return json(res,404,{error:"Payment transaction not found"});
-      return json(res,200,await verifyCharge(s,tx.chargeId,reference));
+
+    if (req.method === 'GET' && route === 'github/run') {
+      const o = safePart(u.searchParams.get('owner'), 'owner');
+      const r = safePart(u.searchParams.get('repo'), 'repo');
+      const id = safePart(u.searchParams.get('id'), 'id');
+      return json(res, 200, await gh(`/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/actions/runs/${encodeURIComponent(id)}`, s.token));
     }
-    if(p==="/billing/checkout"&&req.method==="POST"){const b=await body(req);b.req=req;const d=await createBillingCheckout(s,b);return json(res,200,d);}
-    return json(res,404,{error:"Route not found"});
-  }catch(e){return json(res,e.status||500,{error:e.message||"Server error",code:e.code,limit:e.limit,used:e.used,remaining:e.remaining,plan:e.plan});}
+
+    if (req.method === 'GET' && route === 'github/artifacts') {
+      const o = safePart(u.searchParams.get('owner'), 'owner');
+      const r = safePart(u.searchParams.get('repo'), 'repo');
+      const id = safePart(u.searchParams.get('id'), 'id');
+      return json(res, 200, await gh(`/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/actions/runs/${encodeURIComponent(id)}/artifacts?per_page=100`, s.token));
+    }
+
+    if (req.method === 'GET' && route === 'github/artifact') {
+      const o = safePart(u.searchParams.get('owner'), 'owner');
+      const r = safePart(u.searchParams.get('repo'), 'repo');
+      const id = safePart(u.searchParams.get('id'), 'id');
+      const rr = await fetch(`${GH}/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/actions/artifacts/${encodeURIComponent(id)}/zip`, {
+        headers: { Authorization: `Bearer ${s.token}`, 'X-GitHub-Api-Version': '2022-11-28' }
+      });
+      if (!rr.ok) return json(res, rr.status, { error: 'Artifact download unavailable' });
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="wybuild-artifact-${id}.zip"`);
+      res.end(Buffer.from(await rr.arrayBuffer()));
+      return;
+    }
+
+    if (req.method === 'GET' && route === 'github/logs') {
+      const o = safePart(u.searchParams.get('owner'), 'owner');
+      const r = safePart(u.searchParams.get('repo'), 'repo');
+      const id = safePart(u.searchParams.get('id'), 'id');
+      const rr = await fetch(`${GH}/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/actions/runs/${encodeURIComponent(id)}/logs`, {
+        headers: { Authorization: `Bearer ${s.token}`, 'X-GitHub-Api-Version': '2022-11-28' }
+      });
+      if (!rr.ok) return json(res, rr.status, { error: 'GitHub logs unavailable' });
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="wybuild-logs-${id}.zip"`);
+      res.end(Buffer.from(await rr.arrayBuffer()));
+      return;
+    }
+
+    if (req.method === 'POST' && route === 'github/dispatch') {
+      const b = await body(req);
+      const owner = safePart(b.owner, 'owner');
+      const repo = safePart(b.repo, 'repo');
+      const ref = safePart(b.ref, 'ref');
+      const inputs = b.inputs && typeof b.inputs === 'object' ? b.inputs : {};
+      const buildType = inputs.build_type === 'aab' ? 'aab' : inputs.build_type === 'apk' ? 'apk' : null;
+      const buildMode = inputs.build_mode === 'release' ? 'release' : inputs.build_mode === 'debug' ? 'debug' : null;
+      if (!buildType || !buildMode) return json(res, 400, { error: 'build_type and build_mode must be apk/aab and debug/release' });
+
+      const entitlement = await wydevEntitlement(s);
+      const limit = Number(entitlement.buildLimit);
+      const monthlyUsed = await countMonthlyBuilds(s);
+      if (!Number.isFinite(limit) || limit < 0) return json(res, 502, { error: 'Billing returned an invalid build limit.' });
+      if (monthlyUsed >= limit) {
+        return json(res, 402, {
+          error: `Monthly build limit reached (${monthlyUsed}/${limit}). Upgrade your WyDev plan to continue building.`,
+          code: 'BUILD_LIMIT_REACHED',
+          plan: String(entitlement.plan || 'FREE').toUpperCase(),
+          buildsUsed: monthlyUsed,
+          buildLimit: limit,
+          billingUrl: entitlement.billingUrl || process.env.WYDEV_BILLING_URL || undefined
+        });
+      }
+
+      try {
+        await gh(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/workflows/wybuild.yml/dispatches`, s.token, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ref, inputs: { build_type: buildType, build_mode: buildMode } })
+        });
+      } catch (e) {
+        if (e.status === 404) return json(res, 409, { error: 'WyBuild workflow is not installed on this branch. Install it first.', code: 'WORKFLOW_MISSING' });
+        if (e.status === 403) return json(res, 403, { error: 'GitHub denied workflow execution. Re-authorize WyBuild with the required repository permissions.', code: 'GITHUB_PERMISSION_DENIED' });
+        throw e;
+      }
+
+      return json(res, 202, {
+        ok: true,
+        status: 'queued',
+        buildsUsed: monthlyUsed + 1,
+        buildLimit: limit
+      });
+    }
+
+    if (req.method === 'GET' && route === 'github/releases') {
+      const o = safePart(u.searchParams.get('owner'), 'owner');
+      const r = safePart(u.searchParams.get('repo'), 'repo');
+      const releases = await ghList(`/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/releases`, s.token, {
+        maxPages: MAX_RELEASE_PAGES,
+        perPage: 100
+      });
+      return json(res, 200, releases);
+    }
+
+    if (req.method === 'POST' && route === 'github/releases') {
+      const b = await body(req);
+      const owner = safePart(b.owner, 'owner');
+      const repo = safePart(b.repo, 'repo');
+      const tag_name = safePart(b.tag_name, 'tag_name').trim();
+      const name = typeof b.name === 'string' ? b.name.trim() : '';
+      const notes = typeof b.body === 'string' ? b.body.trim() : '';
+      const target_commitish = typeof b.target_commitish === 'string' && b.target_commitish.trim() ? b.target_commitish.trim() : undefined;
+      const prerelease = !!b.prerelease;
+      const draft = !!b.draft;
+      if (!/^v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(tag_name)) {
+        return json(res, 400, { error: 'Tag name must look like 1.0.0 or v1.0.0.' });
+      }
+
+      const releaseBody = {
+        tag_name,
+        name: name || tag_name,
+        body: notes,
+        target_commitish,
+        prerelease,
+        draft,
+        generate_release_notes: !notes
+      };
+      if (!target_commitish) delete releaseBody.target_commitish;
+      if (notes) delete releaseBody.generate_release_notes;
+
+      return json(res, 201, await gh(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/releases`, s.token, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(releaseBody)
+      }));
+    }
+
+    return json(res, 404, { error: 'Route not found' });
+  } catch (e) {
+    if (e?.rateLimited) return json(res, 429, { error: 'GitHub API rate limit reached. Please wait and try again.' });
+    return json(res, e.status || 500, { error: e.message || 'Something went wrong' });
+  }
 }
-export default handler;
