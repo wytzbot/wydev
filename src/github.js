@@ -1,35 +1,23 @@
-export async function api(path, options = {}) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), options.timeout || 20000);
-  try {
-    const r = await fetch(path, { credentials: 'include', ...options, signal: controller.signal });
-    const ct = r.headers.get('content-type') || '';
-    let data = {};
-    try { data = ct.includes('application/json') ? await r.json() : await r.blob(); } catch {}
-    if (!r.ok) {
-      if (r.status === 401 && path.split('?')[0] === '/api/auth/me') return { authenticated: false };
-      const error = new Error(data?.error || `Request failed (${r.status})`);
-      error.code = data?.code;
-      error.status = r.status;
-      error.data = data;
-      throw error;
-    }
-    return data;
-  } catch (e) {
-    if (e.name === 'AbortError') throw new Error('Request timed out. Check your connection and retry.');
-    throw e;
-  } finally { clearTimeout(timeout); }
+import {API_BASE_URL} from "./config";
+const api=async(path,opts={})=>{let r;try{r=await fetch(`${API_BASE_URL}${path}`,{credentials:"include",headers:{"Content-Type":"application/json",...(opts.headers||{})},...opts})}catch(e){throw new Error(`Network error: ${e?.message||"Unable to reach WyDev server"}`)}let e=null;try{e=await r.json()}catch{}if(!r.ok){const err=new Error(e?.error||`Request failed (${r.status})`);err.status=r.status;err.code=e?.code;err.details=e;throw err}return e};
+export const github={
+ session:()=>api("/auth/me"),login:()=>location.href=`${API_BASE_URL}/auth/github`,logout:()=>api("/auth/logout",{method:"POST"}),
+ repos:()=>api("/github/repos"),
+ createRepo:(p)=>api("/github/repos",{method:"POST",body:JSON.stringify(p)}),
+ tree:(o,r,b)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/tree?branch=${encodeURIComponent(b)}`),
+ file:(o,r,p,b)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/file?path=${encodeURIComponent(p)}&branch=${encodeURIComponent(b)}`),
+ branches:(o,r)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/branches`),
+ createBranch:(o,r,p)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/branches`,{method:"POST",body:JSON.stringify(p)}),
+ pulls:(o,r)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/pulls`),
+ createPull:(o,r,p)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/pulls`,{method:"POST",body:JSON.stringify(p)}),
+ blob:(o,r,p)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/blob`,{method:"POST",body:JSON.stringify(p)}),
+ commit:(o,r,p)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/commit`,{method:"POST",body:JSON.stringify(p)})
+};
+export function githubErrorMessage(status,body=""){
+  if(status===401) return "GitHub authentication expired. Sign in again.";
+  if(status===403) return "GitHub denied the request. Check repository permissions or rate limits.";
+  if(status===404) return "GitHub could not find that repository or file, or you do not have access.";
+  if(status===409) return "GitHub reported a conflict. Pull latest changes and review them.";
+  if(status===422) return "GitHub rejected the request. Check the branch, path, or commit data.";
+  return body ? `GitHub request failed (${status}): ${body}` : `GitHub request failed (${status}).`;
 }
-
-export const githubLogin = () => window.location.assign('/api/auth/github');
-export const githubLogout = () => api('/api/auth/logout', { method: 'POST' });
-export async function getSession() { const d = await api('/api/auth/me'); return d?.authenticated === true ? d : null; }
-export const listRepositories = () => api('/api/github/repos');
-export const listBranches = (owner, repo) => api(`/api/github/branches?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`);
-export const checkWorkflow = (owner, repo, ref) => api(`/api/github/workflow?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}&ref=${encodeURIComponent(ref)}`);
-export const installWorkflow = (owner, repo, ref) => api('/api/github/install-workflow', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({owner,repo,ref}) });
-export const dispatchBuild = payload => api('/api/github/dispatch', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
-export const listRuns = (owner, repo, created) => api(`/api/github/runs?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}${created ? `&created=${encodeURIComponent(created)}` : ''}`);
-export const getRun = (owner, repo, id) => api(`/api/github/run?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}&id=${encodeURIComponent(id)}`);
-export const listArtifacts = (owner, repo, id) => api(`/api/github/artifacts?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}&id=${encodeURIComponent(id)}`);
-export const getLogsUrl = (owner, repo, id) => `/api/github/logs?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}&id=${encodeURIComponent(id)}`;
