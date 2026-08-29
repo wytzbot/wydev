@@ -392,6 +392,44 @@ async function handler(req,res){
       let emptyRepo=false;
       const encodedOwner=encodeURIComponent(owner),encodedRepo=encodeURIComponent(repo);
       const refPath=(name)=>`/repos/${encodedOwner}/${encodedRepo}/git/ref/heads/${encodeURIComponent(name)}`;
+      // GitHub can briefly return 404 for refs immediately after repository
+      // creation/branch operations (or just from read-replica lag on a busy
+      // push), so a single failed GET/PATCH must never be reported as
+      // "branch not found" on its own. Defined up front so every ref check
+      // below — not just the final PATCH — benefits from the same retries.
+      const readBranchRefWithRetry = async (name, attempts=7) => {
+        let lastError;
+        for(let attempt=0; attempt<attempts; attempt++){
+          try { return await gh(s.token,refPath(name)); }
+          catch(e){
+            lastError=e;
+            if(e.status!==404 || attempt===attempts-1) throw e;
+            await new Promise(resolve=>setTimeout(resolve,250*(attempt+1)));
+          }
+        }
+        throw lastError;
+      };
+      const patchBranchWithRetry = async (name, expectedTip, newSha) => {
+        let lastError;
+        for(let attempt=0; attempt<5; attempt++){
+          try {
+            const live=await readBranchRefWithRetry(name,4);
+            if(String(live.object?.sha||"")!==String(expectedTip||"")){
+              return {race:true,remoteSha:live.object?.sha||""};
+            }
+            await gh(s.token,refPath(name),{
+              method:"PATCH",
+              body:JSON.stringify({sha:newSha,force:false})
+            });
+            return {ok:true};
+          } catch(e){
+            lastError=e;
+            if(e.status!==404 || attempt===4) throw e;
+            await new Promise(resolve=>setTimeout(resolve,300*(attempt+1)));
+          }
+        }
+        throw lastError;
+      };
       try {
         ref=await gh(s.token,refPath(branch));
       } catch(e) {
@@ -500,10 +538,12 @@ async function handler(req,res){
       // Re-check the branch after blob creation and immediately before making
       // the tree/commit. ZIP uploads can take long enough for another GitHub
       // change to land while we are uploading blobs. Never build a commit on
-      // top of a stale parent.
+      // top of a stale parent. This now shares the same retrying reader as the
+      // final PATCH below, so a single transient 404 here can no longer abort
+      // an otherwise-healthy push.
       if(!emptyRepo){
         try {
-          const latest=await gh(s.token,refPath(branch));
+          const latest=await readBranchRefWithRetry(branch,5);
           if(String(latest.object?.sha||"")!==initialSha){
             return json(res,409,{error:"GitHub changed this branch while WyDev was preparing your push. Your local changes were kept. Review or reload the latest repository state before pushing again.",code:"PUSH_RACE",remoteSha:latest.object?.sha||"",localSha:initialSha});
           }
@@ -515,44 +555,6 @@ async function handler(req,res){
       const commitBody=emptyRepo?{message,tree:treeSha}:{message,tree:treeSha,parents:[initialSha]};
       const commit=await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/commits`,{method:"POST",body:JSON.stringify(commitBody)});
       // Publish the commit atomically against the branch tip we validated.
-      // GitHub can briefly return 404 for refs immediately after repository
-      // creation/branch operations, so a single failed GET/PATCH must never
-      // be reported as "branch not found".
-      const readBranchRefWithRetry = async (name, attempts=7) => {
-        let lastError;
-        for(let attempt=0; attempt<attempts; attempt++){
-          try { return await gh(s.token,refPath(name)); }
-          catch(e){
-            lastError=e;
-            if(e.status!==404 || attempt===attempts-1) throw e;
-            await new Promise(resolve=>setTimeout(resolve,250*(attempt+1)));
-          }
-        }
-        throw lastError;
-      };
-
-      const patchBranchWithRetry = async (name, expectedTip, newSha) => {
-        let lastError;
-        for(let attempt=0; attempt<5; attempt++){
-          try {
-            const live=await readBranchRefWithRetry(name,4);
-            if(String(live.object?.sha||"")!==String(expectedTip||"")){
-              return {race:true,remoteSha:live.object?.sha||""};
-            }
-            await gh(s.token,refPath(name),{
-              method:"PATCH",
-              body:JSON.stringify({sha:newSha,force:false})
-            });
-            return {ok:true};
-          } catch(e){
-            lastError=e;
-            if(e.status!==404 || attempt===4) throw e;
-            await new Promise(resolve=>setTimeout(resolve,300*(attempt+1)));
-          }
-        }
-        throw lastError;
-      };
-
       try {
         if(emptyRepo){
           // A commit object can be created before the first branch exists.
@@ -605,6 +607,27 @@ async function handler(req,res){
                 });
               } catch(liveErr) {
                 if(liveErr.status!==404) throw liveErr;
+              }
+            }
+            // The repository itself still reports this exact branch as its
+            // default. GitHub would never report a nonexistent branch as the
+            // default branch, so the preceding run of 404s was read-replica
+            // lag, not a real deletion. Give the push one final, generously
+            // retried attempt instead of discarding a healthy commit.
+            if(liveBranch && liveBranch===branch){
+              try {
+                const retryResult=await patchBranchWithRetry(branch,initialSha,commit.sha);
+                if(retryResult?.race){
+                  return json(res,409,{
+                    error:"GitHub changed this branch while WyDev was committing. Your local changes were kept and no force-push was performed.",
+                    code:"PUSH_RACE",
+                    remoteSha:retryResult.remoteSha,
+                    localSha:initialSha
+                  });
+                }
+                return json(res,200,{ok:true,commitSha:commit.sha,html_url:commit.html_url,branch});
+              } catch(retryErr) {
+                if(retryErr.status!==404) throw retryErr;
               }
             }
           } catch(resolveErr) {
