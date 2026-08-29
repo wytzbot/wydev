@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Copy, FilePlus, FolderPlus, ExternalLink, Upload, Trash2, Move, GitBranch, RefreshCw, ChevronDown, Loader2, Undo2 } from "lucide-react";
+import { Copy, FilePlus, FolderPlus, ExternalLink, Upload, Trash2, Move, GitBranch, RefreshCw, ChevronDown, Loader2, Undo2, History } from "lucide-react";
 import CodeEditor from "../components/CodeEditor";
 import FileExplorer from "../components/FileExplorer";
 import CommitPanel from "../components/CommitPanel";
@@ -36,7 +36,11 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
     [prs, setPrs] = useState([]),
     [prOpen, setPrOpen] = useState(false),
     [prBusy, setPrBusy] = useState(false),
-    [remoteConflict, setRemoteConflict] = useState(null);
+    [remoteConflict, setRemoteConflict] = useState(null),
+    [historyOpen, setHistoryOpen] = useState(false),
+    [commitHistory, setCommitHistory] = useState([]),
+    [historyBusy, setHistoryBusy] = useState(false),
+    [revertBusy, setRevertBusy] = useState(false);
   useEffect(() => {
     billing.status().then((s) => setPlan(s.plan)).catch(() => {});
   }, []);
@@ -606,6 +610,56 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
     }
   };
 
+  const loadCommitHistory = async () => {
+    setHistoryOpen((o) => !o);
+    if (historyOpen) return;
+    setHistoryBusy(true);
+    try {
+      const r = await github.commits(repo.owner.login, repo.name, branch, 10);
+      setCommitHistory(r.commits || []);
+    } catch (e) {
+      toastError(e.message);
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
+
+  // Restoring an earlier commit deletes the current tip's state (including
+  // any local, uncommitted edits) and brings back exactly what the picked
+  // commit looked like, published as one new commit on top. Nothing is
+  // force-pushed and no history is rewritten, but the outcome is still
+  // destructive to whatever isn't in that commit, so this always confirms
+  // with a clear explanation before it touches anything.
+  const revertToCommit = async (c) => {
+    const localNote = changes.length
+      ? ` This will also discard your ${changes.length} current uncommitted local change${changes.length === 1 ? "" : "s"}.`
+      : "";
+    const ok = await confirmDialog({
+      title: "Revert to this commit",
+      message: `The current state of "${branch}" will be deleted and replaced with the repository exactly as it was at commit ${c.sha.slice(0, 7)} ("${(c.message || "").split("\n")[0]}"). A new commit recording this revert will be pushed to GitHub.${localNote} This cannot be undone from WyDev. Continue?`,
+      confirmLabel: "Continue",
+      danger: true,
+    });
+    if (!ok) return;
+    setRevertBusy(true);
+    setBusy(true);
+    try {
+      const r = await github.revert(repo.owner.login, repo.name, { branch, sha: c.sha });
+      toastSuccess(`Reverted to ${c.sha.slice(0, 7)} · new commit ${r.commitSha.slice(0, 7)}`);
+      setHistoryOpen(false);
+      setChangesOpen(false);
+      localStorage.removeItem("wydev:project:" + repo.id);
+      await load({ silent: true, retries: 2 });
+    } catch (e) {
+      if (e.code === "BRANCH_NOT_FOUND") toastError(e.message || `Branch "${branch}" could not be found.`);
+      else if (e.status === 409 || e.code === "PUSH_RACE") toastError(e.message || "GitHub changed the branch while reverting. Reload and try again.");
+      else toastError(e.message || "Revert failed.");
+    } finally {
+      setRevertBusy(false);
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="project">
       <header className="projectHeader">
@@ -689,7 +743,35 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
           <GitBranch size={16} />
           Pull Requests{plan !== "pro" ? " (Pro)" : ""}
         </button>
+        <button onClick={loadCommitHistory} disabled={revertBusy}>
+          <History size={16} />
+          Revert
+        </button>
       </div>
+      {historyOpen && (
+        <div className="changesDropdown">
+          <div className="changesList">
+            {historyBusy ? (
+              <p className="muted">Loading commit history…</p>
+            ) : commitHistory.length ? (
+              commitHistory.map((c) => (
+                <div className="change" key={c.sha}>
+                  <div>
+                    <b>{c.sha.slice(0, 7)}</b>
+                    <span> {(c.message || "").split("\n")[0]}</span>
+                    <div className="muted">{c.author}{c.date ? ` · ${new Date(c.date).toLocaleString()}` : ""}</div>
+                  </div>
+                  <button disabled={revertBusy} onClick={() => revertToCommit(c)}>
+                    {revertBusy ? "Reverting…" : "Revert to this"}
+                  </button>
+                </div>
+              ))
+            ) : (
+              <p className="muted">No commit history found for this branch.</p>
+            )}
+          </div>
+        </div>
+      )}
       {prOpen && (
         <div className="changesDropdown">
           <div className="changesList">

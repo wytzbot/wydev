@@ -380,6 +380,72 @@ async function handler(req,res){
       const blob=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/blobs`,{method:"POST",body:JSON.stringify({content,encoding})});
       return json(res,201,{sha:blob.sha,path});
     }
+    // Last N commits on a branch, used to power the "Revert" picker. GitHub
+    // 404s /commits entirely on a repository with zero commits yet — treat
+    // that the same way the tree endpoint does above: an empty, valid list.
+    const clm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/commits$/);
+    if(clm&&req.method==="GET"){
+      const owner=decodeURIComponent(clm[1]),repo=decodeURIComponent(clm[2]);
+      const branch=url.searchParams.get("branch")||"";
+      const perPage=Math.min(Math.max(Number(url.searchParams.get("limit"))||10,1),30);
+      const qs=new URLSearchParams({per_page:String(perPage)});
+      if(branch) qs.set("sha",branch);
+      try{
+        const commits=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits?${qs.toString()}`);
+        return json(res,200,{commits:(commits||[]).map(c=>({
+          sha:c.sha,
+          message:c.commit?.message||"",
+          author:c.commit?.author?.name||c.author?.login||"Unknown",
+          date:c.commit?.author?.date||null,
+          html_url:c.html_url
+        }))});
+      }catch(e){
+        if(e.status===404||e.status===409) return json(res,200,{commits:[]});
+        throw e;
+      }
+    }
+    // Restores a branch to exactly the tree it had at an earlier commit,
+    // without rewriting history: it builds a brand-new commit whose tree
+    // matches the target commit and whose parent is the branch's current
+    // tip, then fast-forwards the branch onto it (same non-force PATCH used
+    // by the normal commit flow, so a concurrent push is never clobbered).
+    const rvm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/revert$/);
+    if(rvm&&req.method==="POST"){
+      const owner=decodeURIComponent(rvm[1]),repo=decodeURIComponent(rvm[2]),b=await body(req);
+      const branch=String(b.branch||"").trim(), targetSha=String(b.sha||"").trim();
+      if(!branch||!targetSha) return json(res,400,{error:"A branch and a commit to revert to are required"});
+      const encodedOwner=encodeURIComponent(owner),encodedRepo=encodeURIComponent(repo);
+      const refPath=(name)=>`/repos/${encodedOwner}/${encodedRepo}/git/ref/heads/${encodeURIComponent(name)}`;
+      const updateRefPath=(name)=>`/repos/${encodedOwner}/${encodedRepo}/git/refs/heads/${encodeURIComponent(name)}`;
+      let ref;
+      try{ ref=await gh(s.token,refPath(branch)); }
+      catch(e){ if(e.status===404) return json(res,404,{error:`Branch "${branch}" could not be found.`,code:"BRANCH_NOT_FOUND"}); throw e; }
+      const currentSha=String(ref.object.sha||"");
+      if(currentSha===targetSha) return json(res,400,{error:"The repository is already at that commit."});
+      let targetCommit;
+      try{ targetCommit=await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/commits/${encodeURIComponent(targetSha)}`); }
+      catch(e){ if(e.status===404) return json(res,404,{error:"That commit could not be found on GitHub."}); throw e; }
+      // Reverting can reintroduce or remove workflow files, which needs the
+      // same elevated OAuth scope the normal commit path requires.
+      const currentCommit=await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/commits/${currentSha}`);
+      const [targetTree,currentTree]=await Promise.all([
+        gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/trees/${targetCommit.tree.sha}?recursive=1`),
+        gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/trees/${currentCommit.tree.sha}?recursive=1`)
+      ]);
+      const touchesWorkflow=[...(targetTree.tree||[]),...(currentTree.tree||[])].some(x=>x.type==="blob"&&isWorkflowPath(x.path));
+      if(touchesWorkflow&&!hasOAuthScope(s,"workflow")) return json(res,403,{error:"GitHub requires the workflow permission to revert changes touching .github/workflows/. Sign out and sign in again so WyDev can request the GitHub Actions workflow permission.",code:"GITHUB_WORKFLOW_SCOPE_REQUIRED"});
+      const shortMsg=String(targetCommit.message||"").split("\n")[0].slice(0,72);
+      const message=`Revert to ${targetSha.slice(0,7)}: ${shortMsg}`.slice(0,200);
+      const commit=await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/commits`,{method:"POST",body:JSON.stringify({message,tree:targetCommit.tree.sha,parents:[currentSha]})});
+      try{
+        await gh(s.token,updateRefPath(branch),{method:"PATCH",body:JSON.stringify({sha:commit.sha,force:false})});
+      }catch(e){
+        if(e.status===404) return json(res,409,{error:`Branch "${branch}" could not be found while reverting. Your history was not changed.`,code:"BRANCH_NOT_FOUND"});
+        if(e.status===422||e.status===409) return json(res,409,{error:"GitHub changed the branch while reverting. Reload and try again.",code:"PUSH_RACE"});
+        throw e;
+      }
+      return json(res,200,{ok:true,commitSha:commit.sha,revertedTo:targetSha,branch});
+    }
     if(p==="/github/repos/commit"&&req.method==="POST"){const b=await body(req);return json(res,400,{error:"Use /github/repos/:owner/:repo/commit"});}
     const cm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/commit$/);
     if(cm&&req.method==="POST"){

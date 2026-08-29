@@ -11,7 +11,9 @@ export const github={
  pulls:(o,r)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/pulls`),
  createPull:(o,r,p)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/pulls`,{method:"POST",body:JSON.stringify(p)}),
  blob:(o,r,p)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/blob`,{method:"POST",body:JSON.stringify(p)}),
- commit:(o,r,p)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/commit`,{method:"POST",body:JSON.stringify(p)})
+ commit:(o,r,p)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/commit`,{method:"POST",body:JSON.stringify(p)}),
+ commits:(o,r,branch,limit=10)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/commits?branch=${encodeURIComponent(branch)}&limit=${encodeURIComponent(limit)}`),
+ revert:(o,r,p)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/revert`,{method:"POST",body:JSON.stringify(p)})
 };
 export function githubErrorMessage(status,body=""){
   if(status===401) return "GitHub authentication expired. Sign in again.";
