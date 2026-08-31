@@ -172,6 +172,13 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
     }).catch((e) => { if (!cancelled) { setSelected(""); toastError(e.message); } }).finally(() => { if (!cancelled) setFileLoading(false); });
     return () => { cancelled = true; };
   }, [selected, branch, repo]);
+  // Used by the repo-wide AI diagnosis to pull in files that haven't been
+  // opened (and therefore aren't cached in `files` yet) without disturbing
+  // the normal lazy-load/edit state for the currently open file.
+  const fetchFileContent = async (path) => {
+    const f = await github.file(repo.owner.login, repo.name, path, branch);
+    return f.content ?? "";
+  };
   const edit = (v) => {
     if (!selected) return;
     setFiles((x) => ({ ...x, [selected]: v }));
@@ -684,6 +691,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
         </a>
       </header>
       <div className="projectTools">
+        <AIDiagnostics repo={repo} branch={branch} fileIndex={fileIndex} files={files} fetchFileContent={fetchFileContent} />
         <button onClick={undo} disabled={!history.length} title={history.length ? `Undo: ${history[history.length - 1].label}` : "Nothing to undo"}>
           <Undo2 size={16} />
           Undo
@@ -842,10 +850,6 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
                 <span>{changes.some((c) => c.path === selected) ? " • Unsaved" : ""}</span>
               </div>
               <CodeEditor path={selected} value={files[selected]} onChange={edit} onViewReady={setEditorView} />
-              <div className="aiDock">
-                <AIDiagnostics file={selected} content={files[selected]} />
-              </div>
-            </>
           ) : (
             <div className="empty">
               {fileLoading ? <><h2>Loading file…</h2><p>Fetching only the selected file from GitHub.</p></> : <><h2>Select a file</h2><p>Choose a file from the repository tree.</p></>}

@@ -188,7 +188,6 @@ body.menu-open,body.modal-open{overflow:hidden}
 .error{color:var(--danger)}
 .diagnosis{white-space:pre-wrap;overflow:auto;background:#0a0d10;border:1px solid var(--line);padding:10px;font-size:12px;border-radius:6px}
 .row{display:flex;align-items:center;justify-content:space-between}
-.aiDock{padding:8px;background:#0d1115}
 .empty,.loading{min-height:60vh;display:grid;place-items:center;color:var(--muted);text-align:center;padding:24px}
 label{display:flex;justify-content:space-between;align-items:center;gap:15px;padding:6px 0}
 .price{font-size:26px;font-weight:700;margin:14px 0}
@@ -198,6 +197,14 @@ label{display:flex;justify-content:space-between;align-items:center;gap:15px;pad
 .sheet{position:fixed;left:0;right:0;bottom:0;background:var(--panel);border:1px solid var(--line);border-top-left-radius:14px;border-top-right-radius:14px;padding:16px;padding-bottom:calc(16px + var(--safe-bottom));box-shadow:0 -10px 40px #0008;z-index:70;max-height:70vh;overflow:auto}
 .ref{font:12px monospace;color:var(--muted);padding:6px 0;border-top:1px solid var(--line)}
 .sheetActions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+
+/* repo-wide AI diagnosis sheet */
+.aiDiagnosisSheet{max-height:80vh}
+.aiDiagnosisHead{margin-bottom:10px}
+.aiDiagnosisHead button{min-height:32px;padding:6px;color:var(--muted)}
+.aiDiagnosisHead button:hover{color:var(--text)}
+.aiDiagnosisProgress{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px;padding:16px 4px}
+.aiDiagnosisMeta{font-size:12px;margin:0 0 8px}
 
 /* ---------- custom select (fixes plain browser-style pickers) ---------- */
 .select{position:relative;display:inline-flex;width:100%}

@@ -1,7 +1,7 @@
 import {API_BASE_URL} from "./config";
 
-export async function diagnose(payload, signal){
-  const r=await fetch(`${API_BASE_URL}/ai/diagnose`,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload),signal});
+async function postAI(path,payload,signal){
+  const r=await fetch(`${API_BASE_URL}${path}`,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload),signal});
   const data=await r.json().catch(()=>({}));
   if(!r.ok){
     const error=new Error(data.error||"AI diagnosis failed");
@@ -13,4 +13,13 @@ export async function diagnose(payload, signal){
     throw error;
   }
   return data;
+}
+
+export async function diagnose(payload, signal){
+  return postAI("/ai/diagnose",payload,signal);
+}
+
+// Whole-repository diagnosis: payload = { repo, branch, files: [{path, content}] }
+export async function diagnoseRepo(payload, signal){
+  return postAI("/ai/diagnose-repo",payload,signal);
 }

@@ -98,16 +98,17 @@ function redactSecrets(value){let s=String(value||"");return s
  .replace(/(ghp_|github_pat_|sk-[A-Za-z0-9_-]+|AIza[0-9A-Za-z_-]{20,})[A-Za-z0-9_-]*/g,"[REDACTED_TOKEN]")
  .replace(/(api[_-]?key|secret|password|token|authorization)\s*[:=]\s*["']?[^\s"',}]+/gi,"$1=[REDACTED]");return s;}
 function parseGeminiText(data){return data?.candidates?.[0]?.content?.parts?.map(p=>p.text||"").join("")||"";}
-async function geminiDiagnose(prompt,schema){
+async function geminiDiagnose(prompt,schema,opts={}){
   const key=process.env.GEMINI_API_KEY;if(!key)throw new Error("GEMINI_API_KEY is not configured");
   const model=process.env.GEMINI_MODEL||"gemini-3.5-flash-lite";
   const url=`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
-  const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{role:"user",parts:[{text:prompt}]}],generationConfig:{temperature:0.1,maxOutputTokens:900,responseMimeType:"application/json",responseSchema:schema}})});
+  const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{role:"user",parts:[{text:prompt}]}],generationConfig:{temperature:0.1,maxOutputTokens:opts.maxOutputTokens||900,responseMimeType:"application/json",responseSchema:schema}})});
   const data=await r.json().catch(()=>({}));
   if(!r.ok)throw Object.assign(new Error(data?.error?.message||`Gemini request failed (${r.status})`),{status:r.status,provider:"gemini"});
   const text=parseGeminiText(data);if(!text)throw new Error("Gemini returned an empty diagnostic");
   let out;try{out=JSON.parse(text)}catch{throw new Error("Gemini returned invalid diagnostic JSON")}
-  if(!out.root_cause||!Array.isArray(out.affected_files)||!Array.isArray(out.evidence))throw new Error("AI response validation failed");
+  const valid=opts.validate?opts.validate(out):(out.root_cause&&Array.isArray(out.affected_files)&&Array.isArray(out.evidence));
+  if(!valid)throw new Error("AI response validation failed");
   return out;
 }
 async function aiDiagnose(s,payload){
@@ -119,6 +120,49 @@ async function aiDiagnose(s,payload){
   const out=await geminiDiagnose(prompt,schema);
   await incrementUsage(s.id,quota.day);
   return {...out,usage:{used:quota.used+1,limit:quota.limit,remaining:Math.max(0,quota.limit-quota.used-1),plan:quota.plan}};
+}
+
+// Whole-repository diagnosis: instead of one file plus a handful of "related"
+// files, this walks the entire fetched file set (skipping binaries, lockfiles
+// and anything past the char budget) so the model reasons about cross-file
+// problems -- inconsistent patterns, missing error handling, structural and
+// architectural issues -- not just what's wrong in whatever single file the
+// user happened to have open. Still diagnosis-only, still one AI credit.
+const REPO_CONTEXT_CHAR_BUDGET=170000;
+const REPO_PER_FILE_CHAR_CAP=9000;
+async function aiDiagnoseRepo(s,payload){
+  const quota=await checkAIQuota(s);
+  const incoming=Array.isArray(payload.files)?payload.files:[];
+  let used=0;
+  const omitted=[];
+  const included=[];
+  for(const f of incoming){
+    const path=redactSecrets(String(f?.path||"")).slice(0,300);
+    if(!path){continue}
+    let content=String(f?.content||"");
+    let truncated=false;
+    if(content.length>REPO_PER_FILE_CHAR_CAP){content=content.slice(0,REPO_PER_FILE_CHAR_CAP);truncated=true}
+    content=redactSecrets(content);
+    const entryLen=path.length+content.length+48;
+    if(used+entryLen>REPO_CONTEXT_CHAR_BUDGET){omitted.push(f.path);continue}
+    used+=entryLen;
+    included.push({path,content,truncated});
+  }
+  const context=JSON.stringify({repo:redactSecrets(payload.repo||""),branch:redactSecrets(payload.branch||""),fileCountTotal:incoming.length,fileCountIncluded:included.length,files:included});
+  const schema={type:"object",properties:{
+    summary:{type:"string"},
+    overall_risk:{type:"string"},
+    architecture_notes:{type:"string"},
+    issues:{type:"array",items:{type:"object",properties:{
+      title:{type:"string"},severity:{type:"string"},affected_files:{type:"array",items:{type:"string"}},
+      root_cause:{type:"string"},evidence:{type:"array",items:{type:"string"}},recommended_action:{type:"string"}
+    },required:["title","severity","affected_files","root_cause","evidence","recommended_action"]}},
+    confidence:{type:"number"}
+  },required:["summary","overall_risk","architecture_notes","issues","confidence"]};
+  const prompt=`You are WyDev's Repository Diagnostic Engine. You are given the contents of an entire codebase (as many files as fit within the supplied context budget -- some may have been omitted or truncated for size, this is noted in the payload). Diagnose only. NEVER edit code, generate patches, rewrite files, commit, push, rename files, or perform autonomous actions.\nPerform a DEEP, holistic diagnosis across the whole repository, not just one file in isolation:\n- Find concrete bugs and correctness issues, including ones that only show up when files interact (mismatched contracts between frontend/backend, inconsistent field names, wrong endpoints, race conditions).\n- Flag structural and architectural risks: duplicated logic, dead code, missing error handling, inconsistent patterns between similar files, security issues (secrets, injection, auth gaps), fragile assumptions.\n- Group findings into discrete "issues", each naming the exact affected file paths and citing concrete evidence (function/variable names, line-level detail) from the supplied content -- never invent files or code that was not given to you.\n- If the supplied context is insufficient to be sure about something, say so in that issue instead of guessing.\nReturn only valid JSON matching the supplied schema. Be specific and developer-readable; this explanation is read directly by the developer, so make it deep and useful rather than generic.\nCONTEXT:\n${context}`;
+  const out=await geminiDiagnose(prompt,schema,{maxOutputTokens:3500,validate:o=>o&&typeof o.summary==="string"&&Array.isArray(o.issues)});
+  await incrementUsage(s.id,quota.day);
+  return {...out,filesTotal:incoming.length,filesAnalyzed:included.length,omittedFiles:omitted,usage:{used:quota.used+1,limit:quota.limit,remaining:Math.max(0,quota.limit-quota.used-1),plan:quota.plan}};
 }
 
 function flwRequestId(prefix){return `${prefix}${crypto.randomBytes(18).toString("hex")}`;}
@@ -728,6 +772,7 @@ async function handler(req,res){
       return json(res,200,{ok:true,commitSha:commit.sha,html_url:commit.html_url,branch});
     }
     if(p==="/ai/diagnose"&&req.method==="POST"){const b=await body(req);return json(res,200,await aiDiagnose(s,b));}
+    if(p==="/ai/diagnose-repo"&&req.method==="POST"){const b=await body(req);return json(res,200,await aiDiagnoseRepo(s,b));}
     if(p==="/billing/status"&&req.method==="GET"){
       let recovered=null;
       if(db){try{recovered=await recoverEntitlement(s)}catch(e){console.warn("Billing recovery failed:",e.message)}}

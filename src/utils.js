@@ -2,6 +2,19 @@ export const ext=p=>p.split(".").pop()?.toLowerCase()||"";
 export const languageFor=p=>({js:"javascript",jsx:"javascript",ts:"javascript",tsx:"javascript",json:"json",md:"markdown",py:"python",css:"css",html:"html"}[ext(p)]||"text");
 export const copy=async text=>navigator.clipboard?.writeText(text);
 
+// Copies text via the Clipboard + Blob APIs (as opposed to plain writeText)
+// so larger, richly-formatted diagnosis reports copy reliably as a discrete
+// text/plain payload. Falls back to writeText for browsers without
+// ClipboardItem support.
+export const copyBlob=async text=>{
+  const blob=new Blob([text],{type:"text/plain"});
+  if(navigator.clipboard?.write&&typeof ClipboardItem!=="undefined"){
+    await navigator.clipboard.write([new ClipboardItem({[blob.type]:blob})]);
+    return;
+  }
+  await navigator.clipboard?.writeText(text);
+};
+
 // "now" / "N mins ago" / "N hrs ago" / "N days ago" ... for file/folder last-modified display.
 export function relativeTime(ts){
   if(!ts) return "";
