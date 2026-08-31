@@ -22,7 +22,9 @@ function SuccessModal({onContinue}){
 export default function Billing(){
  const [status,setStatus]=useState({plan:"free"}),[cfg,setCfg]=useState({usd:9.99,ngn:0,encryptionKey:""}),[currency,setCurrency]=useState("NGN"),[busy,setBusy]=useState(false),[err,setErr]=useState(""),[card,setCard]=useState({number:"",expiry:"",cvv:""}),[auth,setAuth]=useState(null),[authValue,setAuthValue]=useState(""),[authFields,setAuthFields]=useState({}),[authMessage,setAuthMessage]=useState(""),[success,setSuccess]=useState(false);
  const pollRef=useRef(null);
+ const pollTimeoutRef=useRef(null);
  const pendingRef=useRef("");
+ const checkingRef=useRef(false);
 
  const showSuccess=()=>{
    pendingRef.current="";
@@ -30,18 +32,26 @@ export default function Billing(){
    setStatus(s=>({...s,plan:"pro",expiresAt:Date.now()+31*86400000}));
    setAuth(null);setAuthValue("");setAuthFields({});setAuthMessage("");setErr("");setSuccess(true);
  };
- const stopPolling=()=>{if(pollRef.current){clearInterval(pollRef.current);pollRef.current=null}};
+ const stopPolling=()=>{
+   if(pollRef.current){clearInterval(pollRef.current);pollRef.current=null}
+   if(pollTimeoutRef.current){clearTimeout(pollTimeoutRef.current);pollTimeoutRef.current=null}
+ };
  const checkReference=async(reference)=>{
-   if(!reference)return false;
+   if(!reference||checkingRef.current)return false;
+   checkingRef.current=true;
    try{
-     const v=await billing.resolve({reference});
-     if(v.active){showSuccess();return true}
-   }catch{}
-   try{
-     const v=await billing.recover(reference);
-     if(v.active){showSuccess();return true}
-   }catch{}
-   return false;
+     try{
+       const v=await billing.resolve({reference});
+       if(v.active){showSuccess();return true}
+     }catch{}
+     try{
+       const v=await billing.recover(reference);
+       if(v.active){showSuccess();return true}
+     }catch{}
+     return false;
+   }finally{
+     checkingRef.current=false;
+   }
  };
  const startPolling=reference=>{
    if(!reference)return;
@@ -49,15 +59,18 @@ export default function Billing(){
    stopPolling();
    checkReference(reference);
    pollRef.current=setInterval(async()=>{if(await checkReference(reference))stopPolling()},3000);
-   setTimeout(stopPolling,90000);
+   pollTimeoutRef.current=setTimeout(stopPolling,90000);
  };
 
  useEffect(()=>{
-   billing.status().then(async s=>{
-     if(s.plan!=="pro"){try{s=await billing.recover(localStorage.getItem("wydev:pendingPayment")||"")}catch{} }
-     setStatus(s);
-     if(s.plan==="pro")setSuccess(false);
-   }).catch(e=>setErr(e.message));
+   (async()=>{
+     try{
+       let s=await billing.status();
+       if(s.plan!=="pro"){try{s=await billing.recover(localStorage.getItem("wydev:pendingPayment")||"")}catch{} }
+       setStatus(s);
+       if(s.plan==="pro")setSuccess(false);
+     }catch(e){setErr(e?.message||"Failed to load billing status.")}
+   })();
    billing.config().then(setCfg).catch(()=>{});
    const params=new URLSearchParams(location.search),ref=params.get("tx_ref")||params.get("reference")||"";
    let saved="";try{saved=localStorage.getItem("wydev:pendingPayment")||""}catch{}
