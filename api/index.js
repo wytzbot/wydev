@@ -93,10 +93,34 @@ async function oauthCallback(req,res){const q=new URL(req.url,origin(req)).searc
 function limitKey(s){return `${s.id||s.login}:${new Date().toISOString().slice(0,10)}`;}
 async function entitlement(s){const e=await getEntitlement(s.id);return e?.status==="active"&&(!e.expiresAt||e.expiresAt>Date.now())?"pro":"free";}
 async function checkAIQuota(s){const day=new Date().toISOString().slice(0,10),used=await getUsage(s.id,day),plan=await entitlement(s),limit=plan==="pro"?Number(process.env.AI_PRO_DAILY_LIMIT||20):Number(process.env.AI_FREE_DAILY_LIMIT||5);if(used>=limit)throw Object.assign(new Error(`Daily AI diagnostic limit reached (${limit}). Try again tomorrow.`),{status:429,code:"AI_QUOTA_EXCEEDED",limit,used,plan});return {day,plan,limit,used};}
-function redactSecrets(value){let s=String(value||"");return s
- .replace(/-----BEGIN [^-]+ PRIVATE KEY-----[\s\S]*?-----END [^-]+ PRIVATE KEY-----/gi,"[REDACTED_PRIVATE_KEY]")
- .replace(/(ghp_|github_pat_|sk-[A-Za-z0-9_-]+|AIza[0-9A-Za-z_-]{20,})[A-Za-z0-9_-]*/g,"[REDACTED_TOKEN]")
- .replace(/(api[_-]?key|secret|password|token|authorization)\s*[:=]\s*["']?[^\s"',}]+/gi,"$1=[REDACTED]");return s;}
+// Redacts likely secrets before code is sent to the AI. This must NEVER
+// corrupt the surrounding code -- mangled output reads to the model (and to
+// a human) exactly like a truncated/broken file, which produces false "this
+// code is broken" diagnoses instead of real ones. So every rule below only
+// fires on something shaped like an actual literal secret, and always
+// preserves the quote characters it matched inside.
+function redactSecrets(value){
+  let s=String(value||"");
+  // Real PEM private key blocks have a substantial base64 body between the
+  // markers. Require a minimum body length so this doesn't also match the
+  // *description* of that pattern -- e.g. this very regex's own source text,
+  // which appears verbatim when this file is diagnosed.
+  s=s.replace(/-----BEGIN [^-]+ PRIVATE KEY-----[\s\S]{40,}?-----END [^-]+ PRIVATE KEY-----/gi,"[REDACTED_PRIVATE_KEY]");
+  // Strings shaped like real provider credentials, regardless of what
+  // variable they're assigned to.
+  s=s.replace(/(ghp_|github_pat_|sk-[A-Za-z0-9_-]+|AIza[0-9A-Za-z_-]{20,})[A-Za-z0-9_-]*/g,"[REDACTED_TOKEN]");
+  // "<secret-ish keyword>: <quoted literal>" pairs. \b keeps this from
+  // matching a keyword that's merely a suffix of a longer identifier (e.g.
+  // FLW_TOKEN, SESSION_SECRET used as a *name*, not a leaked value). Requiring
+  // an actual quoted literal of plausible secret length keeps this from
+  // matching bare expressions/object literals (e.g. `authorization={...}`,
+  // `secret:process.env.X`), which have no leakable value to redact in the
+  // first place. The quote characters are preserved in the replacement so
+  // the surrounding code stays syntactically valid.
+  s=s.replace(/\b(api[_-]?key|secret|password|token|authorization)\b(\s*[:=]\s*)(["'`])((?:(?!\3)[^\\]|\\.){12,}?)\3/gi,
+    (m,kw,sep,q)=>`${kw}${sep}${q}[REDACTED]${q}`);
+  return s;
+}
 function parseGeminiText(data){return data?.candidates?.[0]?.content?.parts?.map(p=>p.text||"").join("")||"";}
 async function geminiDiagnose(prompt,schema,opts={}){
   const key=process.env.GEMINI_API_KEY;if(!key)throw new Error("GEMINI_API_KEY is not configured");
@@ -128,8 +152,12 @@ async function aiDiagnose(s,payload){
 // problems -- inconsistent patterns, missing error handling, structural and
 // architectural issues -- not just what's wrong in whatever single file the
 // user happened to have open. Still diagnosis-only, still one AI credit.
-const REPO_CONTEXT_CHAR_BUDGET=170000;
-const REPO_PER_FILE_CHAR_CAP=9000;
+// Budgeted generously (well above this repo's ~230KB of source) so ordinary
+// projects are sent in full; per-file cap is likewise sized above the
+// largest files WyDev itself ships so real files aren't cut mid-function.
+const REPO_CONTEXT_CHAR_BUDGET=550000;
+const REPO_PER_FILE_CHAR_CAP=90000;
+const TRUNCATION_MARKER="\n/* [WYDEV DIAGNOSTIC NOTE: file content cut off here because it exceeded the diagnosis size budget. This is NOT a bug in the source file -- it is only how much of it could be included in this analysis. Do not report this cutoff itself as an issue. */";
 async function aiDiagnoseRepo(s,payload){
   const quota=await checkAIQuota(s);
   const incoming=Array.isArray(payload.files)?payload.files:[];
@@ -141,7 +169,7 @@ async function aiDiagnoseRepo(s,payload){
     if(!path){continue}
     let content=String(f?.content||"");
     let truncated=false;
-    if(content.length>REPO_PER_FILE_CHAR_CAP){content=content.slice(0,REPO_PER_FILE_CHAR_CAP);truncated=true}
+    if(content.length>REPO_PER_FILE_CHAR_CAP){content=content.slice(0,REPO_PER_FILE_CHAR_CAP)+TRUNCATION_MARKER;truncated=true}
     content=redactSecrets(content);
     const entryLen=path.length+content.length+48;
     if(used+entryLen>REPO_CONTEXT_CHAR_BUDGET){omitted.push(f.path);continue}
@@ -159,7 +187,7 @@ async function aiDiagnoseRepo(s,payload){
     },required:["title","severity","affected_files","root_cause","evidence","recommended_action"]}},
     confidence:{type:"number"}
   },required:["summary","overall_risk","architecture_notes","issues","confidence"]};
-  const prompt=`You are WyDev's Repository Diagnostic Engine. You are given the contents of an entire codebase (as many files as fit within the supplied context budget -- some may have been omitted or truncated for size, this is noted in the payload). Diagnose only. NEVER edit code, generate patches, rewrite files, commit, push, rename files, or perform autonomous actions.\nPerform a DEEP, holistic diagnosis across the whole repository, not just one file in isolation:\n- Find concrete bugs and correctness issues, including ones that only show up when files interact (mismatched contracts between frontend/backend, inconsistent field names, wrong endpoints, race conditions).\n- Flag structural and architectural risks: duplicated logic, dead code, missing error handling, inconsistent patterns between similar files, security issues (secrets, injection, auth gaps), fragile assumptions.\n- Group findings into discrete "issues", each naming the exact affected file paths and citing concrete evidence (function/variable names, line-level detail) from the supplied content -- never invent files or code that was not given to you.\n- If the supplied context is insufficient to be sure about something, say so in that issue instead of guessing.\nReturn only valid JSON matching the supplied schema. Be specific and developer-readable; this explanation is read directly by the developer, so make it deep and useful rather than generic.\nCONTEXT:\n${context}`;
+  const prompt=`You are WyDev's Repository Diagnostic Engine. You are given the contents of an entire codebase (as many files as fit within the supplied context budget). Diagnose only. NEVER edit code, generate patches, rewrite files, commit, push, rename files, or perform autonomous actions.\nIMPORTANT -- read this before diagnosing: some file values in the payload have "truncated": true and end with a WYDEV DIAGNOSTIC NOTE comment. That comment marks where THIS TOOL cut the file off to stay within its own size budget -- it is not part of the real source file and is never itself a code problem. A file ending abruptly right before that marker is expected and must NOT be reported as "truncated code", "incomplete implementation", or similar. Only report a file as incomplete/broken if the evidence for that appears BEFORE the marker, in code the file's author actually wrote. Likewise, values shown as [REDACTED], [REDACTED_TOKEN], or [REDACTED_PRIVATE_KEY] are secrets this tool intentionally masked before sending you the code -- never report these placeholders as syntax errors, missing values, or broken code.\nPerform a DEEP, holistic diagnosis across the whole repository, not just one file in isolation:\n- Find concrete bugs and correctness issues, including ones that only show up when files interact (mismatched contracts between frontend/backend, inconsistent field names, wrong endpoints, race conditions).\n- Flag structural and architectural risks: duplicated logic, dead code, missing error handling, inconsistent patterns between similar files, security issues (secrets, injection, auth gaps), fragile assumptions.\n- Group findings into discrete "issues", each naming the exact affected file paths and citing concrete evidence (function/variable names, line-level detail) from the supplied content -- never invent files or code that was not given to you.\n- If the supplied context is insufficient to be sure about something, say so in that issue instead of guessing.\nReturn only valid JSON matching the supplied schema. Be specific and developer-readable; this explanation is read directly by the developer, so make it deep and useful rather than generic.\nCONTEXT:\n${context}`;
   const out=await geminiDiagnose(prompt,schema,{maxOutputTokens:3500,validate:o=>o&&typeof o.summary==="string"&&Array.isArray(o.issues)});
   await incrementUsage(s.id,quota.day);
   return {...out,filesTotal:incoming.length,filesAnalyzed:included.length,omittedFiles:omitted,usage:{used:quota.used+1,limit:quota.limit,remaining:Math.max(0,quota.limit-quota.used-1),plan:quota.plan}};
