@@ -850,6 +850,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
                 <span>{changes.some((c) => c.path === selected) ? " • Unsaved" : ""}</span>
               </div>
               <CodeEditor path={selected} value={files[selected]} onChange={edit} onViewReady={setEditorView} />
+            </>
           ) : (
             <div className="empty">
               {fileLoading ? <><h2>Loading file…</h2><p>Fetching only the selected file from GitHub.</p></> : <><h2>Select a file</h2><p>Choose a file from the repository tree.</p></>}
