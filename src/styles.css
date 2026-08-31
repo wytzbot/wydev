@@ -192,6 +192,7 @@ body.menu-open,body.modal-open{overflow:hidden}
 .empty,.loading{min-height:60vh;display:grid;place-items:center;color:var(--muted);text-align:center;padding:24px}
 label{display:flex;justify-content:space-between;align-items:center;gap:15px;padding:6px 0}
 .price{font-size:26px;font-weight:700;margin:14px 0}
+.proActiveBadge{display:inline-block;padding:8px 14px;border-radius:8px;background:var(--success,#2ea043)22;border:1px solid var(--success,#2ea043);color:var(--success,#2ea043);letter-spacing:.04em;font-size:13px;margin:4px 0 10px}
 
 /* bottom sheet used for the rename-folder preview */
 .sheet{position:fixed;left:0;right:0;bottom:0;background:var(--panel);border:1px solid var(--line);border-top-left-radius:14px;border-top-right-radius:14px;padding:16px;padding-bottom:calc(16px + var(--safe-bottom));box-shadow:0 -10px 40px #0008;z-index:70;max-height:70vh;overflow:auto}
