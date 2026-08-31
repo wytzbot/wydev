@@ -25,20 +25,24 @@ export default function App() {
     [page, setPage] = useState(() => initialBillingReturn ? "billing" : (window.history.state?.wydevPage || (window.location.hash.replace("#","") || "home"))),
     [repos, setRepos] = useState([]),
     [repoLimit, setRepoLimit] = useState(null),
+    [reposLoading, setReposLoading] = useState(false),
     [repo, setRepo] = useState(null),
     [working, setWorking] = useState(null),
     [searchQuery, setSearchQuery] = useState(""),
     [openPath, setOpenPath] = useState(""),
     [loading, setLoading] = useState(true);
 
-  const loadRepos = () =>
-    github
+  const loadRepos = () => {
+    setReposLoading(true);
+    return github
       .repos()
       .then((d) => {
         setRepos(d.repos || []);
         setRepoLimit({ total: d.total, limit: d.limit, plan: d.plan });
       })
-      .catch((e) => toastError(e));
+      .catch((e) => toastError(e.message))
+      .finally(() => setReposLoading(false));
+  };
 
   useEffect(() => {
     const onOnline = () => setOffline(false);
@@ -50,6 +54,27 @@ export default function App() {
       window.removeEventListener("offline", onOffline);
     };
   }, []);
+
+  // The initial repos fetch on mount can lose a race with the session cookie
+  // still being written right after a hard refresh (or simply hit a network
+  // blip on cold start) and fail silently, leaving the Repositories/Home
+  // lists empty with nothing to prompt a retry. Re-run it whenever the app
+  // is brought back to the foreground or regains connectivity — covers both
+  // a fresh reload and returning to an already-open tab/PWA — so the list
+  // fills in on its own instead of only refreshing when some other click
+  // happens to trigger a re-render.
+  useEffect(() => {
+    if (!user) return;
+    const refresh = () => { if (document.visibilityState === "visible") loadRepos(); };
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("pageshow", refresh);
+    window.addEventListener("online", refresh);
+    return () => {
+      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("pageshow", refresh);
+      window.removeEventListener("online", refresh);
+    };
+  }, [user]);
 
   // Keep app navigation inside browser history so Android/iOS back returns to the
   // previous WyDev screen instead of closing the PWA/web app.
@@ -141,8 +166,8 @@ export default function App() {
             <span aria-hidden="true">‹</span> Back
           </button>
         )}
-        {page === "home" && <Home repos={repos} onOpen={open} onCreate={createRepo} />}
-        {page === "repos" && <Repositories repos={repos} repoLimit={repoLimit} onOpen={open} onCreate={createRepo} />}
+        {page === "home" && <Home repos={repos} loading={reposLoading} onOpen={open} onCreate={createRepo} />}
+        {page === "repos" && <Repositories repos={repos} repoLimit={repoLimit} loading={reposLoading} onOpen={open} onCreate={createRepo} onRefresh={loadRepos} />}
         {page === "changes" && <Changes changes={workingChanges} onSelect={openFile} onDiscard={working?.discard} />}
         {page === "settings" && <Settings />}
         {page === "billing" && <Billing />}

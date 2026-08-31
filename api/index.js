@@ -412,6 +412,8 @@ async function handler(req,res){
     const rvm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/revert$/);
     if(rvm&&req.method==="POST"){
       const owner=decodeURIComponent(rvm[1]),repo=decodeURIComponent(rvm[2]),b=await body(req);
+      const plan=await entitlement(s);
+      if(plan!=="pro")return json(res,402,{error:"Reverting to a previous commit is a WyDev Pro feature. Upgrade to unlock it.",code:"PRO_REQUIRED"});
       const branch=String(b.branch||"").trim(), targetSha=String(b.sha||"").trim();
       if(!branch||!targetSha) return json(res,400,{error:"A branch and a commit to revert to are required"});
       const encodedOwner=encodeURIComponent(owner),encodedRepo=encodeURIComponent(repo);

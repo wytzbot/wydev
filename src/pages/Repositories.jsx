@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { Plus, Lock, BookMarked } from "lucide-react";
+import { Plus, Lock, BookMarked, RefreshCw } from "lucide-react";
 import { promptDialog } from "../dialog";
 import { toastError } from "../toast";
 
-export default function Repositories({ repos, repoLimit, onOpen, onCreate }) {
+export default function Repositories({ repos, repoLimit, loading, onOpen, onCreate, onRefresh }) {
   const [busy, setBusy] = useState(false);
 
   const createRepository = async () => {
@@ -35,6 +35,9 @@ export default function Repositories({ repos, repoLimit, onOpen, onCreate }) {
           <span className="eyebrow">GITHUB</span>
           <h1>Repositories</h1>
         </div>
+        <button aria-label="Refresh repositories" disabled={loading} onClick={onRefresh}>
+          <RefreshCw size={16} className={loading ? "spin" : ""} />
+        </button>
         <button className="primary" disabled={busy} onClick={createRepository}>
           <Plus size={16} />
           New
@@ -62,7 +65,7 @@ export default function Repositories({ repos, repoLimit, onOpen, onCreate }) {
             <span className="chev">›</span>
           </button>
         ))}
-        {!repos.length && <p className="muted">No repositories loaded.</p>}
+        {!repos.length && <p className="muted">{loading ? "Loading repositories…" : "No repositories loaded."}</p>}
       </section>
     </div>
   );

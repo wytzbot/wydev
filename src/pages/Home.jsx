@@ -1,6 +1,6 @@
 import { Lock, BookMarked } from "lucide-react";
 
-export default function Home({ repos, onOpen }) {
+export default function Home({ repos, loading, onOpen }) {
   return (
     <div className="page">
       <header>
@@ -25,7 +25,7 @@ export default function Home({ repos, onOpen }) {
             <span className="chev">›</span>
           </button>
         ))}
-        {!repos.length && <p className="muted">No repositories loaded.</p>}
+        {!repos.length && <p className="muted">{loading ? "Loading repositories…" : "No repositories loaded."}</p>}
       </section>
     </div>
   );

@@ -522,10 +522,6 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
   // Client-side only — packs the current working tree into a .zip using the
   // jszip dependency already bundled for uploads, so this costs nothing to run.
   const exportZip = async () => {
-    if (plan !== "pro") {
-      toastError("Exporting a ZIP backup is a WyDev Pro feature. Upgrade to unlock it.");
-      return;
-    }
     try {
       // Most files sit in state as `null` placeholders until the user actually
       // opens them (lazy loading), and binary files are stored as
@@ -737,7 +733,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
         </button>
         <button onClick={exportZip}>
           <Upload size={16} />
-          Export ZIP{plan !== "pro" ? " (Pro)" : ""}
+          Export ZIP
         </button>
         <button onClick={loadPRs}>
           <GitBranch size={16} />
@@ -745,7 +741,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
         </button>
         <button onClick={loadCommitHistory} disabled={revertBusy}>
           <History size={16} />
-          Revert
+          Revert{plan !== "pro" ? " (Pro)" : ""}
         </button>
       </div>
       {historyOpen && (
