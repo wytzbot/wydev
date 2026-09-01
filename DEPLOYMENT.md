@@ -6,7 +6,7 @@
 - GitHub: source of truth for repositories and commits.
 - Firebase Firestore: durable entitlement, transaction and AI quota state only.
 - Flutterwave v4: payment processing.
-- OpenAI: diagnosis only.
+- Gemini: AI diagnosis only.
 
 ## Vercel
 Set:
@@ -22,7 +22,7 @@ See `.env.example`.
 Server-only secrets:
 - `GITHUB_CLIENT_SECRET`
 - `SESSION_SECRET`
-- `OPENAI_API_KEY`
+- `GEMINI_API_KEY`
 - `FLW_CLIENT_SECRET`
 - `FLW_WEBHOOK_SECRET_HASH`
 - `FIREBASE_PRIVATE_KEY`
@@ -57,8 +57,8 @@ Use sandbox first. Configure the production callback/redirect URL required by th
 
 Never activate Pro from a frontend redirect alone. The gateway verifies the payment and/or processes a trusted webhook.
 
-## OpenAI
-Keep model IDs configurable through environment variables. The application uses cheap-model-first routing and escalates only when validation, confidence, timeout, or provider failure requires it.
+## Gemini
+Keep the Gemini model configurable through `GEMINI_MODEL`. The application uses Gemini for developer diagnostics and enforces a daily quota through Firestore.
 
 ## Pre-launch checklist
 1. Run `npm run check`.

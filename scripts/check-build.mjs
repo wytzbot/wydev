@@ -63,7 +63,7 @@ if(!/await getTransaction\(/.test(webhookHandler)) throw new Error("Webhook hand
 
 const app=fs.readFileSync(path.join(root,"src/App.jsx"),"utf8");
 const billing=fs.readFileSync(path.join(root,"src/pages/Billing.jsx"),"utf8");
-if(!app.includes('github.session()')) throw new Error("Auth session check missing");
+if(!/github\s*\.\s*session\s*\(\)/.test(app)) throw new Error("Auth session check missing");
 if(!billing.includes('billing.checkout')) throw new Error("Billing checkout action missing");
 if(!api.includes('/billing/webhook')) throw new Error("Flutterwave webhook route missing");
 if(!api.includes('expectedSha')) throw new Error("Remote-change protection missing");

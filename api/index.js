@@ -66,8 +66,24 @@ async function findRecentTransactions(userId){
 
 async function listDueEntitlements(){
   if(!db)return [];
-  const snap=await db.collection("wydev_entitlements").where("status","==","active").where("renewAt","<=",Date.now()).limit(20).get();
-  return snap.docs.map(d=>({id:d.id,...d.data()}));
+  const out=[];
+  let cursor=null;
+  // Process in pages so a busy day does not strand accounts after the first 20.
+  // Keep the page size bounded for Vercel's execution-time limit.
+  for(let page=0;page<20;page++){
+    let q=db.collection("wydev_entitlements")
+      .where("status","==","active")
+      .where("renewAt","<=",Date.now())
+      .orderBy("renewAt","asc")
+      .limit(20);
+    if(cursor)q=q.startAfter(cursor);
+    const snap=await q.get();
+    if(snap.empty)break;
+    out.push(...snap.docs.map(d=>({id:d.id,...d.data()})));
+    cursor=snap.docs[snap.docs.length-1];
+    if(snap.size<20)break;
+  }
+  return out;
 }
 
 function json(res,status,data){res.statusCode=status;res.setHeader("Content-Type","application/json");res.end(JSON.stringify(data));}
@@ -273,8 +289,11 @@ async function createBillingCheckout(s,payload){
   await setTransaction(reference,{userId:String(s.id),amount,currency,status:charge.data?.status||"pending",chargeId:charge.data?.id,customerId,paymentMethodId,createdAt:Date.now()});
   return charge;
 }
-async function authorizeCharge(s,id,authorization){
-  if(!id||!authorization?.type)throw Object.assign(new Error("Charge id and authorization are required"),{status:400});
+async function authorizeCharge(s,id,authorization,reference){
+  if(!id||!authorization?.type||!reference)throw Object.assign(new Error("Charge id, transaction reference and authorization are required"),{status:400});
+  const expected=await getTransaction(String(reference));
+  if(!expected||String(expected.userId)!==String(s.id))throw Object.assign(new Error("Transaction does not belong to this account"),{status:403});
+  if(!expected.chargeId||String(expected.chargeId)!==String(id))throw Object.assign(new Error("Charge does not match the pending transaction"),{status:409});
   const d=await flw(`/charges/${encodeURIComponent(id)}`,{method:"PUT",body:JSON.stringify({authorization})});
   return d;
 }
@@ -286,8 +305,16 @@ async function renewDue(){
       const reference=`WYDEV-R-${String(e.id).slice(0,12)}-${Date.now().toString(36)}-${crypto.randomBytes(5).toString("hex")}`,amount=amountFor(e.currency);
       const d=await flw("/charges",{method:"POST",body:JSON.stringify({reference,currency:e.currency,amount,customer_id:e.customerId,payment_method_id:e.paymentMethodId,recurring:true})});
       const status=d.data?.status||"pending"; await setTransaction(reference,{userId:e.id,amount,currency:e.currency,status,chargeId:d.data?.id,customerId:e.customerId,paymentMethodId:e.paymentMethodId,createdAt:Date.now(),renewal:true});
-      if(status==="succeeded")await setEntitlement(e.id,{status:"active",expiresAt:Date.now()+31*86400000,renewAt:Date.now()+31*86400000,updatedAt:Date.now(),lastRenewalReference:reference});
-      else await setEntitlement(e.id,{status:"past_due",updatedAt:Date.now(),lastRenewalReference:reference});
+      if(status==="succeeded"){
+        const expiresAt=Date.now()+31*86400000;
+        await setEntitlement(e.id,{status:"active",expiresAt,renewAt:expiresAt,renewalPending:false,updatedAt:Date.now(),lastRenewalReference:reference});
+      }else if(["failed","cancelled","canceled"].includes(String(status).toLowerCase())){
+        await setEntitlement(e.id,{status:"past_due",renewalPending:false,updatedAt:Date.now(),lastRenewalReference:reference});
+      }else{
+        // A pending charge should not revoke an otherwise active subscription.
+        // Give the webhook time to settle it and retry later if necessary.
+        await setEntitlement(e.id,{status:"active",renewalPending:true,renewAt:Date.now()+6*3600000,updatedAt:Date.now(),lastRenewalReference:reference});
+      }
       processed++;
     }catch{await setEntitlement(e.id,{status:"past_due",updatedAt:Date.now()});}
   }
@@ -316,7 +343,7 @@ async function recoverEntitlement(s,requestedReference=""){
     try{
       const d=await flw(`/charges/${encodeURIComponent(tx.chargeId)}`),x=d.data||{};
       await setTransaction(tx.reference,{status:x.status||"pending",chargeId:tx.chargeId,updatedAt:Date.now()});
-      if(x.status==="succeeded"&&Number(x.amount)===Number(tx.amount)&&String(x.currency)===String(tx.currency)){
+      if(x.status==="succeeded"&&String(x.reference||"")===String(tx.reference)&&Number(x.amount)===Number(tx.amount)&&String(x.currency)===String(tx.currency)){
         const expiresAt=Date.now()+31*86400000;
         await setEntitlement(s.id,{status:"active",expiresAt,renewAt:expiresAt,reference:tx.reference,customerId:tx.customerId||x.customer_id||null,paymentMethodId:tx.paymentMethodId||x.payment_method_details?.id||null,currency:tx.currency,updatedAt:Date.now(),recoveredAt:Date.now()});
         return {active:true,expiresAt,recovered:true,reference:tx.reference};
@@ -327,15 +354,19 @@ async function recoverEntitlement(s,requestedReference=""){
 }
 
 async function verifyCharge(s,id,reference){
-  let expected=await getTransaction(reference);
+  const ref=String(reference||"").trim();
+  const expected=await getTransaction(ref);
   if(!expected||String(expected.userId)!==String(s.id))throw new Error("Transaction does not belong to this account");
   const chargeId=id||expected.chargeId;
   if(!chargeId)throw Object.assign(new Error("Payment transaction is still being created. Please wait a moment and try again."),{status:409});
+  if(expected.chargeId&&String(expected.chargeId)!==String(chargeId))throw Object.assign(new Error("Charge does not match the pending transaction"),{status:409});
   const d=await flw(`/charges/${encodeURIComponent(chargeId)}`),x=d.data||{};
-  await setTransaction(reference,{status:x.status||"pending",chargeId,updatedAt:Date.now()});
-  if(x.status==="succeeded"&&Number(x.amount)===Number(expected.amount)&&x.currency===expected.currency){
-    await setEntitlement(s.id,{status:"active",expiresAt:Date.now()+31*86400000,renewAt:Date.now()+31*86400000,reference,customerId:expected.customerId,paymentMethodId:expected.paymentMethodId,currency:expected.currency,updatedAt:Date.now()});
-    return {active:true,status:x.status,expiresAt:Date.now()+31*86400000};
+  const providerRef=String(x.reference||"");
+  await setTransaction(ref,{status:x.status||"pending",chargeId,updatedAt:Date.now()});
+  if(x.status==="succeeded"&&providerRef===ref&&Number(x.amount)===Number(expected.amount)&&String(x.currency)===String(expected.currency)){
+    const expiresAt=Date.now()+31*86400000;
+    await setEntitlement(s.id,{status:"active",expiresAt,renewAt:expiresAt,reference:ref,customerId:expected.customerId,paymentMethodId:expected.paymentMethodId,currency:expected.currency,updatedAt:Date.now()});
+    return {active:true,status:x.status,expiresAt};
   }
   return {active:false,status:x.status||"pending"};
 }
@@ -348,6 +379,39 @@ async function handler(req,res){
     if(p==="/auth/github/callback"&&req.method==="GET")return oauthCallback(req,res);
     if(p==="/auth/me"&&req.method==="GET"){const s=session(req);return json(res,200,s?{user:{id:s.id,login:s.login,name:s.name,avatar:s.avatar}}:{user:null});}
     if(p==="/auth/logout"&&req.method==="POST"){clearSession(res);return json(res,200,{ok:true});}
+
+    // Machine-to-machine billing endpoints must authenticate with their own
+    // Flutterwave/cron credentials before the normal GitHub session gate.
+    // Flutterwave webhooks and Vercel cron requests do not carry a user cookie.
+    if(p==="/billing/webhook"&&req.method==="POST"){
+      let raw="";for await(const c of req)raw+=c;
+      if(!validWebhook(req,raw))return json(res,401,{error:"Invalid Flutterwave signature"});
+      let data;try{data=JSON.parse(raw)}catch{return json(res,400,{error:"Invalid JSON"})}
+      const tx=data.data||{};
+      if(tx.id){
+        try{
+          const d=await flw(`/charges/${encodeURIComponent(tx.id)}`),x=d.data||{};
+          const ref=String(x.reference||tx.reference||"").trim();
+          const rec=ref?await getTransaction(ref):null;
+          if(rec&&String(rec.chargeId||tx.id)===String(tx.id)&&ref===String(rec.reference||ref)){
+            await setTransaction(ref,{status:x.status||"pending",chargeId:tx.id,updatedAt:Date.now()});
+            if(x.status==="succeeded"&&String(x.reference||"")===ref&&Number(x.amount)===Number(rec.amount)&&String(x.currency)===String(rec.currency)){
+              const existing=await getEntitlement(rec.userId);
+              const base=Math.max(Date.now(),Number(existing?.expiresAt)||0);
+              const expiresAt=base+31*86400000;
+              await setEntitlement(rec.userId,{status:"active",expiresAt,renewAt:expiresAt,reference:ref,customerId:rec.customerId,paymentMethodId:rec.paymentMethodId,currency:rec.currency,updatedAt:Date.now()});
+            }
+          }
+        }catch{}
+      }
+      return json(res,200,{received:true});
+    }
+    if(p==="/billing/renew"&&req.method==="POST"){
+      const auth=req.headers.authorization||"";
+      if(!process.env.CRON_SECRET||auth!==`Bearer ${process.env.CRON_SECRET}`)return json(res,401,{error:"Unauthorized"});
+      return json(res,200,{processed:await renewDue()});
+    }
+
     const s=requireSession(req,res);if(!s)return;
     if(p==="/preferences"&&req.method==="GET") {
       const ref=db?.collection("wydev_preferences").doc(String(s.id));
@@ -364,9 +428,7 @@ async function handler(req,res){
       else memory.preferences.set(String(s.id),preferences);
       return json(res,200,{ok:true,preferences});
     }
-    if(p==="/billing/webhook"&&req.method==="POST"){let raw="";for await(const c of req)raw+=c;if(!validWebhook(req,raw))return json(res,401,{error:"Invalid Flutterwave signature"});let data;try{data=JSON.parse(raw)}catch{return json(res,400,{error:"Invalid JSON"})}const tx=data.data||{};if(tx.id){try{const d=await flw(`/charges/${encodeURIComponent(tx.id)}`),x=d.data||{};const ref=x.reference||tx.reference,rec=await getTransaction(ref);if(rec){await setTransaction(ref,{status:x.status||"pending",chargeId:tx.id,updatedAt:Date.now()});if(x.status==="succeeded"&&Number(x.amount)===Number(rec.amount)&&x.currency===rec.currency){await setEntitlement(rec.userId,{status:"active",expiresAt:Date.now()+31*86400000,renewAt:Date.now()+31*86400000,reference:ref,customerId:rec.customerId,paymentMethodId:rec.paymentMethodId,currency:rec.currency,updatedAt:Date.now()})}}}catch{} }return json(res,200,{received:true});}
-    if(p==="/billing/renew"&&req.method==="POST"){const auth=req.headers.authorization||"";if(!process.env.CRON_SECRET||auth!==`Bearer ${process.env.CRON_SECRET}`)return json(res,401,{error:"Unauthorized"});return json(res,200,{processed:await renewDue()});}
-    if(p==="/billing/authorize"&&req.method==="POST"){const s=requireSession(req,res);if(!s)return;const b=await body(req);return json(res,200,await authorizeCharge(s,b.id,b.authorization));}
+    if(p==="/billing/authorize"&&req.method==="POST"){const b=await body(req);return json(res,200,await authorizeCharge(s,b.id,b.authorization,b.reference));}
     if(p==="/github/repos"&&req.method==="GET"){
       const all=await gh(s.token,"/user/repos?per_page=100&sort=updated");
       const plan=await entitlement(s);
