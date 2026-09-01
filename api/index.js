@@ -28,7 +28,7 @@ const FLW_BASE=String(process.env.FLW_BASE_URL||"").trim().replace(/\/$/,"") || 
   ?"https://f4bexperience.flutterwave.com"
   :"https://developersandbox-api.flutterwave.com");
 
-const memory={usage:new Map(),entitlements:new Map(),transactions:new Map(),preferences:new Map(),cache:new Map()};
+const memory={usage:new Map(),entitlements:new Map(),transactions:new Map(),preferences:new Map(),cache:new Map(),oauthStates:new Map()};
 async function getEntitlement(userId){
   if(db){const d=await db.collection("wydev_entitlements").doc(String(userId)).get();return d.exists?d.data():null}
   return memory.entitlements.get(String(userId))||null;
@@ -103,8 +103,75 @@ function ghHeaders(token){return{"Authorization":`Bearer ${token}`,"Accept":"app
 async function gh(token,path,opts={}){const r=await fetch(GH+path,{...opts,headers:{...ghHeaders(token),...(opts.headers||{})}});const text=await r.text();let data;try{data=JSON.parse(text)}catch{data={message:text}}if(!r.ok)throw Object.assign(new Error(data.message||`GitHub request failed (${r.status})`),{status:r.status,data});return data;}
 
 function origin(req){const proto=(req.headers["x-forwarded-proto"]||"https").split(",")[0];const host=req.headers["x-forwarded-host"]||req.headers.host;return `${proto}://${host}`;}
-function oauthStart(req,res){const state=b64(crypto.randomBytes(24));const redirectUri=process.env.GITHUB_REDIRECT_URI||`${origin(req)}/api/auth/github/callback`;const url=new URL("https://github.com/login/oauth/authorize");url.searchParams.set("client_id",process.env.GITHUB_CLIENT_ID||"");url.searchParams.set("redirect_uri",redirectUri);url.searchParams.set("scope","read:user repo workflow");url.searchParams.set("state",state);res.setHeader("Set-Cookie",`wydev_oauth_state=${state}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`);redirect(res,url.toString());}
-async function oauthCallback(req,res){const q=new URL(req.url,origin(req)).searchParams;const state=q.get("state"),code=q.get("code");const cookies=parseCookies(req);if(!state||state!==cookies.wydev_oauth_state)return json(res,400,{error:"Invalid OAuth state"});if(!code)return json(res,400,{error:"GitHub did not return an authorization code"});const redirectUri=process.env.GITHUB_REDIRECT_URI||`${origin(req)}/api/auth/github/callback`;const r=await fetch("https://github.com/login/oauth/access_token",{method:"POST",headers:{"Accept":"application/json","Content-Type":"application/json"},body:JSON.stringify({client_id:process.env.GITHUB_CLIENT_ID,client_secret:process.env.GITHUB_CLIENT_SECRET,code,redirect_uri:redirectUri})});const token=await r.json();if(!r.ok||!token.access_token)return json(res,502,{error:"GitHub token exchange failed"});const me=await gh(token.access_token,"/user");setSession(res,{token:token.access_token,refresh_token:token.refresh_token||null,login:me.login,id:me.id,name:me.name,avatar:me.avatar_url,scope:token.scope});res.setHeader("Set-Cookie",[res.getHeader("Set-Cookie"),"wydev_oauth_state=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0"].filter(Boolean));redirect(res,"/");}
+function oauthStateKey(state){return crypto.createHash("sha256").update(String(state)).digest("hex");}
+async function rememberOAuthState(state,redirectUri){
+  const key=oauthStateKey(state),record={createdAt:Date.now(),redirectUri:String(redirectUri||"")};
+  memory.oauthStates.set(key,record);
+  // Firestore makes the state available across Vercel serverless instances.
+  // This is the cookie-loss fallback needed by Android WebViews/custom tabs.
+  if(db){await db.collection("wydev_oauth_states").doc(key).set(record);}
+}
+async function consumeOAuthState(state){
+  const key=oauthStateKey(state),local=memory.oauthStates.get(key);
+  memory.oauthStates.delete(key);
+  if(local){
+    if(Date.now()-Number(local.createdAt)>10*60*1000)return null;
+    return local;
+  }
+  if(!db)return null;
+  const ref=db.collection("wydev_oauth_states").doc(key),snap=await ref.get();
+  if(!snap.exists)return null;
+  const record=snap.data()||{};
+  await ref.delete();
+  if(Date.now()-Number(record.createdAt)>10*60*1000)return null;
+  return record;
+}
+function clearOAuthCookie(res){
+  const current=res.getHeader("Set-Cookie");
+  const cleared="wydev_oauth_state=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0";
+  res.setHeader("Set-Cookie",[current,cleared].filter(Boolean).flat());
+}
+async function oauthStart(req,res){
+  const state=b64(crypto.randomBytes(32));
+  const redirectUri=process.env.GITHUB_REDIRECT_URI||`${origin(req)}/api/auth/github/callback`;
+  await rememberOAuthState(state,redirectUri);
+  const url=new URL("https://github.com/login/oauth/authorize");
+  url.searchParams.set("client_id",process.env.GITHUB_CLIENT_ID||"");
+  url.searchParams.set("redirect_uri",redirectUri);
+  url.searchParams.set("scope","read:user repo workflow");
+  url.searchParams.set("state",state);
+  // SameSite=None is intentional: Android WebViews/custom tabs can cross a
+  // browser boundary during the GitHub redirect. Secure is mandatory with it.
+  res.setHeader("Set-Cookie",`wydev_oauth_state=${state}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=600`);
+  redirect(res,url.toString());
+}
+async function oauthCallback(req,res){
+  const q=new URL(req.url,origin(req)).searchParams;
+  const state=q.get("state"),code=q.get("code");
+  const cookies=parseCookies(req);
+  if(!state)return json(res,400,{error:"Invalid OAuth state"});
+  const cookieMatches=Boolean(cookies.wydev_oauth_state&&cookies.wydev_oauth_state===state);
+  // Normal browsers are protected by the HttpOnly state cookie. If an Android
+  // wrapper loses that cookie while following GitHub's redirect, consume the
+  // same one-time state from Firestore instead of disabling state validation.
+  let stateRecord=null;
+  if(cookieMatches){
+    stateRecord=await consumeOAuthState(state);
+  }else if(db){
+    stateRecord=await consumeOAuthState(state);
+  }
+  if(!stateRecord&&!cookieMatches)return json(res,400,{error:"Invalid OAuth state",code:"OAUTH_STATE_MISSING"});
+  if(!code){clearOAuthCookie(res);return json(res,400,{error:"GitHub did not return an authorization code"});}
+  const redirectUri=process.env.GITHUB_REDIRECT_URI||`${origin(req)}/api/auth/github/callback`;
+  if(stateRecord?.redirectUri&&String(stateRecord.redirectUri)!==String(redirectUri)){clearOAuthCookie(res);return json(res,400,{error:"Invalid OAuth redirect"});}
+  const r=await fetch("https://github.com/login/oauth/access_token",{method:"POST",headers:{"Accept":"application/json","Content-Type":"application/json"},body:JSON.stringify({client_id:process.env.GITHUB_CLIENT_ID,client_secret:process.env.GITHUB_CLIENT_SECRET,code,redirect_uri:redirectUri})});
+  const token=await r.json();
+  if(!r.ok||!token.access_token){clearOAuthCookie(res);return json(res,502,{error:"GitHub token exchange failed"});}
+  const me=await gh(token.access_token,"/user");
+  setSession(res,{token:token.access_token,refresh_token:token.refresh_token||null,login:me.login,id:me.id,name:me.name,avatar:me.avatar_url,scope:token.scope});
+  clearOAuthCookie(res);
+  redirect(res,"/");
+}
 
 function limitKey(s){return `${s.id||s.login}:${new Date().toISOString().slice(0,10)}`;}
 async function entitlement(s){const e=await getEntitlement(s.id);return e?.status==="active"&&(!e.expiresAt||e.expiresAt>Date.now())?"pro":"free";}
