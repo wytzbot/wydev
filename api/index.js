@@ -433,7 +433,9 @@ async function resolveCustomerId(customerPayload){
 async function createBillingCheckout(s,payload){
   requirePersistence();
   const currency=payload.currency==="NGN"?"NGN":"USD", amount=amountFor(currency), reference=`WYDEV-${String(s.id).slice(0,12)}-${Date.now().toString(36)}-${crypto.randomBytes(5).toString("hex")}`;
-  const customerPayload={email:payload.email||`${s.login}@users.noreply.github.com`,name:{first:s.name||s.login},meta:{github_id:String(s.id)}};
+  const fullName=String(payload.name||"").trim();
+  const [firstName,...restName]=fullName?fullName.split(/\s+/):[];
+  const customerPayload={email:payload.email||`${s.login}@users.noreply.github.com`,name:{first:firstName||s.name||s.login,...(restName.length?{last:restName.join(" ")}:{})},meta:{github_id:String(s.id)}};
   if(payload.payment_method?.type!=="card")throw new Error("Select card checkout.");
   const existing=await getEntitlement(s.id);
   const customerId=existing?.customerId||await resolveCustomerId(customerPayload);
