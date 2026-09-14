@@ -209,7 +209,17 @@ export default function App() {
         {page === "logs" && <Logs />}
         {page === "settings" && <Settings />}
         {page === "billing" && <Billing />}
-        {page === "project" && repo && <Project repo={repo} openPath={openPath} onBack={() => navigate("repos")} onWorkingState={setWorking} />}
+        {page === "project" && repo && <Project
+          repo={repo}
+          openPath={openPath}
+          onBack={() => navigate("repos")}
+          onWorkingState={setWorking}
+          onDeleteRepo={(deleted) => {
+            setRepos((rs) => rs.filter((r) => String(r.id) !== String(deleted.id)));
+            setRepo((current) => (current && String(current.id) === String(deleted.id) ? null : current));
+            setWorking(null);
+          }}
+        />}
         {page === "search" && <SearchPage repos={repos} onOpen={open} onNavigate={navigate} query={searchQuery} repoFiles={working?.files || {}} onOpenFile={openFile} />}
         {page === "recent" && <Recent onOpen={open} />}
         {page === "help" && <Help />}

@@ -22,7 +22,7 @@ function vercelDomain(repoName) {
   return `${slug || "app"}.vercel.app`;
 }
 
-export default function Project({ repo, onBack, onWorkingState, openPath }) {
+export default function Project({ repo, onBack, onWorkingState, openPath, onDeleteRepo }) {
   const key = `project:${repo.id}`;
   const cached = loadState(key, null);
   const editorFontSize = loadState("fontSize", 16);
@@ -678,6 +678,60 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
     }
   };
 
+  const deleteRepository = async () => {
+    if (plan !== "pro") {
+      toastError("Delete repository is a WyDev Pro feature.");
+      return;
+    }
+    const confirmation = await promptDialog({
+      title: "Delete repository",
+      message: `This permanently deletes ${repo.full_name} from GitHub. This cannot be undone. Type the exact repository name to continue.`,
+      confirmLabel: "Delete permanently",
+      cancelLabel: "Keep repository",
+      danger: true,
+      fields: [
+        { key: "repoName", label: "Repository name", placeholder: repo.full_name },
+      ],
+    });
+    if (!confirmation) return;
+    if (String(confirmation.repoName || "").trim() !== String(repo.full_name || "").trim()) {
+      toastError("Repository name does not match. Nothing was deleted.");
+      return;
+    }
+    const confirmed = await confirmDialog({
+      title: "Final confirmation",
+      message: `Delete ${repo.full_name}? GitHub will permanently remove the repository and its history.`,
+      confirmLabel: "Yes, delete it",
+      cancelLabel: "Cancel",
+      danger: true,
+    });
+    if (!confirmed) return;
+
+    setBusy(true);
+    try {
+      await github.deleteRepo(repo.owner?.login || repo.owner?.name || repo.full_name.split("/")[0], repo.name);
+      localStorage.removeItem(`wydev:project:${repo.id}`);
+      localStorage.removeItem(`project:${repo.id}`);
+      try {
+        const recent = loadState("recentProjects", []);
+        saveState("recentProjects", recent.filter((x) => String(x.id) !== String(repo.id)));
+      } catch {}
+      toastSuccess(`${repo.full_name} was deleted successfully`);
+      onDeleteRepo?.(repo);
+      onBack?.();
+    } catch (e) {
+      if (e.status === 401) toastError("GitHub authentication expired. Sign in again before deleting the repository.");
+      else if (e.status === 403) toastError(e.code === "PRO_REQUIRED" ? "Delete repository is a WyDev Pro feature." : "GitHub denied repository deletion. Re-authorize WyDev with repository deletion permission or check your GitHub permissions.");
+      else if (e.status === 404) toastError("GitHub could not find this repository. It may already have been deleted.");
+      else if (e.status === 409) toastError("GitHub could not delete this repository because it is currently in a conflicting state. Check GitHub and try again.");
+      else if (e.status === 422) toastError("GitHub rejected the deletion request. Check your repository permissions and try again.");
+      else if (e.code === "GITHUB_DELETE_SCOPE_MISSING") toastError("WyDev does not have GitHub's delete permission. Sign out and authorize WyDev again, then retry.");
+      else toastError(e.message || "Repository deletion failed. Nothing was changed by WyDev.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="project">
       <header className="projectHeader">
@@ -764,6 +818,10 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
         <button onClick={loadPRs}>
           <GitBranch size={16} />
           Pull Requests
+        </button>
+        <button className="danger" onClick={deleteRepository} disabled={busy} title={plan === "pro" ? "Permanently delete this GitHub repository" : "Delete repository requires WyDev Pro"}>
+          <Trash2 size={16} />
+          Delete repository{plan !== "pro" ? " (Pro)" : ""}
         </button>
         <button onClick={loadCommitHistory} disabled={revertBusy}>
           <History size={16} />

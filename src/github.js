@@ -4,6 +4,7 @@ export const github={
  session:()=>api("/auth/me"),login:()=>location.href=`${API_BASE_URL}/auth/github`,logout:()=>api("/auth/logout",{method:"POST"}),
  repos:()=>api("/github/repos"),
  createRepo:(p)=>api("/github/repos",{method:"POST",body:JSON.stringify(p)}),
+ deleteRepo:(o,r)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}`,{method:"DELETE"}),
  tree:(o,r,b)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/tree?branch=${encodeURIComponent(b)}`),
  file:(o,r,p,b)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/file?path=${encodeURIComponent(p)}&branch=${encodeURIComponent(b)}`),
  branches:(o,r)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/branches`),

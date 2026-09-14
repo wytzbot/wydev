@@ -203,7 +203,7 @@ async function oauthStart(req,res){
   const url=new URL("https://github.com/login/oauth/authorize");
   url.searchParams.set("client_id",process.env.GITHUB_CLIENT_ID||"");
   url.searchParams.set("redirect_uri",redirectUri);
-  url.searchParams.set("scope","read:user repo workflow");
+  url.searchParams.set("scope","read:user repo workflow delete_repo");
   url.searchParams.set("state",state);
   // SameSite=None is intentional: Android WebViews/custom tabs can cross a
   // browser boundary during the GitHub redirect. Secure is mandatory with it.
@@ -686,6 +686,19 @@ async function handler(req,res){
         if(totalAfterCreate>=8) await sendPushOnce(s.id,`repo-limit:${totalAfterCreate}:${new Date().toISOString().slice(0,10)}`,"Free repository limit is getting close",`You now have ${totalAfterCreate} of 10 free repositories. Upgrade to Pro before you reach the limit.`,{type:"repo_limit",count:String(totalAfterCreate)});
       }
       return json(res,201,created);
+    }
+    const drm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)$/);
+    if(drm&&req.method==="DELETE"){
+      const plan=await entitlement(s);
+      if(plan!=="pro") return json(res,403,{error:"Delete repository is a WyDev Pro feature.",code:"PRO_REQUIRED",plan});
+      const owner=decodeURIComponent(drm[1]),repo=decodeURIComponent(drm[2]);
+      if(!owner||!repo) return json(res,400,{error:"Repository owner and name are required."});
+      const scope=String(s.scope||"");
+      if(!scope || !scope.split(/[\s,]+/).includes("delete_repo")){
+        return json(res,403,{error:"GitHub deletion permission is missing. Sign out and authorize WyDev again so GitHub can grant delete_repo permission.",code:"GITHUB_DELETE_SCOPE_MISSING"});
+      }
+      await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,{method:"DELETE"});
+      return json(res,200,{ok:true,owner,repo});
     }
     const bm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/branches$/);
     if(bm&&req.method==="POST"){const owner=decodeURIComponent(bm[1]),repo=decodeURIComponent(bm[2]),b=await body(req);const name=String(b.name||"").trim();const from=String(b.from||"").trim();if(!/^[A-Za-z0-9._\/-]{1,120}$/.test(name)||name.startsWith("-")||name.endsWith("/"))return json(res,400,{error:"Invalid branch name"});const ref=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(from)}`);const created=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/refs`,{method:"POST",body:JSON.stringify({ref:`refs/heads/${name}`,sha:ref.object.sha})});return json(res,201,{name,sha:created.object.sha});}
