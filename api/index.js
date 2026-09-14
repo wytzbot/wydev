@@ -25,12 +25,12 @@ async function firebaseMessaging(){
   try { const admin=require("firebase-admin"); return admin.messaging(); } catch { return null; }
 }
 async function publicFirebaseConfig(){
-  const projectId=String(process.env.FIREBASE_WEB_PROJECT_ID||process.env.FIREBASE_PROJECT_ID||"").trim();
-  const apiKey=String(process.env.FIREBASE_WEB_API_KEY||"").trim();
-  const sender=String(process.env.FIREBASE_WEB_MESSAGING_SENDER_ID||"").trim();
-  const appId=String(process.env.FIREBASE_WEB_APP_ID||"").trim();
-  const vapidKey=String(process.env.FIREBASE_WEB_VAPID_KEY||"").trim();
-  return {apiKey,authDomain:String(process.env.FIREBASE_WEB_AUTH_DOMAIN||`${projectId}.firebaseapp.com`),projectId,storageBucket:String(process.env.FIREBASE_WEB_STORAGE_BUCKET||`${projectId}.appspot.com`),messagingSenderId:sender,appId,vapidKey};
+  const projectId=String(process.env.FIREBASE_PROJECT_ID||"").trim();
+  const apiKey=String(process.env.FIREBASE_API_KEY||"").trim();
+  const sender=String(process.env.FIREBASE_MESSAGING_SENDER_ID||"").trim();
+  const appId=String(process.env.FIREBASE_APP_ID||"").trim();
+  const vapidKey=String(process.env.FIREBASE_VAPID_KEY||"").trim();
+  return {apiKey,authDomain:String(process.env.FIREBASE_AUTH_DOMAIN||`${projectId}.firebaseapp.com`),projectId,storageBucket:String(process.env.FIREBASE_STORAGE_BUCKET||`${projectId}.appspot.com`),messagingSenderId:sender,appId,vapidKey};
 }
 function tokenKey(token){return crypto.createHash("sha256").update(String(token)).digest("hex");}
 async function savePushToken(user,token,timezone){

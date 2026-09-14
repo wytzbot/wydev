@@ -112,7 +112,7 @@ WyDev generates alphanumeric `X-Trace-Id` and `X-Idempotency-Key` values as requ
 - Pro-only workspace actions include pull requests, commit revert, and extended local undo history.
 
 ## Notifications
-Push notifications are optional. Configure the public web FCM values (`FIREBASE_WEB_API_KEY`, `FIREBASE_WEB_AUTH_DOMAIN`, `FIREBASE_WEB_PROJECT_ID`, `FIREBASE_WEB_STORAGE_BUCKET`, `FIREBASE_WEB_MESSAGING_SENDER_ID`, `FIREBASE_WEB_APP_ID`, `FIREBASE_WEB_VAPID_KEY`) and Firebase Admin server credentials. WyDev can send failed-build alerts, Good Morning notifications, free-limit reminders, and Pro renewal reminders at 10 and 5 days before renewal.
+Push notifications are optional. Configure the public web FCM values (`FIREBASE_API_KEY`, `FIREBASE_AUTH_DOMAIN`, `FIREBASE_PROJECT_ID`, `FIREBASE_STORAGE_BUCKET`, `FIREBASE_MESSAGING_SENDER_ID`, `FIREBASE_APP_ID`, `FIREBASE_VAPID_KEY`) and Firebase Admin server credentials. WyDev can send failed-build alerts, Good Morning notifications, free-limit reminders, and Pro renewal reminders at 10 and 5 days before renewal.
 
 ## Payment model
 The initial card payment creates a tokenized Flutterwave payment method. Later monthly renewals use that stored Flutterwave payment method with `recurring: true`. WyDev verifies the charge server-side by reference, amount, currency and status and processes signed webhooks before granting or extending Pro.
