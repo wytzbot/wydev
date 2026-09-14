@@ -59,7 +59,7 @@ Create a GitHub OAuth App and set its callback URL to `/api/auth/github/callback
 
 Use v4 sandbox credentials first. Configure the webhook URL as:
 
-`https://YOUR_DOMAIN/api/billing/webhook`
+`https://wydev.vercel.app/api/billing/webhook`
 
 The backend verifies webhook signatures and then re-queries the charge before activating Pro.
 
@@ -102,3 +102,21 @@ Recommended Firestore rules: deny all direct client reads/writes and access thes
 ### Flutterwave v4 troubleshooting
 
 WyDev generates alphanumeric `X-Trace-Id` and `X-Idempotency-Key` values as required by Flutterwave v4. A `10403 FORBIDDEN` response is surfaced with the endpoint, environment, and trace ID so the account/API permission issue can be identified without exposing credentials.
+
+
+## Current product limits
+- Free: 10 repositories maximum. A reminder is sent around the 8th repository when push notifications are enabled.
+- Free: 3 AI diagnoses per UTC day.
+- Pro: $1 USD or ₦1,000 NGN per month, recurring.
+- Pro AI: 5 diagnoses per day.
+- Pro-only workspace actions include pull requests, commit revert, and extended local undo history.
+
+## Notifications
+Push notifications are optional. Configure the public web FCM values (`FIREBASE_WEB_API_KEY`, `FIREBASE_WEB_AUTH_DOMAIN`, `FIREBASE_WEB_PROJECT_ID`, `FIREBASE_WEB_STORAGE_BUCKET`, `FIREBASE_WEB_MESSAGING_SENDER_ID`, `FIREBASE_WEB_APP_ID`, `FIREBASE_WEB_VAPID_KEY`) and Firebase Admin server credentials. WyDev can send failed-build alerts, Good Morning notifications, free-limit reminders, and Pro renewal reminders at 10 and 5 days before renewal.
+
+## Payment model
+The initial card payment creates a tokenized Flutterwave payment method. Later monthly renewals use that stored Flutterwave payment method with `recurring: true`. WyDev verifies the charge server-side by reference, amount, currency and status and processes signed webhooks before granting or extending Pro.
+
+
+### GitHub Actions Control Center
+WyDev includes a mobile-friendly Actions view for recent workflow runs, failed-job retries and job inspection. Free includes manual workflow dispatch and cancellation. Pro adds failed-job reruns and debug-enabled failed-job reruns. These operations use the signed-in developer's GitHub permissions through the WyDev server.

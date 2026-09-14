@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { Copy, FilePlus, FolderPlus, ExternalLink, Upload, Trash2, Move, GitBranch, RefreshCw, ChevronDown, Loader2, Undo2, History } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Copy, FilePlus, FolderPlus, ExternalLink, Upload, Trash2, Move, GitBranch, RefreshCw, ChevronDown, Loader2, Undo2, History, Download, FileText } from "lucide-react";
 import CodeEditor from "../components/CodeEditor";
 import FileExplorer from "../components/FileExplorer";
 import CommitPanel from "../components/CommitPanel";
@@ -17,6 +17,8 @@ import Select from "../components/Select";
 export default function Project({ repo, onBack, onWorkingState, openPath }) {
   const key = `project:${repo.id}`;
   const cached = loadState(key, null);
+  const editorFontSize = loadState("fontSize", 16);
+  const editorWordWrap = loadState("wordWrap", true);
   const [branch, setBranch] = useState(cached?.branch || repo.default_branch || "main"),
     [branches, setBranches] = useState([]),
     [files, setFiles] = useState(cached?.files || {}),
@@ -40,18 +42,20 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
     [historyOpen, setHistoryOpen] = useState(false),
     [commitHistory, setCommitHistory] = useState([]),
     [historyBusy, setHistoryBusy] = useState(false),
-    [revertBusy, setRevertBusy] = useState(false);
+    [revertBusy, setRevertBusy] = useState(false),
+    loadGeneration = useRef(0);
   useEffect(() => {
     billing.status().then((s) => setPlan(s.plan)).catch(() => {});
   }, []);
   const changes = useMemo(() => buildChangeSet(base, files), [base, files]);
+  const selectedBinary = Boolean(files[selected] && typeof files[selected] === "object" && files[selected].__wydevBinary);
   const displayTimes = useMemo(() => {
     const out = {};
     for (const p of Object.keys(files)) out[p] = times[p] || loadedAt;
     return out;
   }, [files, times, loadedAt]);
   useEffect(() => {
-    onWorkingState?.({ repo, branch, files, base, changes, openFile: setSelected });
+    onWorkingState?.({ repo, branch, files, base, changes, openFile: setSelected, discard });
     saveState(key, { branch, files, fileIndex, base, baseSha, selected, times, loadedAt });
   }, [repo, branch, files, base, baseSha, selected, changes.length, times, loadedAt]);
 
@@ -112,6 +116,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
     }
   };
   const load = async ({silent=false,retries=4} = {}) => {
+    const generation = ++loadGeneration.current;
     try {
       setBusy(true);
       let lastError;
@@ -128,6 +133,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
           await new Promise(r=>setTimeout(r, 600*(attempt+1)));
         }
       }
+      if (generation !== loadGeneration.current) return t;
       const index = (t.files || []).filter((x) => Number(x.size || 0) <= 10*1024*1024).map((x) => ({ path: x.path, sha: x.sha, size: x.size || 0 }));
       const empty = Object.fromEntries(index.map((x) => [x.path, null]));
       setFileIndex(index);
@@ -144,7 +150,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
       if(!silent) toastError(e.message);
       throw e;
     } finally {
-      setBusy(false);
+      if (generation === loadGeneration.current) setBusy(false);
     }
   };
   useEffect(() => {
@@ -177,6 +183,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
   // the normal lazy-load/edit state for the currently open file.
   const fetchFileContent = async (path) => {
     const f = await github.file(repo.owner.login, repo.name, path, branch);
+    if (f.content && typeof f.content === "object" && f.content.__wydevBinary) return "";
     return f.content ?? "";
   };
   const edit = (v) => {
@@ -686,8 +693,11 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
         <button onClick={load} disabled={busy}>
           <RefreshCw size={16} />
         </button>
-        <a href={repo.html_url} target="_blank" rel="noreferrer">
-          <ExternalLink size={17} />
+        <a href={`https://vercel.com/new/clone?repository-url=${encodeURIComponent(repo.html_url || `https://github.com/${repo.owner.login}/${repo.name}`)}`} target="_blank" rel="noreferrer" title="Deploy this repository with Vercel">
+          <ExternalLink size={17} /> Vercel
+        </a>
+        <a href={repo.html_url} target="_blank" rel="noreferrer" title="Open on GitHub">
+          <ExternalLink size={17} /> GitHub
         </a>
       </header>
       <div className="projectTools">
@@ -713,17 +723,17 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
           Upload file
           <input hidden type="file" multiple onChange={uploadFiles} />
         </label>
-        <button disabled={!selected} onClick={() => copy(files[selected] || "")}>
+        <button disabled={!selected || selectedBinary} onClick={() => copy(String(files[selected] || ""))}>
           <Copy size={16} />
           Copy all
         </button>
-        <button disabled={!selected} onClick={selectAll}>
+        <button disabled={!selected || selectedBinary} onClick={selectAll}>
           Select all code
         </button>
-        <button disabled={!selected} onClick={replaceEntire}>
+        <button disabled={!selected || selectedBinary} onClick={replaceEntire}>
           Replace from clipboard
         </button>
-        <button disabled={!selected} onClick={duplicate}>
+        <button disabled={!selected || selectedBinary} onClick={duplicate}>
           <Copy size={16} />
           Duplicate
         </button>
@@ -745,7 +755,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
         </button>
         <button onClick={loadPRs}>
           <GitBranch size={16} />
-          Pull Requests{plan !== "pro" ? " (Pro)" : ""}
+          Pull Requests
         </button>
         <button onClick={loadCommitHistory} disabled={revertBusy}>
           <History size={16} />
@@ -843,14 +853,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
         </aside>
         <main>
           {selected && files[selected] !== null && files[selected] !== undefined ? (
-            <>
-              <div className="fileTitle">
-                <button className="fileBack" aria-label="Back to files" onClick={() => setSelected("")}>‹</button>
-                {selected}
-                <span>{changes.some((c) => c.path === selected) ? " • Unsaved" : ""}</span>
-              </div>
-              <CodeEditor path={selected} value={files[selected]} onChange={edit} onViewReady={setEditorView} />
-            </>
+            <FileViewer path={selected} value={files[selected]} onChange={edit} onViewReady={setEditorView} unsaved={changes.some((c) => c.path === selected)} onBack={() => setSelected("")} fontSize={editorFontSize} wordWrap={editorWordWrap} />
           ) : (
             <div className="empty">
               {fileLoading ? <><h2>Loading file…</h2><p>Fetching only the selected file from GitHub.</p></> : <><h2>Select a file</h2><p>Choose a file from the repository tree.</p></>}
@@ -881,4 +884,31 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
       )}
     </div>
   );
+}
+
+
+function FileViewer({ path, value, onChange, onViewReady, unsaved=false, onBack, fontSize, wordWrap }) {
+  const binary = value && typeof value === "object" && value.__wydevBinary;
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [path]);
+  if (binary) {
+    const canPreview = !binary.tooLarge && Number(binary.size || 0) <= 1024 * 1024 && Boolean(binary.base64);
+    const src = canPreview ? `data:${binary.mime || "application/octet-stream"};base64,${binary.base64}` : "";
+    const image = canPreview && /^image\//i.test(binary.mime || "") && !/\.svgz?$/i.test(path);
+    const openUrl = binary.html_url || "";
+    return <div className="fileViewer">
+      <div className="fileTitle"><button className="fileBack" aria-label="Back to files" onClick={onBack}>‹</button><b>{path}</b></div>
+      <div className="binaryViewer">
+        {image && !failed ? <img src={src} alt={path} onError={() => setFailed(true)} /> : <FileText size={42} />}
+        {!canPreview && <p className="muted">This file is kept out of the in-app preview to protect mobile memory. Open it on GitHub instead.</p>}
+        {failed && <p className="muted">This image could not be previewed safely.</p>}
+        {canPreview ? (
+          <a className="primary" href={src} download={path.split("/").pop() || "download"}><Download size={16}/> Download original</a>
+        ) : openUrl ? (
+          <a className="primary" href={openUrl} target="_blank" rel="noreferrer"><ExternalLink size={16}/> Open on GitHub</a>
+        ) : null}
+      </div>
+    </div>;
+  }
+  return <><div className="fileTitle"><button className="fileBack" aria-label="Back to files" onClick={onBack}>‹</button><b>{path}</b>{unsaved && <span> • Unsaved</span>}</div><CodeEditor path={path} value={String(value ?? "")} onChange={onChange} onViewReady={onViewReady} fontSize={fontSize} wordWrap={wordWrap} /></>;
 }

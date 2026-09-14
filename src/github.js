@@ -13,7 +13,13 @@ export const github={
  blob:(o,r,p)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/blob`,{method:"POST",body:JSON.stringify(p)}),
  commit:(o,r,p)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/commit`,{method:"POST",body:JSON.stringify(p)}),
  commits:(o,r,branch,limit=10)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/commits?branch=${encodeURIComponent(branch)}&limit=${encodeURIComponent(limit)}`),
- revert:(o,r,p)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/revert`,{method:"POST",body:JSON.stringify(p)})
+ revert:(o,r,p)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/revert`,{method:"POST",body:JSON.stringify(p)}),
+ actionsRuns:(o,r)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/actions/runs`),
+ actionsJobs:(o,r,id)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/actions/runs/${encodeURIComponent(id)}/jobs`),
+ rerunFailed:(o,r,id,p={})=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/actions/runs/${encodeURIComponent(id)}/rerun-failed`,{method:"POST",body:JSON.stringify(p)}),
+ cancelRun:(o,r,id,force=false)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/actions/runs/${encodeURIComponent(id)}/${force?"force-cancel":"cancel"}`,{method:"POST"}),
+ workflows:(o,r)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/actions/workflows`),
+ dispatchWorkflow:(o,r,id,p)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/actions/workflows/${encodeURIComponent(id)}/dispatch`,{method:"POST",body:JSON.stringify(p)})
 };
 export function githubErrorMessage(status,body=""){
   if(status===401) return "GitHub authentication expired. Sign in again.";

@@ -4,7 +4,7 @@ import TopBar from "./components/TopBar";
 import TabBar from "./components/TabBar";
 import DialogHost from "./components/DialogHost";
 import ToastHost from "./components/ToastHost";
-import { toastSuccess, toastError } from "./toast";
+import { toastSuccess, toastError, toastInfo } from "./toast";
 import Login from "./pages/Login";
 import Home from "./pages/Home";
 import Repositories from "./pages/Repositories";
@@ -15,8 +15,11 @@ import Project from "./pages/Project";
 import SearchPage from "./pages/Search";
 import LegalPage from "./pages/Legal";
 import Offline from "./pages/Offline";
+import Actions from "./pages/Actions";
+import Logs from "./pages/Logs";
 import { github } from "./github";
 import { loadState, saveState } from "./storage";
+import { initNotifications } from "./notifications";
 
 export default function App() {
   const initialBillingReturn = new URLSearchParams(window.location.search).get("billing") === "return";
@@ -32,16 +35,40 @@ export default function App() {
     [openPath, setOpenPath] = useState(""),
     [loading, setLoading] = useState(true);
 
-  const loadRepos = () => {
+  const loadRepos = async ({ silent = false } = {}) => {
+    if (!navigator.onLine) {
+      const cached = loadState("reposCache", { repos: [], repoLimit: null });
+      const cachedRepos = Array.isArray(cached?.repos) ? cached.repos : [];
+      setRepos(cachedRepos);
+      setRepoLimit(cached?.repoLimit || null);
+      setReposLoading(false);
+      return cachedRepos;
+    }
     setReposLoading(true);
-    return github
-      .repos()
-      .then((d) => {
-        setRepos(d.repos || []);
-        setRepoLimit({ total: d.total, limit: d.limit, plan: d.plan });
-      })
-      .catch((e) => toastError(e.message))
-      .finally(() => setReposLoading(false));
+    let last = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const d = await github.repos();
+        const nextRepos = Array.isArray(d.repos) ? d.repos : [];
+        const nextLimit = { total: d.total, limit: d.limit, plan: d.plan };
+        setRepos(nextRepos);
+        setRepoLimit(nextLimit);
+        saveState("reposCache", { repos: nextRepos, repoLimit: nextLimit, savedAt: Date.now() });
+        setReposLoading(false);
+        return nextRepos;
+      } catch (e) {
+        last = e;
+        await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+      }
+    }
+    const cached = loadState("reposCache", null);
+    if (cached?.repos?.length) {
+      setRepos(cached.repos);
+      setRepoLimit(cached.repoLimit || null);
+    }
+    setReposLoading(false);
+    if (!silent) toastError(last?.message || "Could not refresh repositories. Your last repository list is still available.");
+    return cached?.repos || [];
   };
 
   useEffect(() => {
@@ -65,14 +92,16 @@ export default function App() {
   // happens to trigger a re-render.
   useEffect(() => {
     if (!user) return;
-    const refresh = () => { if (document.visibilityState === "visible") loadRepos(); };
+    const refresh = () => { if (document.visibilityState === "visible") loadRepos({ silent: true }); };
     document.addEventListener("visibilitychange", refresh);
     window.addEventListener("pageshow", refresh);
     window.addEventListener("online", refresh);
+    const timer = window.setInterval(refresh, 60000);
     return () => {
       document.removeEventListener("visibilitychange", refresh);
       window.removeEventListener("pageshow", refresh);
       window.removeEventListener("online", refresh);
+      window.clearInterval(timer);
     };
   }, [user]);
 
@@ -113,7 +142,10 @@ export default function App() {
       .then((x) => {
         if (x?.user) {
           setUser(x.user);
-          loadRepos();
+          const cached = loadState("reposCache", null);
+          if (cached?.repos?.length) { setRepos(cached.repos); setRepoLimit(cached.repoLimit || null); }
+          loadRepos({ silent: true });
+          initNotifications(x.user).catch(() => {});
         }
       })
       .catch((e) => toastError(e))
@@ -140,7 +172,11 @@ export default function App() {
   };
   const createRepo = async (payload) => {
     const r = await github.createRepo(payload);
-    setRepos((rs) => [r, ...rs]);
+    setRepos((rs) => {
+      const next=[r,...rs.filter(x=>x.id!==r.id)];
+      if(next.length>=8 && next.length<=10) toastInfo(`Free plan: ${next.length}/10 repositories used.`);
+      return next;
+    });
     toastSuccess(`Repository ${r.full_name || r.name || payload.name} created successfully`);
     return r;
   };
@@ -169,6 +205,8 @@ export default function App() {
         {page === "home" && <Home repos={repos} loading={reposLoading} onOpen={open} onCreate={createRepo} />}
         {page === "repos" && <Repositories repos={repos} repoLimit={repoLimit} loading={reposLoading} onOpen={open} onCreate={createRepo} onRefresh={loadRepos} />}
         {page === "changes" && <Changes changes={workingChanges} onSelect={openFile} onDiscard={working?.discard} />}
+        {page === "actions" && <Actions repos={repos} />}
+        {page === "logs" && <Logs />}
         {page === "settings" && <Settings />}
         {page === "billing" && <Billing />}
         {page === "project" && repo && <Project repo={repo} openPath={openPath} onBack={() => navigate("repos")} onWorkingState={setWorking} />}
@@ -178,6 +216,8 @@ export default function App() {
         {page === "privacy" && <LegalPage type="privacy" />}
         {page === "terms" && <LegalPage type="terms" />}
         {page === "about" && <LegalPage type="about" />}
+        {page === "contact" && <LegalPage type="contact" />}
+        {page === "vercel" && <div className="page"><header><div><span className="eyebrow">DEPLOYMENT</span><h1>Vercel</h1></div></header><section className="panel"><p className="muted">Open Vercel to import or deploy a GitHub repository.</p><button className="primary" onClick={() => window.open("https://vercel.com","_blank","noopener,noreferrer")}>Open Vercel</button></section></div>}
       </section>
       <TabBar page={page} setPage={navigate} onMore={openMenu} />
       <DialogHost />

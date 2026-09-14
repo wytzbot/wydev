@@ -1,6 +1,7 @@
 import React from "react";
 
 const CONTENT = {
+  contact: { label: "SUPPORT", title: "Contact Us", sections: [["Email", "For payment issues, bugs, account access problems, or general support, contact wytetechcompany@gmail.com."], ["Payment support", "Include the GitHub username, approximate transaction time, and the error shown by WyDev. Never send your card number, CVV, PIN, OTP, password, or access token."], ["Security reports", "Report suspected security problems privately by email so they can be investigated without exposing repository or account data."]] },
   privacy: {
     label: "PRIVACY",
     title: "Privacy Policy",
@@ -47,7 +48,7 @@ export default function LegalPage({ type }) {
             <p>{body}</p>
           </details>
         ))}
-        <p className="muted legalNote">Last updated: August 27, 2026. These pages describe the current WyDev product and may be updated as the service evolves.</p>
+        <p className="muted legalNote">Last updated: September 14, 2026. These pages describe the current WyDev product and may be updated as the service evolves.</p>
       </section>
     </div>
   );

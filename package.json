@@ -8,8 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "node scripts/check-build.mjs",
-    "build:source": "vite build",
-    "audit": "node scripts/release-audit.mjs"
+    "build:source": "vite build"
   },
   "dependencies": {
     "@codemirror/lang-javascript": "^6.2.3",

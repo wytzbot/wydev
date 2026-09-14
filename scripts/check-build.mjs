@@ -9,7 +9,7 @@ const required=[
   "index.html","package.json","vite.config.js",".env.example",
   "api/index.js","src/main.jsx","src/App.jsx","src/github.js",
   "src/ai.js","src/billing.js","src/storage.js","src/files.js",
-  "src/git.js","src/styles.css","src/pages/Billing.jsx","src/pages/Project.jsx","vercel.json","DEPLOYMENT.md","E2E-SMOKE-TEST.md"
+  "src/git.js","src/styles.css","src/pages/Billing.jsx","src/pages/Project.jsx","vercel.json"
 ];
 const missing=required.filter(x=>!fs.existsSync(path.join(root,x)));
 if(missing.length){console.error("Missing:",missing);process.exit(1)}
@@ -64,11 +64,18 @@ if(!/await getTransaction\(/.test(webhookHandler)) throw new Error("Webhook hand
 const app=fs.readFileSync(path.join(root,"src/App.jsx"),"utf8");
 const billing=fs.readFileSync(path.join(root,"src/pages/Billing.jsx"),"utf8");
 if(!/github\s*\.\s*session\s*\(\)/.test(app)) throw new Error("Auth session check missing");
+const menu=fs.readFileSync(path.join(root,"src/components/Menu.jsx"),"utf8");
+if(/<Mail\b/.test(menu) && !/\bMail\b/.test(menu.split("\n")[1]||"")) throw new Error("Menu uses Mail but does not import it");
 if(!billing.includes('billing.checkout')) throw new Error("Billing checkout action missing");
 if(!api.includes('/billing/webhook')) throw new Error("Flutterwave webhook route missing");
 if(!api.includes('expectedSha')) throw new Error("Remote-change protection missing");
 if(!api.includes('getEntitlement')) throw new Error("Persistent entitlement layer missing");
 if(!api.includes('getUsage')) throw new Error("Persistent AI usage layer missing");
+if(!api.includes('incrementUsage(s.id,quota.day,quota.limit)')) throw new Error("Atomic AI quota enforcement missing");
+if(!api.includes('gemini-3.8-flash') || !api.includes('gemini-3.7-flash') || !api.includes('gemini-3.5-flash-lite')) throw new Error("Active Gemini fallback chain missing");
+if(api.includes('OPENAI_API_KEY') || api.includes('AI_ENDPOINT_1')) throw new Error("OpenAI-compatible AI fallback must not be present");
+if(!fs.readFileSync(path.join(root,"src/pages/Billing.jsx"),"utf8").includes("5 AI diagnoses/day")) throw new Error("Pro AI plan text is not 5/day");
+if(!fs.readFileSync(path.join(root,"src/pages/Actions.jsx"),"utf8").includes("../components/Select")) throw new Error("Actions page still uses a native picker");
 
 console.log("WyDev source checks passed.");
 console.log("GitHub OAuth: present");

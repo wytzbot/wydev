@@ -20,6 +20,61 @@ try{
   if(admin.apps.length) db=admin.firestore();
 }catch(e){ console.error("Firebase Admin initialization failed:",e.message); }
 
+async function firebaseMessaging(){
+  if(!db) return null;
+  try { const admin=require("firebase-admin"); return admin.messaging(); } catch { return null; }
+}
+async function publicFirebaseConfig(){
+  const projectId=String(process.env.FIREBASE_WEB_PROJECT_ID||process.env.FIREBASE_PROJECT_ID||"").trim();
+  const apiKey=String(process.env.FIREBASE_WEB_API_KEY||"").trim();
+  const sender=String(process.env.FIREBASE_WEB_MESSAGING_SENDER_ID||"").trim();
+  const appId=String(process.env.FIREBASE_WEB_APP_ID||"").trim();
+  const vapidKey=String(process.env.FIREBASE_WEB_VAPID_KEY||"").trim();
+  return {apiKey,authDomain:String(process.env.FIREBASE_WEB_AUTH_DOMAIN||`${projectId}.firebaseapp.com`),projectId,storageBucket:String(process.env.FIREBASE_WEB_STORAGE_BUCKET||`${projectId}.appspot.com`),messagingSenderId:sender,appId,vapidKey};
+}
+function tokenKey(token){return crypto.createHash("sha256").update(String(token)).digest("hex");}
+async function savePushToken(user,token,timezone){
+  if(!db) throw Object.assign(new Error("Push notifications require Firebase persistence to be configured."),{status:503,code:"NOTIFICATIONS_NOT_CONFIGURED"});
+  const ref=db.collection("wydev_fcm_tokens").doc(tokenKey(token));
+  await ref.set({userId:String(user.id),login:String(user.login||""),token:String(token),timezone:String(timezone||"UTC"),updatedAt:Date.now(),enabled:true},{merge:true});
+}
+async function removePushToken(user,token){if(!db||!token)return;await db.collection("wydev_fcm_tokens").doc(tokenKey(token)).delete().catch(()=>{});}
+async function userTokens(userId){if(!db)return [];const snap=await db.collection("wydev_fcm_tokens").where("userId","==",String(userId)).where("enabled","==",true).limit(50).get();return snap.docs.map(d=>({id:d.id,...d.data()}));}
+async function sendPushToUser(userId,title,body,data={}){
+  const messaging=await firebaseMessaging(); if(!messaging)return 0;
+  const rows=await userTokens(userId); let sent=0;
+  for(const row of rows){
+    try{await messaging.send({token:row.token,notification:{title,body},data:Object.fromEntries(Object.entries(data).map(([k,v])=>[String(k),String(v)]))});sent++;}
+    catch(e){if(["messaging/registration-token-not-registered","messaging/invalid-registration-token"].includes(e?.code))await db.collection("wydev_fcm_tokens").doc(row.id).delete().catch(()=>{});}
+  }
+  return sent;
+}
+async function sendPushOnce(userId,key,title,body,data={}){
+  if(!db)return 0;
+  const ref=db.collection("wydev_notification_log").doc(crypto.createHash("sha256").update(`${userId}:${key}`).digest("hex"));
+  let claimed=false;
+  try{
+    claimed=await db.runTransaction(async tx=>{
+      const snap=await tx.get(ref);
+      if(snap.exists)return false;
+      tx.create(ref,{userId:String(userId),key,status:"sending",createdAt:Date.now()});
+      return true;
+    });
+  }catch(e){
+    if(e?.code==="already-exists"||/already exists/i.test(e?.message||""))return 0;
+    throw e;
+  }
+  if(!claimed)return 0;
+  try{
+    const sent=await sendPushToUser(userId,title,body,data);
+    await ref.set({status:"sent",sentAt:Date.now(),sent},{merge:true});
+    return sent;
+  }catch(e){
+    await ref.delete().catch(()=>{});
+    throw e;
+  }
+}
+
 const GH="https://api.github.com";
 const FLW_TOKEN="https://idp.flutterwave.com/realms/flutterwave/protocol/openid-connect/token";
 const FLW_ENV=String(process.env.FLW_ENV||"live").trim().toLowerCase();
@@ -28,7 +83,7 @@ const FLW_BASE=String(process.env.FLW_BASE_URL||"").trim().replace(/\/$/,"") || 
   ?"https://f4bexperience.flutterwave.com"
   :"https://developersandbox-api.flutterwave.com");
 
-const memory={usage:new Map(),entitlements:new Map(),transactions:new Map(),preferences:new Map(),cache:new Map(),oauthStates:new Map()};
+const memory={usage:new Map(),entitlements:new Map(),transactions:new Map(),preferences:new Map(),cache:new Map(),oauthStates:new Map(),flwToken:null};
 async function getEntitlement(userId){
   if(db){const d=await db.collection("wydev_entitlements").doc(String(userId)).get();return d.exists?d.data():null}
   return memory.entitlements.get(String(userId))||null;
@@ -38,12 +93,24 @@ async function setEntitlement(userId,data){
   memory.entitlements.set(String(userId),data);
 }
 async function getUsage(userId,day){
-  if(db){const d=await db.collection("wydev_ai_usage").doc(`${userId}_${day}`).get();return d.exists?(d.data().count||0):0}
+  if(db){const d=await db.collection("wydev_ai_usage").doc(`${userId}_${day}`).get();return d.exists?(Number(d.data().count)||0):0}
   return memory.usage.get(`${userId}:${day}`)||0;
 }
-async function incrementUsage(userId,day){
-  if(db){const ref=db.collection("wydev_ai_usage").doc(`${userId}_${day}`);await db.runTransaction(async tx=>{const d=await tx.get(ref);tx.set(ref,{count:(d.exists?(d.data().count||0):0)+1,updatedAt:Date.now()},{merge:true})});return}
-  const k=`${userId}:${day}`;memory.usage.set(k,(memory.usage.get(k)||0)+1);
+async function incrementUsage(userId,day,limit){
+  if(db){
+    const ref=db.collection("wydev_ai_usage").doc(`${userId}_${day}`);
+    return db.runTransaction(async tx=>{
+      const d=await tx.get(ref);
+      const count=d.exists?(Number(d.data().count)||0):0;
+      if(count>=limit)throw Object.assign(new Error(`Daily AI diagnostic limit reached (${limit}). Try again tomorrow.`),{status:429,code:"AI_QUOTA_EXCEEDED",limit,used:count});
+      const next=count+1;
+      tx.set(ref,{count:next,updatedAt:Date.now()},{merge:true});
+      return next;
+    });
+  }
+  const k=`${userId}:${day}`,count=memory.usage.get(k)||0;
+  if(count>=limit)throw Object.assign(new Error(`Daily AI diagnostic limit reached (${limit}). Try again tomorrow.`),{status:429,code:"AI_QUOTA_EXCEEDED",limit,used:count});
+  const next=count+1; memory.usage.set(k,next); return next;
 }
 async function setTransaction(reference,data){
   if(db){await db.collection("wydev_transactions").doc(reference).set(data,{merge:true});return}
@@ -73,15 +140,13 @@ async function listDueEntitlements(){
   for(let page=0;page<20;page++){
     let q=db.collection("wydev_entitlements")
       .where("status","==","active")
-      .where("renewAt","<=",Date.now())
-      .orderBy("renewAt","asc")
-      .limit(20);
+      .limit(100);
     if(cursor)q=q.startAfter(cursor);
     const snap=await q.get();
     if(snap.empty)break;
-    out.push(...snap.docs.map(d=>({id:d.id,...d.data()})));
+    out.push(...snap.docs.map(d=>({id:d.id,...d.data()})).filter(x=>Number(x.renewAt||0)<=Date.now()).sort((a,b)=>Number(a.renewAt||0)-Number(b.renewAt||0)));
     cursor=snap.docs[snap.docs.length-1];
-    if(snap.size<20)break;
+    if(snap.size<100)break;
   }
   return out;
 }
@@ -175,7 +240,7 @@ async function oauthCallback(req,res){
 
 function limitKey(s){return `${s.id||s.login}:${new Date().toISOString().slice(0,10)}`;}
 async function entitlement(s){const e=await getEntitlement(s.id);return e?.status==="active"&&(!e.expiresAt||e.expiresAt>Date.now())?"pro":"free";}
-async function checkAIQuota(s){const day=new Date().toISOString().slice(0,10),used=await getUsage(s.id,day),plan=await entitlement(s),limit=plan==="pro"?Number(process.env.AI_PRO_DAILY_LIMIT||20):Number(process.env.AI_FREE_DAILY_LIMIT||5);if(used>=limit)throw Object.assign(new Error(`Daily AI diagnostic limit reached (${limit}). Try again tomorrow.`),{status:429,code:"AI_QUOTA_EXCEEDED",limit,used,plan});return {day,plan,limit,used};}
+async function checkAIQuota(s){const day=new Date().toISOString().slice(0,10),used=await getUsage(s.id,day),plan=await entitlement(s),limit=Math.max(1,plan==="pro"?Number(process.env.AI_PRO_DAILY_LIMIT||5):Number(process.env.AI_FREE_DAILY_LIMIT||3));if(used>=limit)throw Object.assign(new Error(`Daily AI diagnostic limit reached (${limit}). Try again tomorrow.`),{status:429,code:"AI_QUOTA_EXCEEDED",limit,used,plan});return {day,plan,limit,used};}
 // Redacts likely secrets before code is sent to the AI. This must NEVER
 // corrupt the surrounding code -- mangled output reads to the model (and to
 // a human) exactly like a truncated/broken file, which produces false "this
@@ -206,27 +271,46 @@ function redactSecrets(value){
 }
 function parseGeminiText(data){return data?.candidates?.[0]?.content?.parts?.map(p=>p.text||"").join("")||"";}
 async function geminiDiagnose(prompt,schema,opts={}){
-  const key=process.env.GEMINI_API_KEY;if(!key)throw new Error("GEMINI_API_KEY is not configured");
-  const model=process.env.GEMINI_MODEL||"gemini-3.5-flash-lite";
-  const url=`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
-  const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{role:"user",parts:[{text:prompt}]}],generationConfig:{temperature:0.1,maxOutputTokens:opts.maxOutputTokens||900,responseMimeType:"application/json",responseSchema:schema}})});
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok)throw Object.assign(new Error(data?.error?.message||`Gemini request failed (${r.status})`),{status:r.status,provider:"gemini"});
-  const text=parseGeminiText(data);if(!text)throw new Error("Gemini returned an empty diagnostic");
-  let out;try{out=JSON.parse(text)}catch{throw new Error("Gemini returned invalid diagnostic JSON")}
-  const valid=opts.validate?opts.validate(out):(out.root_cause&&Array.isArray(out.affected_files)&&Array.isArray(out.evidence));
-  if(!valid)throw new Error("AI response validation failed");
-  return out;
+  // Gemini-only provider chain. These are current stable Gemini 3 models;
+  // each failure falls through to the next active model rather than falling
+  // back to an unrelated provider. GEMINI_MODEL may select the first model,
+  // while GEMINI_FALLBACK_MODELS can add/reorder stable Gemini models.
+  const stable=[
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite"
+  ];
+  const configured=[String(process.env.GEMINI_MODEL||"").trim(),...String(process.env.GEMINI_FALLBACK_MODELS||"").split(",").map(x=>x.trim()).filter(Boolean)];
+  const active=new Set(stable); const models=[...configured,...stable].filter((x,i,a)=>x&&active.has(x)&&a.indexOf(x)===i);
+  const failures=[];
+  const key=String(process.env.GEMINI_API_KEY||"").trim();
+  if(!key) throw Object.assign(new Error("Gemini AI is not configured. Set GEMINI_API_KEY in Vercel."),{status:503,code:"GEMINI_NOT_CONFIGURED"});
+  for(const model of models){
+    try{
+      const url=`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
+      const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{role:"user",parts:[{text:prompt}]}],generationConfig:{maxOutputTokens:opts.maxOutputTokens||500,responseMimeType:"application/json",responseSchema:schema}})});
+      const data=await r.json().catch(()=>({}));
+      if(!r.ok){failures.push(`${model}: ${data?.error?.message||r.status}`);continue;}
+      const text=parseGeminiText(data); if(!text) throw new Error("empty response");
+      const out=JSON.parse(text); const valid=opts.validate?opts.validate(out):(out.root_cause&&Array.isArray(out.affected_files)&&Array.isArray(out.evidence));
+      if(!valid) throw new Error("AI response validation failed");
+      return out;
+    }catch(e){failures.push(`${model}: ${e.message}`)}
+  }
+  throw Object.assign(new Error("All configured Gemini models were unavailable. Try again shortly."),{status:503,code:"GEMINI_ALL_MODELS_FAILED",details:failures.slice(-6)});
 }
 async function aiDiagnose(s,payload){
   const quota=await checkAIQuota(s);
   const files=Array.isArray(payload.relatedFiles)?payload.relatedFiles.slice(0,8):[];
   const context=JSON.stringify({error:redactSecrets(payload.error),logs:redactSecrets(String(payload.logs||"").slice(0,12000)),file:redactSecrets(payload.file),content:redactSecrets(String(payload.content||"").slice(0,24000)),relatedFiles:files.map(x=>({path:redactSecrets(x.path),content:redactSecrets(String(x.content||"").slice(0,10000))})),package:redactSecrets(payload.package)});
   const schema={type:"object",properties:{title:{type:"string"},severity:{type:"string"},root_cause:{type:"string"},affected_files:{type:"array",items:{type:"string"}},affected_lines:{type:"array",items:{type:"string"}},evidence:{type:"array",items:{type:"string"}},likely_reason:{type:"string"},recommended_action:{type:"string"},confidence:{type:"number"}},required:["title","severity","root_cause","affected_files","affected_lines","evidence","likely_reason","recommended_action","confidence"]};
-  const prompt=`You are WyDev Diagnostic Engine. Diagnose only. NEVER edit code, generate patches, replace files, commit, push, rename files, or perform autonomous actions. Identify the exact problem from the supplied minimum context. If evidence is insufficient, say so. Return only valid JSON matching the supplied schema. Keep the diagnosis concise and developer-readable.\nCONTEXT:\n${context}`;
-  const out=await geminiDiagnose(prompt,schema);
-  await incrementUsage(s.id,quota.day);
-  return {...out,usage:{used:quota.used+1,limit:quota.limit,remaining:Math.max(0,quota.limit-quota.used-1),plan:quota.plan}};
+  const prompt=`You are WyDev Diagnostic Engine. Diagnose only. NEVER edit code, generate patches, replace files, commit, push, rename files, or perform autonomous actions. Identify the exact problem from the supplied minimum context. If evidence is insufficient, say so. Return only valid JSON matching the supplied schema. Keep the diagnosis very concise: identify the problem, evidence, and next action in short sentences; do not write a long explanation.\nCONTEXT:\n${context}`;
+  const out=await geminiDiagnose(prompt,schema,{maxOutputTokens:700});
+  const used=await incrementUsage(s.id,quota.day,quota.limit);
+  return {...out,usage:{used,limit:quota.limit,remaining:Math.max(0,quota.limit-used),plan:quota.plan}};
 }
 
 // Whole-repository diagnosis: instead of one file plus a handful of "related"
@@ -270,14 +354,15 @@ async function aiDiagnoseRepo(s,payload){
     },required:["title","severity","affected_files","root_cause","evidence","recommended_action"]}},
     confidence:{type:"number"}
   },required:["summary","overall_risk","architecture_notes","issues","confidence"]};
-  const prompt=`You are WyDev's Repository Diagnostic Engine. You are given the contents of an entire codebase (as many files as fit within the supplied context budget). Diagnose only. NEVER edit code, generate patches, rewrite files, commit, push, rename files, or perform autonomous actions.\nIMPORTANT -- read this before diagnosing: some file values in the payload have "truncated": true and end with a WYDEV DIAGNOSTIC NOTE comment. That comment marks where THIS TOOL cut the file off to stay within its own size budget -- it is not part of the real source file and is never itself a code problem. A file ending abruptly right before that marker is expected and must NOT be reported as "truncated code", "incomplete implementation", or similar. Only report a file as incomplete/broken if the evidence for that appears BEFORE the marker, in code the file's author actually wrote. Likewise, values shown as [REDACTED], [REDACTED_TOKEN], or [REDACTED_PRIVATE_KEY] are secrets this tool intentionally masked before sending you the code -- never report these placeholders as syntax errors, missing values, or broken code.\nPerform a DEEP, holistic diagnosis across the whole repository, not just one file in isolation:\n- Find concrete bugs and correctness issues, including ones that only show up when files interact (mismatched contracts between frontend/backend, inconsistent field names, wrong endpoints, race conditions).\n- Flag structural and architectural risks: duplicated logic, dead code, missing error handling, inconsistent patterns between similar files, security issues (secrets, injection, auth gaps), fragile assumptions.\n- Group findings into discrete "issues", each naming the exact affected file paths and citing concrete evidence (function/variable names, line-level detail) from the supplied content -- never invent files or code that was not given to you.\n- If the supplied context is insufficient to be sure about something, say so in that issue instead of guessing.\nReturn only valid JSON matching the supplied schema. Be specific and developer-readable; this explanation is read directly by the developer, so make it deep and useful rather than generic.\nCONTEXT:\n${context}`;
-  const out=await geminiDiagnose(prompt,schema,{maxOutputTokens:3500,validate:o=>o&&typeof o.summary==="string"&&Array.isArray(o.issues)});
-  await incrementUsage(s.id,quota.day);
-  return {...out,filesTotal:incoming.length,filesAnalyzed:included.length,omittedFiles:omitted,usage:{used:quota.used+1,limit:quota.limit,remaining:Math.max(0,quota.limit-quota.used-1),plan:quota.plan}};
+  const prompt=`You are WyDev's Repository Diagnostic Engine. You are given the contents of an entire codebase (as many files as fit within the supplied context budget). Diagnose only. NEVER edit code, generate patches, rewrite files, commit, push, rename files, or perform autonomous actions.\nIMPORTANT -- read this before diagnosing: some file values in the payload have "truncated": true and end with a WYDEV DIAGNOSTIC NOTE comment. That comment marks where THIS TOOL cut the file off to stay within its own size budget -- it is not part of the real source file and is never itself a code problem. A file ending abruptly right before that marker is expected and must NOT be reported as "truncated code", "incomplete implementation", or similar. Only report a file as incomplete/broken if the evidence for that appears BEFORE the marker, in code the file's author actually wrote. Likewise, values shown as [REDACTED], [REDACTED_TOKEN], or [REDACTED_PRIVATE_KEY] are secrets this tool intentionally masked before sending you the code -- never report these placeholders as syntax errors, missing values, or broken code.\nPerform a DEEP, holistic diagnosis across the whole repository, not just one file in isolation:\n- Find concrete bugs and correctness issues, including ones that only show up when files interact (mismatched contracts between frontend/backend, inconsistent field names, wrong endpoints, race conditions).\n- Flag structural and architectural risks: duplicated logic, dead code, missing error handling, inconsistent patterns between similar files, security issues (secrets, injection, auth gaps), fragile assumptions.\n- Group findings into discrete "issues", each naming the exact affected file paths and citing concrete evidence (function/variable names, line-level detail) from the supplied content -- never invent files or code that was not given to you.\n- If the supplied context is insufficient to be sure about something, say so in that issue instead of guessing.\nReturn only valid JSON matching the supplied schema. Keep it extremely concise: at most 5 important issues, short direct phrases, no long explanations, no essays, and no repeated context.\nCONTEXT:\n${context}`;
+  const out=await geminiDiagnose(prompt,schema,{maxOutputTokens:700,validate:o=>o&&typeof o.summary==="string"&&Array.isArray(o.issues)});
+  const quotaUsed=await incrementUsage(s.id,quota.day,quota.limit);
+  return {...out,filesTotal:incoming.length,filesAnalyzed:included.length,omittedFiles:omitted,usage:{used:quotaUsed,limit:quota.limit,remaining:Math.max(0,quota.limit-quotaUsed),plan:quota.plan}};
 }
 
 function flwRequestId(prefix){return `${prefix}${crypto.randomBytes(18).toString("hex")}`;}
 async function flwToken(){
+  if(memory.flwToken&&Number(memory.flwToken.expiresAt)>Date.now()+30000)return memory.flwToken.value;
   const clientId=String(process.env.FLW_CLIENT_ID||"").trim();
   const clientSecret=String(process.env.FLW_CLIENT_SECRET||"").trim();
   if(!clientId||!clientSecret)throw Object.assign(new Error("Flutterwave v4 credentials are not configured. Set FLW_CLIENT_ID and FLW_CLIENT_SECRET in Vercel."),{status:500,code:"FLW_CREDENTIALS_MISSING"});
@@ -287,13 +372,15 @@ async function flwToken(){
     const detail=d?.error_description||d?.error?.message||d?.message||`HTTP ${r.status}`;
     throw Object.assign(new Error(`Flutterwave authentication failed (${r.status}): ${detail}`),{status:r.status,code:d?.error?.code||d?.error||"FLW_AUTH_FAILED"});
   }
+  const expiresIn=Math.max(60,Number(d.expires_in)||300);
+  memory.flwToken={value:d.access_token,expiresAt:Date.now()+expiresIn*1000};
   return d.access_token;
 }
 async function flw(path,opts={}){
   const token=await flwToken();
   const trace=flwRequestId("WYTRACE");
   const idempotency=flwRequestId("WYREQ");
-  const headers={"Authorization":`Bearer ${token}`,"Accept":"application/json","Content-Type":"application/json","X-Trace-Id":trace,"X-Idempotency-Key":idempotency,...(opts.headers||{})};
+  const headers={"Authorization":`Bearer ${token}`,"Accept":"application/json","Content-Type":"application/json","X-Trace-Id":trace,"X-Idempotency-Key":String(opts.idempotencyKey||idempotency),...(opts.headers||{})};
   if(process.env.FLW_SCENARIO_KEY)headers["X-Scenario-Key"]=String(process.env.FLW_SCENARIO_KEY);
   const url=FLW_BASE+path;
   const r=await fetch(url,{...opts,headers});
@@ -308,7 +395,7 @@ async function flw(path,opts={}){
   }
   return d;
 }
-function amountFor(currency){if(currency==="NGN"){const n=Number(process.env.FLW_PRO_NGN||9000);if(!n)throw new Error("FLW_PRO_NGN is required for NGN checkout");return n}return Number(process.env.FLW_PRO_USD||9.99);}
+function amountFor(currency){if(currency==="NGN"){const n=Number(process.env.FLW_PRO_NGN||1000);if(!n)throw new Error("FLW_PRO_NGN is required for NGN checkout");return n}return Number(process.env.FLW_PRO_USD||1);}
 
 async function findCustomerByEmail(email){
   // Flutterwave v4 does not document a customer-search endpoint consistently across environments,
@@ -348,12 +435,14 @@ async function createBillingCheckout(s,payload){
   const currency=payload.currency==="NGN"?"NGN":"USD", amount=amountFor(currency), reference=`WYDEV-${String(s.id).slice(0,12)}-${Date.now().toString(36)}-${crypto.randomBytes(5).toString("hex")}`;
   const customerPayload={email:payload.email||`${s.login}@users.noreply.github.com`,name:{first:s.name||s.login},meta:{github_id:String(s.id)}};
   if(payload.payment_method?.type!=="card")throw new Error("Select card checkout.");
-  const customerId=await resolveCustomerId(customerPayload);
+  const existing=await getEntitlement(s.id);
+  const customerId=existing?.customerId||await resolveCustomerId(customerPayload);
   const pm=await flw("/payment-methods",{method:"POST",body:JSON.stringify({type:"card",card:payload.payment_method.card})});
   const paymentMethodId=pm.data?.id;
   if(!paymentMethodId)throw new Error("Flutterwave did not return a payment method id");
-  const charge=await flw("/charges",{method:"POST",body:JSON.stringify({amount,currency,reference,customer_id:customerId,payment_method_id:paymentMethodId,redirect_url:`${origin(payload.req)}/?billing=return&tx_ref=${encodeURIComponent(reference)}#billing`,recurring:false})});
-  await setTransaction(reference,{userId:String(s.id),amount,currency,status:charge.data?.status||"pending",chargeId:charge.data?.id,customerId,paymentMethodId,createdAt:Date.now()});
+  await setTransaction(reference,{userId:String(s.id),amount,currency,status:"initiating",customerId,paymentMethodId,createdAt:Date.now(),renewal:false});
+  const charge=await flw("/charges",{method:"POST",idempotencyKey:reference,body:JSON.stringify({amount,currency,reference,customer_id:customerId,payment_method_id:paymentMethodId,redirect_url:`${origin(payload.req)}/?billing=return&tx_ref=${encodeURIComponent(reference)}#billing`,recurring:false})});
+  await setTransaction(reference,{status:charge.data?.status||"pending",chargeId:charge.data?.id,updatedAt:Date.now()});
   return charge;
 }
 async function authorizeCharge(s,id,authorization,reference){
@@ -364,23 +453,66 @@ async function authorizeCharge(s,id,authorization,reference){
   const d=await flw(`/charges/${encodeURIComponent(id)}`,{method:"PUT",body:JSON.stringify({authorization})});
   return d;
 }
+function addOneMonth(ts){
+  const d=new Date(Number(ts)||Date.now()),day=d.getUTCDate();
+  d.setUTCMonth(d.getUTCMonth()+1);
+  if(d.getUTCDate()!==day){d.setUTCDate(0)}
+  return d.getTime();
+}
+function daysUntil(ts){const a=new Date();const b=new Date(Number(ts)||0);const utc=(d)=>Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate());return Math.round((utc(b)-utc(a))/86400000)}
+async function runScheduledNotifications(){
+  if(!db)return {morning:0,repoWarnings:0,renewalWarnings:0};
+  let morning=0,repoWarnings=0,renewalWarnings=0;
+  const active=await db.collection("wydev_entitlements").where("status","==","active").limit(500).get();
+  for(const doc of active.docs){
+    const e=doc.data(),uid=doc.id,days=daysUntil(e.renewAt);
+    if(days===10||days===5) renewalWarnings+=await sendPushOnce(uid,`renewal:${e.renewAt}:${days}`,"WyDev Pro renewal reminder",`Your Pro subscription renews in ${days} days. Your Pro access stays active while renewal succeeds.`,{type:"renewal",days:String(days)});
+  }
+  const subs=await db.collection("wydev_fcm_tokens").where("enabled","==",true).limit(1000).get();
+  const users=new Map();
+  for(const doc of subs.docs){const t=doc.data(); if(!users.has(String(t.userId))) users.set(String(t.userId),String(t.timezone||"UTC"));}
+  const now=new Date();
+  for(const [uid,tz] of users){
+    let hour=-1,dateKey="";
+    try{const parts=new Intl.DateTimeFormat("en-CA",{timeZone:tz,hour:"2-digit",hour12:false,year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(now);const m=Object.fromEntries(parts.map(x=>[x.type,x.value]));hour=Number(m.hour);dateKey=`${m.year}-${m.month}-${m.day}`;}catch{}
+    if(hour>=7&&hour<=10) morning+=await sendPushOnce(uid,`good-morning:${dateKey}`,"Good morning ☀️","Good morning! Your GitHub workspace is ready. Pick a repository and keep building.",{type:"morning"});
+  }
+  return {morning,repoWarnings,renewalWarnings};
+}
+async function claimRenewal(userId,reference){
+  if(!db)return true;
+  const ref=db.collection("wydev_entitlements").doc(String(userId));
+  const now=Date.now();
+  return db.runTransaction(async tx=>{
+    const snap=await tx.get(ref);
+    if(!snap.exists)return false;
+    const e=snap.data()||{};
+    if(e.status!=="active"||Number(e.renewAt||0)>now)return false;
+    const started=Number(e.renewalStartedAt||0);
+    if(e.renewalPending && started && now-started<6*60*60*1000)return false;
+    tx.set(ref,{renewalPending:true,renewalStartedAt:now,renewalReference:reference,updatedAt:now},{merge:true});
+    return true;
+  });
+}
 async function renewDue(){
   const due=await listDueEntitlements(); let processed=0;
   for(const e of due){
     if(!e.customerId||!e.paymentMethodId||!e.currency)continue;
     try{
-      const reference=`WYDEV-R-${String(e.id).slice(0,12)}-${Date.now().toString(36)}-${crypto.randomBytes(5).toString("hex")}`,amount=amountFor(e.currency);
-      const d=await flw("/charges",{method:"POST",body:JSON.stringify({reference,currency:e.currency,amount,customer_id:e.customerId,payment_method_id:e.paymentMethodId,recurring:true})});
-      const status=d.data?.status||"pending"; await setTransaction(reference,{userId:e.id,amount,currency:e.currency,status,chargeId:d.data?.id,customerId:e.customerId,paymentMethodId:e.paymentMethodId,createdAt:Date.now(),renewal:true});
+      const renewalAt=Number(e.renewAt||0),reference=`WYDEV-R-${String(e.id).slice(0,12)}-${renewalAt}`,amount=amountFor(e.currency);
+      if(!(await claimRenewal(e.id,reference))) continue;
+      const d=await flw("/charges",{method:"POST",idempotencyKey:reference,body:JSON.stringify({reference,currency:e.currency,amount,customer_id:e.customerId,payment_method_id:e.paymentMethodId,recurring:true})});
+      const status=String(d.data?.status||"failed").toLowerCase();
+      await setTransaction(reference,{userId:e.id,amount,currency:e.currency,status,chargeId:d.data?.id,customerId:e.customerId,paymentMethodId:e.paymentMethodId,createdAt:Date.now(),renewal:true});
       if(status==="succeeded"){
-        const expiresAt=Date.now()+31*86400000;
-        await setEntitlement(e.id,{status:"active",expiresAt,renewAt:expiresAt,renewalPending:false,updatedAt:Date.now(),lastRenewalReference:reference});
-      }else if(["failed","cancelled","canceled"].includes(String(status).toLowerCase())){
-        await setEntitlement(e.id,{status:"past_due",renewalPending:false,updatedAt:Date.now(),lastRenewalReference:reference});
+        const base=Math.max(Date.now(),Number(e.expiresAt)||0);
+        const expiresAt=addOneMonth(base);
+        await setEntitlement(e.id,{status:"active",expiresAt,renewAt:expiresAt,renewalPending:false,renewalStartedAt:null,renewalReference:null,updatedAt:Date.now(),lastRenewalReference:reference});
       }else{
-        // A pending charge should not revoke an otherwise active subscription.
-        // Give the webhook time to settle it and retry later if necessary.
-        await setEntitlement(e.id,{status:"active",renewalPending:true,renewAt:Date.now()+6*3600000,updatedAt:Date.now(),lastRenewalReference:reference});
+        // Flutterwave documents recurring charges as terminal success/failure
+        // charges. Never silently extend a pending/unknown result; the webhook
+        // can restore the entitlement if the provider later reports success.
+        await setEntitlement(e.id,{status:"past_due",renewalPending:false,renewalStartedAt:null,renewalReference:null,updatedAt:Date.now(),lastRenewalReference:reference});
       }
       processed++;
     }catch{await setEntitlement(e.id,{status:"past_due",updatedAt:Date.now()});}
@@ -405,14 +537,17 @@ async function recoverEntitlement(s,requestedReference=""){
       }
     }catch{}
   }
+  const recoveryCutoff=Date.now()-7*86400000;
   for(const tx of transactions){
     if(!tx.chargeId||!tx.amount||!tx.currency)continue;
+    if(!wanted && Number(tx.createdAt||0)<recoveryCutoff) continue;
     try{
       const d=await flw(`/charges/${encodeURIComponent(tx.chargeId)}`),x=d.data||{};
       await setTransaction(tx.reference,{status:x.status||"pending",chargeId:tx.chargeId,updatedAt:Date.now()});
       if(x.status==="succeeded"&&String(x.reference||"")===String(tx.reference)&&Number(x.amount)===Number(tx.amount)&&String(x.currency)===String(tx.currency)){
-        const expiresAt=Date.now()+31*86400000;
+        const expiresAt=addOneMonth(Date.now());
         await setEntitlement(s.id,{status:"active",expiresAt,renewAt:expiresAt,reference:tx.reference,customerId:tx.customerId||x.customer_id||null,paymentMethodId:tx.paymentMethodId||x.payment_method_details?.id||null,currency:tx.currency,updatedAt:Date.now(),recoveredAt:Date.now()});
+        try{await sendPushOnce(s.id,`pro-unlocked:${tx.reference}`,"WyDev Pro unlocked 🎉","Your Pro subscription is active.",{type:"pro_unlocked"})}catch{}
         return {active:true,expiresAt,recovered:true,reference:tx.reference};
       }
     }catch{}
@@ -424,6 +559,10 @@ async function verifyCharge(s,id,reference){
   const ref=String(reference||"").trim();
   const expected=await getTransaction(ref);
   if(!expected||String(expected.userId)!==String(s.id))throw new Error("Transaction does not belong to this account");
+  const existingEntitlement=await getEntitlement(s.id);
+  if(String(expected.status||"").toLowerCase()==="succeeded" && String(existingEntitlement?.reference||"")===ref && existingEntitlement?.status==="active" && Number(existingEntitlement?.expiresAt||0)>Date.now()){
+    return {active:true,status:"succeeded",expiresAt:existingEntitlement.expiresAt,replayed:true};
+  }
   const chargeId=id||expected.chargeId;
   if(!chargeId)throw Object.assign(new Error("Payment transaction is still being created. Please wait a moment and try again."),{status:409});
   if(expected.chargeId&&String(expected.chargeId)!==String(chargeId))throw Object.assign(new Error("Charge does not match the pending transaction"),{status:409});
@@ -431,8 +570,9 @@ async function verifyCharge(s,id,reference){
   const providerRef=String(x.reference||"");
   await setTransaction(ref,{status:x.status||"pending",chargeId,updatedAt:Date.now()});
   if(x.status==="succeeded"&&providerRef===ref&&Number(x.amount)===Number(expected.amount)&&String(x.currency)===String(expected.currency)){
-    const expiresAt=Date.now()+31*86400000;
+    const expiresAt=addOneMonth(Date.now());
     await setEntitlement(s.id,{status:"active",expiresAt,renewAt:expiresAt,reference:ref,customerId:expected.customerId,paymentMethodId:expected.paymentMethodId,currency:expected.currency,updatedAt:Date.now()});
+    try{await sendPushOnce(s.id,`pro-unlocked:${ref}`,"WyDev Pro unlocked 🎉","Your Pro subscription is active. Pro limits now apply to repositories, AI, reverts and workflow reruns.",{type:"pro_unlocked"})}catch{}
     return {active:true,status:x.status,expiresAt};
   }
   return {active:false,status:x.status||"pending"};
@@ -447,6 +587,17 @@ async function handler(req,res){
     if(p==="/auth/me"&&req.method==="GET"){const s=session(req);return json(res,200,s?{user:{id:s.id,login:s.login,name:s.name,avatar:s.avatar}}:{user:null});}
     if(p==="/auth/logout"&&req.method==="POST"){clearSession(res);return json(res,200,{ok:true});}
 
+    if(p==="/notifications/config"&&req.method==="GET") return json(res,200,await publicFirebaseConfig());
+    if(p==="/notifications/subscribe"&&req.method==="POST") { const u=requireSession(req,res); if(!u)return; const b=await body(req); const token=String(b.token||"").trim(); if(!token)return json(res,400,{error:"Push token required"}); await savePushToken(u,token,b.timezone); return json(res,200,{ok:true}); }
+    if(p==="/notifications/unsubscribe"&&req.method==="POST") { const u=requireSession(req,res); if(!u)return; const b=await body(req); await removePushToken(u,String(b.token||"")); return json(res,200,{ok:true}); }
+    if(p==="/notifications/build-failed"&&req.method==="POST") {
+      const auth=String(req.headers.authorization||""); const token=auth.startsWith("Bearer ")?auth.slice(7):""; if(!token)return json(res,401,{error:"GitHub workflow token required"});
+      const b=await body(req),repository=String(b.repository||"").trim(),runId=String(b.runId||"").trim(); if(!repository)return json(res,400,{error:"Repository required"});
+      const repo=await gh(token,`/repos/${repository}`); const ownerLogin=repo?.owner?.login; if(!ownerLogin)return json(res,404,{error:"Repository owner not found"});
+      if(String(repo.full_name||"").toLowerCase()!==repository.toLowerCase())return json(res,403,{error:"Repository mismatch"});
+      if(db){const snap=await db.collection("wydev_fcm_tokens").where("login","==",String(ownerLogin)).where("enabled","==",true).limit(100).get(); const ids=[...new Set(snap.docs.map(d=>String(d.data().userId)))]; for(const uid of ids) await sendPushToUser(uid,"Build failed ❌",`${repository} has a failed GitHub Actions build. Open WyDev to inspect the run.`,{type:"build_failed",repository,runId});}
+      return json(res,200,{ok:true});
+    }
     // Machine-to-machine billing endpoints must authenticate with their own
     // Flutterwave/cron credentials before the normal GitHub session gate.
     // Flutterwave webhooks and Vercel cron requests do not carry a user cookie.
@@ -461,12 +612,16 @@ async function handler(req,res){
           const ref=String(x.reference||tx.reference||"").trim();
           const rec=ref?await getTransaction(ref):null;
           if(rec&&String(rec.chargeId||tx.id)===String(tx.id)&&ref===String(rec.reference||ref)){
+            if(String(rec.status||"").toLowerCase()==="succeeded") return json(res,200,{received:true,duplicate:true});
             await setTransaction(ref,{status:x.status||"pending",chargeId:tx.id,updatedAt:Date.now()});
             if(x.status==="succeeded"&&String(x.reference||"")===ref&&Number(x.amount)===Number(rec.amount)&&String(x.currency)===String(rec.currency)){
               const existing=await getEntitlement(rec.userId);
-              const base=Math.max(Date.now(),Number(existing?.expiresAt)||0);
-              const expiresAt=base+31*86400000;
-              await setEntitlement(rec.userId,{status:"active",expiresAt,renewAt:expiresAt,reference:ref,customerId:rec.customerId,paymentMethodId:rec.paymentMethodId,currency:rec.currency,updatedAt:Date.now()});
+              const base=rec.renewal?Math.max(Date.now(),Number(existing?.expiresAt)||0):Date.now();
+              const expiresAt=addOneMonth(base);
+              await setEntitlement(rec.userId,{status:"active",expiresAt,renewAt:expiresAt,reference:ref,customerId:rec.customerId,paymentMethodId:rec.paymentMethodId,currency:rec.currency,updatedAt:Date.now(),renewalPending:false});
+              try{await sendPushOnce(rec.userId,`pro-unlocked:${ref}`,rec.renewal?"WyDev Pro renewed 🎉":"WyDev Pro unlocked 🎉",rec.renewal?"Your Pro subscription was renewed successfully.":"Your Pro subscription is active.",{type:rec.renewal?"pro_renewed":"pro_unlocked"})}catch{}
+            } else if(rec.renewal&&["failed","cancelled","canceled","voided"].includes(String(x.status||"").toLowerCase())){
+              await setEntitlement(rec.userId,{status:"past_due",renewalPending:false,lastRenewalReference:ref,updatedAt:Date.now()});
             }
           }
         }catch{}
@@ -476,7 +631,7 @@ async function handler(req,res){
     if(p==="/billing/renew"&&req.method==="POST"){
       const auth=req.headers.authorization||"";
       if(!process.env.CRON_SECRET||auth!==`Bearer ${process.env.CRON_SECRET}`)return json(res,401,{error:"Unauthorized"});
-      return json(res,200,{processed:await renewDue()});
+      return json(res,200,{processed:await renewDue(),notifications:await runScheduledNotifications()});
     }
 
     const s=requireSession(req,res);if(!s)return;
@@ -516,18 +671,18 @@ async function handler(req,res){
       const payload={name,private:!!b.private,auto_init:true};
       if(b.description)payload.description=String(b.description).slice(0,350);
       const created=await gh(s.token,"/user/repos",{method:"POST",body:JSON.stringify(payload)});
+      if(plan!=="pro"){
+        const totalAfterCreate=Number((await gh(s.token,"/user/repos?per_page=100")).length||0);
+        if(totalAfterCreate>=8) await sendPushOnce(s.id,`repo-limit:${totalAfterCreate}:${new Date().toISOString().slice(0,10)}`,"Free repository limit is getting close",`You now have ${totalAfterCreate} of 10 free repositories. Upgrade to Pro before you reach the limit.`,{type:"repo_limit",count:String(totalAfterCreate)});
+      }
       return json(res,201,created);
     }
     const bm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/branches$/);
     if(bm&&req.method==="POST"){const owner=decodeURIComponent(bm[1]),repo=decodeURIComponent(bm[2]),b=await body(req);const name=String(b.name||"").trim();const from=String(b.from||"").trim();if(!/^[A-Za-z0-9._\/-]{1,120}$/.test(name)||name.startsWith("-")||name.endsWith("/"))return json(res,400,{error:"Invalid branch name"});const ref=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(from)}`);const created=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/refs`,{method:"POST",body:JSON.stringify({ref:`refs/heads/${name}`,sha:ref.object.sha})});return json(res,201,{name,sha:created.object.sha});}
-    // Pull requests are proxied the same way as everything else — the user's own
-    // GitHub token does the work, so this costs nothing extra to run. Gated to
-    // Pro as a plan perk (see checkAIQuota/entitlement for the same pattern).
+    // Pull requests are free: the user's own GitHub token performs the operation.
     const prm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/pulls$/);
     if(prm){
       const owner=decodeURIComponent(prm[1]),repo=decodeURIComponent(prm[2]);
-      const plan=await entitlement(s);
-      if(plan!=="pro")return json(res,402,{error:"Pull requests are a WyDev Pro feature. Upgrade to create and manage pull requests.",code:"PRO_REQUIRED"});
       if(req.method==="GET")return json(res,200,await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?state=all&per_page=30`));
       if(req.method==="POST"){
         const b=await body(req);
@@ -540,6 +695,52 @@ async function handler(req,res){
         return json(res,201,created);
       }
     }
+    // GitHub Actions Control Center. These endpoints keep the user's GitHub
+    // token server-side and turn common Actions chores into quick mobile-
+    // friendly operations. Reading, inspection, dispatch and cancellation are
+    // free; rerunning failed jobs is the paid Actions operation.
+    const arm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/actions\/runs$/);
+    if(arm&&req.method==="GET"){
+      const owner=decodeURIComponent(arm[1]),repo=decodeURIComponent(arm[2]);
+      const runs=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs?per_page=25`);
+      return json(res,200,{runs:Array.isArray(runs?.workflow_runs)?runs.workflow_runs:[],total:Number(runs?.total_count||0)});
+    }
+    const ajm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/actions\/runs\/([^/]+)\/jobs$/);
+    if(ajm&&req.method==="GET"){
+      const owner=decodeURIComponent(ajm[1]),repo=decodeURIComponent(ajm[2]),runId=decodeURIComponent(ajm[3]);
+      const jobs=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${encodeURIComponent(runId)}/jobs?per_page=100`);
+      return json(res,200,{jobs:Array.isArray(jobs?.jobs)?jobs.jobs:[]});
+    }
+    const arrm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/actions\/runs\/([^/]+)\/rerun-failed$/);
+    if(arrm&&req.method==="POST"){
+      const owner=decodeURIComponent(arrm[1]),repo=decodeURIComponent(arrm[2]),runId=decodeURIComponent(arrm[3]),b=await body(req);
+      if(await entitlement(s)!=="pro")return json(res,402,{error:"Retrying a GitHub Actions workflow is a WyDev Pro feature. Upgrade to Pro to rerun failed jobs.",code:"PRO_REQUIRED"});
+      const path=`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${encodeURIComponent(runId)}/rerun-failed-jobs`;
+      await gh(s.token,path,{method:"POST",body:JSON.stringify({enable_debug_logging:!!b.debug})});
+      return json(res,201,{ok:true,debug:!!b.debug});
+    }
+    const acm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/actions\/runs\/([^/]+)\/(cancel|force-cancel)$/);
+    if(acm&&req.method==="POST"){
+      const owner=decodeURIComponent(acm[1]),repo=decodeURIComponent(acm[2]),runId=decodeURIComponent(acm[3]),action=acm[4];
+      await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${encodeURIComponent(runId)}/${action}`,{method:"POST"});
+      return json(res,202,{ok:true,action});
+    }
+    const awm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/actions\/workflows$/);
+    if(awm&&req.method==="GET"){
+      const owner=decodeURIComponent(awm[1]),repo=decodeURIComponent(awm[2]);
+      const workflows=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/workflows?per_page=100`);
+      return json(res,200,{workflows:Array.isArray(workflows?.workflows)?workflows.workflows:[]});
+    }
+    const adm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/actions\/workflows\/([^/]+)\/dispatch$/);
+    if(adm&&req.method==="POST"){
+      const owner=decodeURIComponent(adm[1]),repo=decodeURIComponent(adm[2]),workflowId=decodeURIComponent(adm[3]),b=await body(req);
+      const ref=String(b.ref||"").trim();
+      if(!ref)return json(res,400,{error:"Choose a branch or tag to run the workflow."});
+      const inputs=b.inputs&&typeof b.inputs==="object"&&!Array.isArray(b.inputs)?b.inputs:{};
+      if(Object.keys(inputs).length>25)return json(res,400,{error:"GitHub allows at most 25 workflow inputs."});
+      await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/workflows/${encodeURIComponent(workflowId)}/dispatches`,{method:"POST",body:JSON.stringify({ref,inputs})});
+      return json(res,200,{ok:true});
+    }
     const safePath=(value)=>{const x=String(value||"").replaceAll("\\","/").replace(/^\/+/,"");const parts=x.split("/").filter(Boolean);if(!x||parts.some(v=>v===".."||v==="."))throw Object.assign(new Error("Invalid repository path."),{status:400});return parts.join("/")};
      const hasOAuthScope=(session,scope)=>String(session?.scope||"").split(/[ ,]+/).filter(Boolean).includes(scope);
      const isWorkflowPath=(path)=>String(path||"").replaceAll("\\","/").toLowerCase().startsWith(".github/workflows/");
@@ -550,7 +751,11 @@ async function handler(req,res){
     if(m){
       const owner=decodeURIComponent(m[1]),repo=decodeURIComponent(m[2]),kind=m[3];
       if(kind==="branches")return json(res,200,await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches?per_page=100`));
-      if(kind==="file"){const path=safePath(url.searchParams.get("path")||"") ,branch=url.searchParams.get("branch")||"HEAD";const d=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(branch)}`);if(Array.isArray(d))return json(res,400,{error:"The selected path is a directory, not a file."});if(isBinaryPath(path))return json(res,200,{path,content:{__wydevBinary:true,base64:String(d.content||"").replace(/\n/g,""),mime:mimeForPath(path),size:d.size||0},sha:d.sha,size:d.size});return json(res,200,{path,content:d.encoding==="base64"?Buffer.from(d.content.replace(/\n/g,""),"base64").toString("utf8"):d.content||"",sha:d.sha,size:d.size});}
+      if(kind==="file"){const path=safePath(url.searchParams.get("path")||"") ,branch=url.searchParams.get("branch")||"HEAD";const d=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(branch)}`);if(Array.isArray(d))return json(res,400,{error:"The selected path is a directory, not a file."});if(isBinaryPath(path)){
+        const size=Number(d.size||0), raw=String(d.content||"").replace(/\n/g,"");
+        if(size>3*1024*1024) return json(res,200,{path,content:{__wydevBinary:true,base64:"",mime:mimeForPath(path),size,tooLarge:true,html_url:d.html_url||null},sha:d.sha,size,html_url:d.html_url||null});
+        return json(res,200,{path,content:{__wydevBinary:true,base64:raw,mime:mimeForPath(path),size},sha:d.sha,size});
+      }return json(res,200,{path,content:d.encoding==="base64"?Buffer.from(d.content.replace(/\n/g,""),"base64").toString("utf8"):d.content||"",sha:d.sha,size:d.size});}
       const branch=url.searchParams.get("branch")||"HEAD";
       try {
         const ref=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(branch)}`);
@@ -934,9 +1139,9 @@ async function handler(req,res){
       let recovered=null;
       if(db){try{recovered=await recoverEntitlement(s)}catch(e){console.warn("Billing recovery failed:",e.message)}}
       const e=await getEntitlement(s.id);
-      return json(res,200,{plan:await entitlement(s),expiresAt:e?.expiresAt||null,recovered:!!recovered?.recovered});
+      return json(res,200,{plan:await entitlement(s),expiresAt:e?.expiresAt||null,renewAt:e?.renewAt||null,renewalPending:!!e?.renewalPending,recovered:!!recovered?.recovered});
     }
-    if(p==="/billing/config"&&req.method==="GET")return json(res,200,{usd:Number(process.env.FLW_PRO_USD||9.99),ngn:Number(process.env.FLW_PRO_NGN||9000),environment:FLW_LIVE?"live":"sandbox",encryptionKey:process.env.FLW_ENCRYPTION_KEY||""});
+    if(p==="/billing/config"&&req.method==="GET")return json(res,200,{usd:Number(process.env.FLW_PRO_USD||1),ngn:Number(process.env.FLW_PRO_NGN||1000),environment:FLW_LIVE?"live":"sandbox",encryptionKey:process.env.FLW_ENCRYPTION_KEY||""});
     if(p==="/billing/verify"&&req.method==="POST"){const b=await body(req);if(!b.reference)return json(res,400,{error:"Transaction reference required"});return json(res,200,await verifyCharge(s,b.id,b.reference));}
     if(p==="/billing/recover"&&req.method==="POST"){const b=await body(req);return json(res,200,await recoverEntitlement(s,String(b.reference||"")));}
     if(p==="/billing/resolve"&&req.method==="POST"){

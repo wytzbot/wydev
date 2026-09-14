@@ -38,7 +38,7 @@ Never prefix server secrets with `VITE_`.
 
 ## GitHub OAuth
 Register the production callback:
-`https://YOUR_DOMAIN/api/auth/github/callback`
+`https://wydev.vercel.app/api/auth/github/callback`
 
 Use the minimum GitHub permissions required by the application. Never put the GitHub client secret in frontend code.
 
@@ -59,6 +59,9 @@ Never activate Pro from a frontend redirect alone. The gateway verifies the paym
 
 ## Gemini
 Keep the Gemini model configurable through `GEMINI_MODEL`. The application uses Gemini for developer diagnostics and enforces a daily quota through Firestore.
+
+## GitHub Actions failed-build notifications
+`.github/workflows/wydev-build.yml` notifies your deployed WyDev instance at `https://wydev.vercel.app/api/notifications/build-failed` when a build fails, so the failed-build push notification feature works out of the box.
 
 ## Pre-launch checklist
 1. Run `npm run check`.

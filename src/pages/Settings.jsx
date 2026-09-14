@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { getLocalPreferences, loadState, saveState, syncPreferences, loadSyncedPreferences } from "../storage";
 import { confirmDialog } from "../dialog";
 import Select from "../components/Select";
+import { enableNotifications, disableNotifications, getNotificationPermission } from "../notifications";
 
 export default function Settings() {
   const [font, setFont] = useState(loadState("fontSize", 16));
@@ -9,6 +10,8 @@ export default function Settings() {
   const [motion, setMotion] = useState(loadState("reducedMotion", false));
   const [density, setDensity] = useState(loadState("density", "comfortable"));
   const [syncing, setSyncing] = useState(false);
+  const [notificationState, setNotificationState] = useState(() => getNotificationPermission());
+  const [notificationBusy, setNotificationBusy] = useState(false);
   const [syncError, setSyncError] = useState("");
   const syncTimer = useRef(null);
 
@@ -63,6 +66,13 @@ export default function Settings() {
         <label>Word wrap<input type="checkbox" checked={wrap} onChange={(e) => update("wordWrap", e.target.checked)} /></label>
         <label>Reduced motion<input type="checkbox" checked={motion} onChange={(e) => update("reducedMotion", e.target.checked)} /></label>
         <p className="muted">{syncing ? "Syncing preferences…" : syncError || "Preferences sync to your WyDev account."}</p>
+      </section>
+      <section className="panel">
+        <h3>NOTIFICATIONS</h3>
+        <p className="muted">Receive failed-build alerts, a gentle Good Morning message, free-plan limit reminders, and Pro renewal reminders.</p>
+        <button disabled={notificationBusy} onClick={async()=>{setNotificationBusy(true);try{await enableNotifications();setNotificationState(getNotificationPermission())}catch(e){setSyncError(e.message||"Notifications could not be enabled.")}finally{setNotificationBusy(false)}}}>{notificationState === "granted" ? "Notifications enabled" : "Enable notifications"}</button>
+        {notificationState === "granted" && <button onClick={async()=>{await disableNotifications();setNotificationState(getNotificationPermission())}}>Disable notifications</button>}
+        {notificationState === "denied" && <p className="muted">Notifications are blocked by the browser. Allow them in your browser site settings.</p>}
       </section>
       <section className="panel">
         <h3>LOCAL DATA</h3>
