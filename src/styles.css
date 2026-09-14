@@ -365,7 +365,7 @@ select:focus{border-color:var(--accent)}
 
 .aiDiagnosisInline{display:flex;flex-direction:column;gap:8px}.aiDiagnosisInlineState{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px;padding:8px 2px}
 .aiDiagnosisCancel{display:flex;align-items:center;gap:4px;margin-left:auto;padding:4px 9px;border:1px solid var(--line);border-radius:6px;color:var(--text);font-size:12px;background:var(--panel2)}
-.aiDiagnosisCancel:hover{border-color:var(--danger)}.aiDiagnosisInlineError{margin:2px 0}.aiDiagnosisInlineResult{border:1px solid var(--line);background:var(--panel2);border-radius:8px;padding:10px}.aiDiagnosisInlineResult .panelTitleRow{margin-bottom:7px}.aiDiagnosisInlineResult h3{margin:0;font-size:11px;letter-spacing:.1em}.aiDiagnosisInlineResult .diagnosis{margin:0;max-height:280px}
+.aiDiagnosisCancel:hover{border-color:var(--danger)}.aiDiagnosisInlineError{margin:2px 0}.aiDiagnosisInlineResult{border:1px solid var(--line);background:var(--panel2);border-radius:8px;padding:10px}.aiDiagnosisInlineResult .panelTitleRow{margin-bottom:7px}.aiDiagnosisResultActions{display:flex;align-items:center;gap:6px}.aiDiagnosisResultActions button{display:inline-flex;align-items:center;gap:5px}.aiDiagnosisInlineResult h3{margin:0;font-size:11px;letter-spacing:.1em}.aiDiagnosisInlineResult .diagnosis{margin:0;max-height:280px}
 .inlineDispatch{margin-top:10px;padding-top:10px;border-top:1px solid var(--line);display:grid;gap:8px}.inlineDispatch input,.inlineDispatch select{width:100%}.inlineDispatch p{margin:0;font-size:12px}
 
 .projectTools button.danger{border-color:var(--danger);color:var(--danger)}

@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Stethoscope, X, Copy as CopyIcon, Check, Loader2 } from "lucide-react";
+import { Stethoscope, X, Copy as CopyIcon, Check, Loader2, ArrowLeft } from "lucide-react";
 import { diagnoseRepo } from "../ai";
 import { copyBlob } from "../utils";
 import { addLog, formatLog } from "../logs";
@@ -89,6 +89,18 @@ export default function AIDiagnostics({ repo, branch, fileIndex, files, fetchFil
     setCopied(true); setTimeout(() => setCopied(false), 1200);
   };
 
+  // Return the diagnosis card to its original idle state without running
+  // another diagnosis or removing the saved diagnosis log.
+  const restorePreviousState = () => {
+    cancelledRef.current = false;
+    abortRef.current = null;
+    setResult(null);
+    setError("");
+    setCopied(false);
+    setProgress({ done: 0, total: 0 });
+    setPhase("idle");
+  };
+
   return (
     <div className="aiDiagnosisInline">
       <button onClick={run} disabled={busy} title="Short AI diagnosis across the repository">
@@ -98,7 +110,7 @@ export default function AIDiagnostics({ repo, branch, fileIndex, files, fetchFil
       {phase === "error" && <p className="error aiDiagnosisInlineError">{error}</p>}
       {phase === "done" && result && (
         <div className="aiDiagnosisInlineResult">
-          <div className="panelTitleRow"><div><h3>AI DIAGNOSIS</h3><span className="muted">{result.filesAnalyzed}/{result.filesTotal} files · {result.usage ? `${result.usage.remaining}/${result.usage.limit} left today` : ""}</span></div><button onClick={doCopy}>{copied ? <Check size={16} /> : <CopyIcon size={16} />} {copied ? "Copied" : "Copy"}</button></div>
+          <div className="panelTitleRow"><div><h3>AI DIAGNOSIS</h3><span className="muted">{result.filesAnalyzed}/{result.filesTotal} files · {result.usage ? `${result.usage.remaining}/${result.usage.limit} left today` : ""}</span></div><div className="aiDiagnosisResultActions"><button type="button" onClick={doCopy}>{copied ? <Check size={16} /> : <CopyIcon size={16} />} {copied ? "Copied" : "Copy"}</button><button type="button" onClick={restorePreviousState} title="Return to the diagnosis card"><ArrowLeft size={16} /> Back</button></div></div>
           <pre className="diagnosis">{formatReport(result, { repoName: repo?.full_name, branch })}</pre>
         </div>
       )}
