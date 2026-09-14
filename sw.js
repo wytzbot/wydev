@@ -1,6 +1,25 @@
 importScripts("https://www.gstatic.com/firebasejs/12.1.0/firebase-app-compat.js","https://www.gstatic.com/firebasejs/12.1.0/firebase-messaging-compat.js");
-let firebaseReady=false;
-(async()=>{try{const r=await fetch("/api/notifications/config",{credentials:"include",cache:"no-store"});const c=await r.json();if(c.apiKey){firebase.initializeApp({apiKey:c.apiKey,authDomain:c.authDomain,projectId:c.projectId,storageBucket:c.storageBucket,messagingSenderId:c.messagingSenderId,appId:c.appId});firebaseReady=true;firebase.messaging().onBackgroundMessage(p=>{const n=p.notification||{},d=p.data||{};self.registration.showNotification(n.title||d.title||"WyDev",{body:n.body||d.body||"",icon:"/icon-192.png",data:d});});}}catch{}})();
+
+// Public Firebase Web SDK configuration used only for FCM background messages.
+// Do not add Firebase Admin service-account credentials here.
+const FIREBASE_CONFIG={
+  apiKey:"AIzaSyCqN_fapK0cvhrtQfJp6YIAefR2bfUwXeU",
+  authDomain:"wydev0.firebaseapp.com",
+  projectId:"wydev0",
+  storageBucket:"wydev0.firebasestorage.app",
+  messagingSenderId:"966164490746",
+  appId:"1:966164490746:web:32e95ccb554775896ddc43",
+  measurementId:"G-23WQF9RH9Y"
+};
+
+try{
+  firebase.initializeApp(FIREBASE_CONFIG);
+  firebase.messaging().onBackgroundMessage(p=>{
+    const n=p.notification||{},d=p.data||{};
+    self.registration.showNotification(n.title||d.title||"WyDev",{body:n.body||d.body||"",icon:"/icon-192.png",data:d});
+  });
+}catch{}
+
 self.addEventListener("notificationclick",e=>{e.notification.close();e.waitUntil(clients.matchAll({type:"window",includeUncontrolled:true}).then(list=>{const c=list.find(x=>x.url.includes(location.origin));return c?c.focus():clients.openWindow(location.origin)}));});
 // Cache the standalone offline fallback page so a navigation made while
 // offline (including a cold start before the SPA's own JS has ever run)

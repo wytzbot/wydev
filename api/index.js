@@ -24,14 +24,16 @@ async function firebaseMessaging(){
   if(!db) return null;
   try { const admin=require("firebase-admin"); return admin.messaging(); } catch { return null; }
 }
-async function publicFirebaseConfig(){
-  const projectId=String(process.env.FIREBASE_PROJECT_ID||"").trim();
-  const apiKey=String(process.env.FIREBASE_API_KEY||"").trim();
-  const sender=String(process.env.FIREBASE_MESSAGING_SENDER_ID||"").trim();
-  const appId=String(process.env.FIREBASE_APP_ID||"").trim();
-  const vapidKey=String(process.env.FIREBASE_VAPID_KEY||"").trim();
-  return {apiKey,authDomain:String(process.env.FIREBASE_AUTH_DOMAIN||`${projectId}.firebaseapp.com`),projectId,storageBucket:String(process.env.FIREBASE_STORAGE_BUCKET||`${projectId}.appspot.com`),messagingSenderId:sender,appId,vapidKey};
-}
+const FIREBASE_WEB_CONFIG=Object.freeze({
+  apiKey:"AIzaSyCqN_fapK0cvhrtQfJp6YIAefR2bfUwXeU",
+  authDomain:"wydev0.firebaseapp.com",
+  projectId:"wydev0",
+  storageBucket:"wydev0.firebasestorage.app",
+  messagingSenderId:"966164490746",
+  appId:"1:966164490746:web:32e95ccb554775896ddc43",
+  measurementId:"G-23WQF9RH9Y"
+});
+function publicFirebaseConfig(){ return FIREBASE_WEB_CONFIG; }
 function tokenKey(token){return crypto.createHash("sha256").update(String(token)).digest("hex");}
 async function savePushToken(user,token,timezone){
   if(!db) throw Object.assign(new Error("Push notifications require Firebase persistence to be configured."),{status:503,code:"NOTIFICATIONS_NOT_CONFIGURED"});
@@ -637,7 +639,7 @@ async function handler(req,res){
       }
       return json(res,200,{received:true});
     }
-    if(p==="/billing/renew"&&req.method==="POST"){
+    if(p==="/billing/renew"&&(req.method==="GET"||req.method==="POST")){
       const auth=req.headers.authorization||"";
       if(!process.env.CRON_SECRET||auth!==`Bearer ${process.env.CRON_SECRET}`)return json(res,401,{error:"Unauthorized"});
       return json(res,200,{processed:await renewDue(),notifications:await runScheduledNotifications()});
