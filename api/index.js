@@ -519,6 +519,13 @@ async function renewDue(){
   }
   return processed;
 }
+async function cancelSubscription(s){
+  requirePersistence();
+  const existing=await getEntitlement(s.id);
+  if(!existing||existing.status!=="active")return {active:existing?.status==="active"&&(!existing?.expiresAt||existing.expiresAt>Date.now()),cancelled:false};
+  await setEntitlement(s.id,{status:"cancelled",renewAt:null,renewalPending:false,renewalStartedAt:null,renewalReference:null,cancelledAt:Date.now(),updatedAt:Date.now()});
+  return {active:false,cancelled:true};
+}
 async function recoverEntitlement(s,requestedReference=""){
   requirePersistence();
   const existing=await getEntitlement(s.id);
@@ -651,6 +658,7 @@ async function handler(req,res){
       return json(res,200,{ok:true,preferences});
     }
     if(p==="/billing/authorize"&&req.method==="POST"){const b=await body(req);return json(res,200,await authorizeCharge(s,b.id,b.authorization,b.reference));}
+    if(p==="/billing/cancel"&&req.method==="POST"){return json(res,200,await cancelSubscription(s));}
     if(p==="/github/repos"&&req.method==="GET"){
       const all=await gh(s.token,"/user/repos?per_page=100&sort=updated");
       const plan=await entitlement(s);

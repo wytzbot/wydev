@@ -14,6 +14,14 @@ import { promptDialog, confirmDialog } from "../dialog";
 import { toastSuccess, toastError, toastInfo } from "../toast";
 import Select from "../components/Select";
 
+// Vercel slugifies the imported repo name into the default project domain
+// (lowercase, non-alphanumerics collapsed to single hyphens, trimmed) unless
+// the person picked a custom project name or domain on vercel.com.
+function vercelDomain(repoName) {
+  const slug = String(repoName || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return `${slug || "app"}.vercel.app`;
+}
+
 export default function Project({ repo, onBack, onWorkingState, openPath }) {
   const key = `project:${repo.id}`;
   const cached = loadState(key, null);
@@ -693,7 +701,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath }) {
         <button onClick={load} disabled={busy}>
           <RefreshCw size={16} />
         </button>
-        <a href={`https://vercel.com/new/clone?repository-url=${encodeURIComponent(repo.html_url || `https://github.com/${repo.owner.login}/${repo.name}`)}`} target="_blank" rel="noreferrer" title="Deploy this repository with Vercel">
+        <a href={`https://${vercelDomain(repo.name)}`} target="_blank" rel="noreferrer" title="Open this repository's Vercel deployment">
           <ExternalLink size={17} /> Vercel
         </a>
         <a href={repo.html_url} target="_blank" rel="noreferrer" title="Open on GitHub">

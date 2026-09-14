@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Stethoscope, Copy as CopyIcon, Check, Loader2 } from "lucide-react";
+import { useRef, useState } from "react";
+import { Stethoscope, X, Copy as CopyIcon, Check, Loader2 } from "lucide-react";
 import { diagnoseRepo } from "../ai";
 import { copyBlob } from "../utils";
 import { addLog, formatLog } from "../logs";
@@ -43,28 +43,44 @@ export default function AIDiagnostics({ repo, branch, fileIndex, files, fetchFil
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const busy = phase === "fetching" || phase === "analyzing";
+  const abortRef = useRef(null);
+  const cancelledRef = useRef(false);
 
   const run = async () => {
     setError(""); setResult(null); setCopied(false);
     const targets = pickTargets(fileIndex);
     if (!targets.length) { setError("No readable code files were found to diagnose."); setPhase("error"); return; }
+    const controller = new AbortController();
+    abortRef.current = controller;
+    cancelledRef.current = false;
     setPhase("fetching"); setProgress({ done: 0, total: targets.length });
     const collected = []; let idx = 0;
     const worker = async () => {
-      while (idx < targets.length) {
+      while (idx < targets.length && !cancelledRef.current) {
         const i = idx++, f = targets[i];
         try { collected.push({ path: f.path, content: files?.[f.path] ?? ((await fetchFileContent(f.path)) || "") }); } catch {}
         setProgress((p) => ({ ...p, done: p.done + 1 }));
       }
     };
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, targets.length) || 1 }, worker));
+    if (cancelledRef.current) return;
     setPhase("analyzing");
     try {
-      const out = await diagnoseRepo({ repo: repo?.full_name, branch, files: collected });
+      const out = await diagnoseRepo({ repo: repo?.full_name, branch, files: collected }, controller.signal);
       setResult(out);
       addLog({ type: "AI diagnosis", repo: repo?.full_name || "", branch: branch || "", text: formatReport(out, { repoName: repo?.full_name, branch }) });
       setPhase("done");
-    } catch (e) { setError(e.message || "Repository diagnosis failed"); setPhase("error"); }
+    } catch (e) {
+      if (cancelledRef.current || e.name === "AbortError") return;
+      setError(e.message || "Repository diagnosis failed"); setPhase("error");
+    }
+  };
+
+  const cancel = () => {
+    cancelledRef.current = true;
+    abortRef.current?.abort();
+    setPhase("idle");
+    setProgress({ done: 0, total: 0 });
   };
 
   const doCopy = async () => {
@@ -78,7 +94,7 @@ export default function AIDiagnostics({ repo, branch, fileIndex, files, fetchFil
       <button onClick={run} disabled={busy} title="Short AI diagnosis across the repository">
         <Stethoscope size={16} /> {busy ? "Processing…" : "Diagnose Repo"}
       </button>
-      {busy && <div className="aiDiagnosisInlineState"><Loader2 size={16} className="spin" /><span>{phase === "fetching" ? `Reading files ${progress.done}/${progress.total || "?"}` : "Analyzing…"}</span></div>}
+      {busy && <div className="aiDiagnosisInlineState"><Loader2 size={16} className="spin" /><span>{phase === "fetching" ? `Reading files ${progress.done}/${progress.total || "?"}` : "Analyzing…"}</span><button type="button" className="aiDiagnosisCancel" onClick={cancel} title="Cancel diagnosis"><X size={14} /> Cancel</button></div>}
       {phase === "error" && <p className="error aiDiagnosisInlineError">{error}</p>}
       {phase === "done" && result && (
         <div className="aiDiagnosisInlineResult">
