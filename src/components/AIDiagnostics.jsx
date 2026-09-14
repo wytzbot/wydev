@@ -53,7 +53,7 @@ export default function AIDiagnostics({ repo, branch, fileIndex, files, fetchFil
     const worker = async () => {
       while (idx < targets.length) {
         const i = idx++, f = targets[i];
-        try { collected.push({ path: f.path, content: files?.[f.path] ?? (await fetchFileContent(f.path)) || "" }); } catch {}
+        try { collected.push({ path: f.path, content: files?.[f.path] ?? ((await fetchFileContent(f.path)) || "") }); } catch {}
         setProgress((p) => ({ ...p, done: p.done + 1 }));
       }
     };
