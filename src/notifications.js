@@ -1,9 +1,24 @@
 import { API_BASE_URL } from "./config";
 import { FIREBASE_CONFIG } from "./firebase-config";
+import { loadState, saveState } from "./storage";
+
+// Browser Notification permission is a one-way ratchet: once the user grants
+// it, JS can never programmatically revoke it (only the user can, via their
+// browser's site settings). That means `Notification.permission` alone can't
+// tell us whether *WyDev* currently has an active subscription — it only
+// tells us whether the browser would *allow* one. We track the user's actual
+// choice (did they press Enable or Disable in Settings) separately, here.
+const ENABLED_KEY = "notificationsEnabled";
 
 export function getNotificationPermission(){
   if(typeof Notification === "undefined") return "unsupported";
   return Notification.permission;
+}
+
+// True only when the browser permission is granted AND the user has
+// explicitly enabled notifications in WyDev (and hasn't since disabled them).
+export function isNotificationsEnabled(){
+  return getNotificationPermission()==="granted" && !!loadState(ENABLED_KEY,false);
 }
 
 async function subscribeToken(token,timezone){
@@ -45,20 +60,37 @@ export async function enableNotifications(){
     });
   }
   await subscribeToken(token,Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC");
+  saveState(ENABLED_KEY,true);
   return true;
 }
 
 export async function disableNotifications(){
-  const {getApps}=await import("firebase/app");
-  if(!getApps().length) return;
-  const {getMessaging,getToken,deleteToken}=await import("firebase/messaging");
-  const messaging=getMessaging(getApps()[0]);
-  const token=await getToken(messaging,{vapidKey:FIREBASE_CONFIG.vapidKey}).catch(()=>null);
-  if(token) await fetch(`${API_BASE_URL}/notifications/unsubscribe`,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({token})});
-  await deleteToken(messaging).catch(()=>{});
+  try{
+    const {getApps}=await import("firebase/app");
+    if(getApps().length){
+      const {getMessaging,getToken,deleteToken}=await import("firebase/messaging");
+      const messaging=getMessaging(getApps()[0]);
+      const token=await getToken(messaging,{vapidKey:FIREBASE_CONFIG.vapidKey}).catch(()=>null);
+      if(token){
+        await fetch(`${API_BASE_URL}/notifications/unsubscribe`,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({token})}).catch(()=>{});
+      }
+      await deleteToken(messaging).catch(()=>{});
+    }
+  } finally {
+    // Always record the user's intent locally, even if the network call to
+    // unsubscribe failed or there was nothing to unregister — otherwise the
+    // Disable button silently does nothing and Enable reappears as if it
+    // never ran.
+    saveState(ENABLED_KEY,false);
+  }
 }
 
 export async function initNotifications(){
   if(typeof Notification==="undefined"||Notification.permission!=="granted") return false;
+  // Only re-subscribe automatically if the user had actually turned
+  // notifications on before. Otherwise a user who pressed "Disable" would
+  // get silently re-subscribed on their next visit, since browser permission
+  // stays "granted" forever once given.
+  if(!loadState(ENABLED_KEY,false)) return false;
   try{return await enableNotifications()}catch{return false}
 }
