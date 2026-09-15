@@ -126,6 +126,18 @@ async function getTransaction(reference){
 function requirePersistence(){
   if(!db) throw Object.assign(new Error("WyteLab billing storage is not configured. Set FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY in Vercel before accepting payments."),{status:503,code:"BILLING_STORAGE_NOT_CONFIGURED"});
 }
+async function getRepoSnapshot(userId){
+  const key=String(userId);
+  if(db){const d=await db.collection("wydev_repo_cache").doc(key).get();return d.exists?(d.data()||null):null;}
+  return memory.cache.get(`repos:${key}`)||null;
+}
+async function saveRepoSnapshot(userId,data){
+  const key=String(userId);
+  const snapshot={repos:Array.isArray(data?.repos)?data.repos:[],total:Number(data?.total)||0,limit:data?.limit??null,plan:String(data?.plan||"free"),savedAt:Date.now()};
+  if(db){await db.collection("wydev_repo_cache").doc(key).set(snapshot,{merge:true});return snapshot;}
+  memory.cache.set(`repos:${key}`,snapshot);return snapshot;
+}
+
 async function findRecentTransactions(userId){
   if(!db)return [];
   const snap=await db.collection("wydev_transactions").where("userId","==",String(userId)).limit(25).get();
@@ -664,11 +676,41 @@ async function handler(req,res){
     if(p==="/billing/authorize"&&req.method==="POST"){const b=await body(req);return json(res,200,await authorizeCharge(s,b.id,b.authorization,b.reference));}
     if(p==="/billing/cancel"&&req.method==="POST"){return json(res,200,await cancelSubscription(s));}
     if(p==="/github/repos"&&req.method==="GET"){
-      const all=await gh(s.token,"/user/repos?per_page=100&sort=updated");
-      const plan=await entitlement(s);
-      const limit=plan==="pro"?null:Number(process.env.FREE_REPO_LIMIT||10);
-      const repos=limit!=null?all.slice(0,limit):all;
-      return json(res,200,{repos,total:all.length,limit,plan});
+      const snapshot=await getRepoSnapshot(s.id);
+      try{
+        const all=await gh(s.token,"/user/repos?per_page=100&sort=updated");
+        const plan=await entitlement(s);
+        const limit=plan==="pro"?null:Number(process.env.FREE_REPO_LIMIT||10);
+        const repos=limit!=null?all.slice(0,limit):all;
+        if(!repos.length && snapshot?.repos?.length){
+          // Confirm an empty GitHub result before accepting it. This protects
+          // against a transient/rate-limit/background-tab response while still
+          // allowing a genuinely empty GitHub account to clear its snapshot.
+          try{
+            await new Promise(r=>setTimeout(r,350));
+            const confirm=await gh(s.token,"/user/repos?per_page=100&sort=updated");
+            if(confirm.length){
+              const confirmed=limit!=null?confirm.slice(0,limit):confirm;
+              const result={repos:confirmed,total:confirm.length,limit,plan};
+              await saveRepoSnapshot(s.id,result);
+              return json(res,200,result);
+            }
+            await saveRepoSnapshot(s.id,{repos:[],total:0,limit,plan});
+            return json(res,200,{repos:[],total:0,limit,plan});
+          }catch{
+            return json(res,200,{repos:snapshot.repos,total:snapshot.total,limit:snapshot.limit??limit,plan:snapshot.plan||plan,stale:true,savedAt:snapshot.savedAt||0});
+          }
+        }
+        const result={repos,total:all.length,limit,plan};
+        await saveRepoSnapshot(s.id,result);
+        return json(res,200,result);
+      }catch(e){
+        if(Number(e?.status)===401) throw e;
+        if(snapshot?.repos?.length){
+          return json(res,200,{repos:snapshot.repos,total:snapshot.total,limit:snapshot.limit??null,plan:snapshot.plan||"free",stale:true,savedAt:snapshot.savedAt||0});
+        }
+        throw e;
+      }
     }
     if(p==="/github/repos"&&req.method==="POST"){
       const b=await body(req);
@@ -687,6 +729,11 @@ async function handler(req,res){
         const totalAfterCreate=Number((await gh(s.token,"/user/repos?per_page=100")).length||0);
         if(totalAfterCreate>=8) await sendPushOnce(s.id,`repo-limit:${totalAfterCreate}:${new Date().toISOString().slice(0,10)}`,"Free repository limit is getting close",`You now have ${totalAfterCreate} of 10 free repositories. Upgrade to Pro before you reach the limit.`,{type:"repo_limit",count:String(totalAfterCreate)});
       }
+      try{
+        const allAfter=await gh(s.token,"/user/repos?per_page=100&sort=updated");
+        const nextLimit=plan==="pro"?null:Number(process.env.FREE_REPO_LIMIT||10);
+        await saveRepoSnapshot(s.id,{repos:nextLimit==null?allAfter:allAfter.slice(0,nextLimit),total:allAfter.length,limit:nextLimit,plan});
+      }catch{}
       return json(res,201,created);
     }
     const drm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)$/);
@@ -700,6 +747,13 @@ async function handler(req,res){
         return json(res,403,{error:"GitHub deletion permission is missing. Sign out and authorize WyteLab again so GitHub can grant delete_repo permission.",code:"GITHUB_DELETE_SCOPE_MISSING"});
       }
       await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,{method:"DELETE"});
+      try{
+        const snapshot=await getRepoSnapshot(s.id);
+        if(snapshot?.repos){
+          const next=snapshot.repos.filter(x=>String(x.full_name||`${x.owner?.login||x.owner?.login||""}/${x.name||""}`).toLowerCase()!==`${owner}/${repo}`.toLowerCase());
+          await saveRepoSnapshot(s.id,{...snapshot,repos:next,total:Math.max(0,Number(snapshot.total||next.length)-1)});
+        }
+      }catch{}
       return json(res,200,{ok:true,owner,repo});
     }
     const bm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/branches$/);

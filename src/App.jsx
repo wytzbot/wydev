@@ -35,15 +35,22 @@ export default function App() {
     [openPath, setOpenPath] = useState(""),
     [loading, setLoading] = useState(true);
   const reposRequestRef = useRef(null);
+  const reposUserRef = useRef(null);
 
   const loadRepos = async ({ silent = false } = {}) => {
-    // A visibility/pageshow/online event can fire while the initial request is
-    // still running. Never allow a later, stale/empty response to overwrite a
-    // good repository list. Share one in-flight request instead.
-    if (reposRequestRef.current) return reposRequestRef.current;
+    if (!user?.id) return [];
+    // One request per signed-in account. This prevents an old request from a
+    // previous account/session from ever replacing the current user's list.
+    if (reposRequestRef.current && reposUserRef.current === String(user.id)) return reposRequestRef.current;
 
-    const cached = loadState("reposCache", { repos: [], repoLimit: null });
+    const cacheKey = `reposCache:${String(user.id)}`;
+    const cached = loadState(cacheKey, { repos: [], repoLimit: null });
     const cachedRepos = Array.isArray(cached?.repos) ? cached.repos : [];
+    if (cachedRepos.length && !repos.length) {
+      setRepos(cachedRepos);
+      setRepoLimit(cached?.repoLimit || null);
+    }
+
     if (!navigator.onLine) {
       setRepos(cachedRepos);
       setRepoLimit(cached?.repoLimit || null);
@@ -51,61 +58,62 @@ export default function App() {
       return cachedRepos;
     }
 
-    // Keep the last known list visible while refreshing. This prevents a
-    // transient background-tab/network failure from making repositories appear
-    // to disappear when the user returns to the app.
-    if (cachedRepos.length && !repos.length) {
-      setRepos(cachedRepos);
-      setRepoLimit(cached?.repoLimit || null);
-    }
     setReposLoading(true);
-
+    const accountId = String(user.id);
     const request = (async () => {
       let last = null;
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const d = await github.repos();
+          // A successful response containing zero repositories is only allowed
+          // to replace an empty cache. If we already know repositories, keep
+          // them when the server marks the response as a protected snapshot.
           const nextRepos = Array.isArray(d.repos) ? d.repos : [];
           const nextLimit = { total: d.total, limit: d.limit, plan: d.plan };
-
-          // GitHub is the source of truth, but an unexplained empty response
-          // must not destroy a known-good local cache. Require a second empty
-          // confirmation before accepting zero repositories.
-          if (!nextRepos.length && cachedRepos.length) {
+          if (!nextRepos.length && cachedRepos.length && !d.stale) {
             if (attempt < 2) {
-              await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
+              await new Promise(r => setTimeout(r, 800 * (attempt + 1)));
               continue;
             }
             setRepos(cachedRepos);
             setRepoLimit(nextLimit);
-            if (!silent) toastInfo("GitHub returned an empty repository list. Your last known repositories are still available.");
+            if (!silent) toastInfo("GitHub returned no repositories. Your last known repositories are still available.");
             return cachedRepos;
           }
-
           setRepos(nextRepos);
           setRepoLimit(nextLimit);
-          saveState("reposCache", { repos: nextRepos, repoLimit: nextLimit, savedAt: Date.now() });
+          saveState(cacheKey, { repos: nextRepos, repoLimit: nextLimit, savedAt: d.savedAt || Date.now(), stale: !!d.stale });
           return nextRepos;
         } catch (e) {
           last = e;
-          if (attempt < 2) await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+          if (Number(e?.status) === 401) {
+            // Do not turn an expired/revoked GitHub session into a fake empty
+            // repository list. Keep the known snapshot visible and tell the user.
+            if (cachedRepos.length) {
+              setRepos(cachedRepos);
+              setRepoLimit(cached?.repoLimit || null);
+            }
+            break;
+          }
+          if (attempt < 2) await new Promise(r => setTimeout(r, 700 * (attempt + 1)));
         }
       }
-
-      // Preserve the last known repository list on every refresh failure.
       if (cachedRepos.length) {
         setRepos(cachedRepos);
         setRepoLimit(cached?.repoLimit || null);
       }
-      if (!silent) toastError(last?.message || "Could not refresh repositories. Your last repository list is still available.");
+      if (!silent) toastError(last?.message || "Could not refresh repositories. Your saved repository list is still available.");
       return cachedRepos;
     })();
 
     reposRequestRef.current = request;
-    try {
-      return await request;
-    } finally {
-      reposRequestRef.current = null;
+    reposUserRef.current = accountId;
+    try { return await request; }
+    finally {
+      if (reposUserRef.current === accountId) {
+        reposRequestRef.current = null;
+        reposUserRef.current = null;
+      }
       setReposLoading(false);
     }
   };
@@ -181,7 +189,7 @@ export default function App() {
       .then((x) => {
         if (x?.user) {
           setUser(x.user);
-          const cached = loadState("reposCache", null);
+          const cached = loadState(`reposCache:${String(x.user.id)}`, null);
           if (cached?.repos?.length) { setRepos(cached.repos); setRepoLimit(cached.repoLimit || null); }
           loadRepos({ silent: true });
           initNotifications(x.user).catch(() => {});
@@ -213,6 +221,7 @@ export default function App() {
     const r = await github.createRepo(payload);
     setRepos((rs) => {
       const next=[r,...rs.filter(x=>x.id!==r.id)];
+      saveState(`reposCache:${String(user.id)}`, { repos: next, repoLimit, savedAt: Date.now() });
       if(next.length>=8 && next.length<=10) toastInfo(`Free plan: ${next.length}/10 repositories used.`);
       return next;
     });
@@ -256,7 +265,7 @@ export default function App() {
           onDeleteRepo={(deleted) => {
             setRepos((rs) => {
               const next = rs.filter((r) => String(r.id) !== String(deleted.id));
-              saveState("reposCache", { repos: next, repoLimit, savedAt: Date.now() });
+              saveState(`reposCache:${String(user.id)}`, { repos: next, repoLimit, savedAt: Date.now() });
               return next;
             });
             setRepo((current) => (current && String(current.id) === String(deleted.id) ? null : current));
