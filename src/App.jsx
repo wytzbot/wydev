@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Menu from "./components/Menu";
 import TopBar from "./components/TopBar";
 import TabBar from "./components/TabBar";
@@ -34,41 +34,80 @@ export default function App() {
     [searchQuery, setSearchQuery] = useState(""),
     [openPath, setOpenPath] = useState(""),
     [loading, setLoading] = useState(true);
+  const reposRequestRef = useRef(null);
 
   const loadRepos = async ({ silent = false } = {}) => {
+    // A visibility/pageshow/online event can fire while the initial request is
+    // still running. Never allow a later, stale/empty response to overwrite a
+    // good repository list. Share one in-flight request instead.
+    if (reposRequestRef.current) return reposRequestRef.current;
+
+    const cached = loadState("reposCache", { repos: [], repoLimit: null });
+    const cachedRepos = Array.isArray(cached?.repos) ? cached.repos : [];
     if (!navigator.onLine) {
-      const cached = loadState("reposCache", { repos: [], repoLimit: null });
-      const cachedRepos = Array.isArray(cached?.repos) ? cached.repos : [];
       setRepos(cachedRepos);
       setRepoLimit(cached?.repoLimit || null);
       setReposLoading(false);
       return cachedRepos;
     }
+
+    // Keep the last known list visible while refreshing. This prevents a
+    // transient background-tab/network failure from making repositories appear
+    // to disappear when the user returns to the app.
+    if (cachedRepos.length && !repos.length) {
+      setRepos(cachedRepos);
+      setRepoLimit(cached?.repoLimit || null);
+    }
     setReposLoading(true);
-    let last = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const d = await github.repos();
-        const nextRepos = Array.isArray(d.repos) ? d.repos : [];
-        const nextLimit = { total: d.total, limit: d.limit, plan: d.plan };
-        setRepos(nextRepos);
-        setRepoLimit(nextLimit);
-        saveState("reposCache", { repos: nextRepos, repoLimit: nextLimit, savedAt: Date.now() });
-        setReposLoading(false);
-        return nextRepos;
-      } catch (e) {
-        last = e;
-        await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+
+    const request = (async () => {
+      let last = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const d = await github.repos();
+          const nextRepos = Array.isArray(d.repos) ? d.repos : [];
+          const nextLimit = { total: d.total, limit: d.limit, plan: d.plan };
+
+          // GitHub is the source of truth, but an unexplained empty response
+          // must not destroy a known-good local cache. Require a second empty
+          // confirmation before accepting zero repositories.
+          if (!nextRepos.length && cachedRepos.length) {
+            if (attempt < 2) {
+              await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
+              continue;
+            }
+            setRepos(cachedRepos);
+            setRepoLimit(nextLimit);
+            if (!silent) toastInfo("GitHub returned an empty repository list. Your last known repositories are still available.");
+            return cachedRepos;
+          }
+
+          setRepos(nextRepos);
+          setRepoLimit(nextLimit);
+          saveState("reposCache", { repos: nextRepos, repoLimit: nextLimit, savedAt: Date.now() });
+          return nextRepos;
+        } catch (e) {
+          last = e;
+          if (attempt < 2) await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+        }
       }
+
+      // Preserve the last known repository list on every refresh failure.
+      if (cachedRepos.length) {
+        setRepos(cachedRepos);
+        setRepoLimit(cached?.repoLimit || null);
+      }
+      if (!silent) toastError(last?.message || "Could not refresh repositories. Your last repository list is still available.");
+      return cachedRepos;
+    })();
+
+    reposRequestRef.current = request;
+    try {
+      return await request;
+    } finally {
+      reposRequestRef.current = null;
+      setReposLoading(false);
     }
-    const cached = loadState("reposCache", null);
-    if (cached?.repos?.length) {
-      setRepos(cached.repos);
-      setRepoLimit(cached.repoLimit || null);
-    }
-    setReposLoading(false);
-    if (!silent) toastError(last?.message || "Could not refresh repositories. Your last repository list is still available.");
-    return cached?.repos || [];
   };
 
   useEffect(() => {
@@ -215,7 +254,11 @@ export default function App() {
           onBack={() => navigate("repos")}
           onWorkingState={setWorking}
           onDeleteRepo={(deleted) => {
-            setRepos((rs) => rs.filter((r) => String(r.id) !== String(deleted.id)));
+            setRepos((rs) => {
+              const next = rs.filter((r) => String(r.id) !== String(deleted.id));
+              saveState("reposCache", { repos: next, repoLimit, savedAt: Date.now() });
+              return next;
+            });
             setRepo((current) => (current && String(current.id) === String(deleted.id) ? null : current));
             setWorking(null);
           }}
