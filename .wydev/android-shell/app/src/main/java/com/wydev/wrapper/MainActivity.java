@@ -1,8 +1,124 @@
 package com.wydev.wrapper;
-import android.app.*; import android.content.*; import android.net.*; import android.os.*; import android.view.*; import android.webkit.*; import android.widget.*; import java.util.*;
+
+import android.app.Activity;
+import android.content.*;
+import android.net.Uri;
+import android.os.Bundle;
+import android.view.*;
+import android.webkit.*;
+import java.util.*;
+
 public class MainActivity extends Activity {
- private WebView web; private final boolean CAMERA=__FEATURE_CAMERA__, LOCATION=__FEATURE_LOCATION__, DOWNLOADS=__FEATURE_DOWNLOADS__, EXTERNAL_LINKS=__FEATURE_EXTERNAL_LINKS__, FULLSCREEN=__FEATURE_FULLSCREEN__, SHARE=__FEATURE_SHARE__, VIBRATION=__FEATURE_VIBRATION__, ORIENTATION=__FEATURE_ORIENTATION__, BATTERY=__FEATURE_BATTERY__, NETWORK_STATUS=__FEATURE_NETWORK_STATUS__, DEVICE_INFO=__FEATURE_DEVICE_INFO__, LOCAL_NOTIFICATIONS=__FEATURE_LOCAL_NOTIFICATIONS__, BIOMETRIC=__FEATURE_BIOMETRIC__, SECURE_STORAGE=__FEATURE_SECURE_STORAGE__, SCREEN_CAPTURE=__FEATURE_SCREEN_CAPTURE__, PICTURE_IN_PICTURE=__FEATURE_PICTURE_IN_PICTURE__, DEEP_LINKS=__FEATURE_DEEP_LINKS__;
- @Override public void onCreate(Bundle b){super.onCreate(b); if(SCREEN_CAPTURE)getWindow().setFlags(8192,8192); web=new WebView(this); WebSettings s=web.getSettings(); s.setJavaScriptEnabled(true); s.setDomStorageEnabled(true); s.setAllowFileAccess(true); s.setAllowContentAccess(true); web.addJavascriptInterface(new Bridge(),"WyDev"); web.setWebViewClient(new WebViewClient(){@Override public boolean shouldOverrideUrlLoading(WebView v,String u){if(EXTERNAL_LINKS&&(u.startsWith("http://")||u.startsWith("https://"))){try{startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(u)));return true;}catch(Exception e){}} return false;}}); if(DOWNLOADS)web.setDownloadListener((u,ua,c,m,l)->{try{startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(u)));}catch(Exception e){}}); if(FULLSCREEN)web.setSystemUiVisibility(5894); setContentView(web); web.loadUrl("file:///android_asset/www/index.html");}
- @Override public void onBackPressed(){if(web.canGoBack())web.goBack();else super.onBackPressed();}
- public class Bridge { @android.webkit.JavascriptInterface public void share(String t){if(!SHARE)return; Intent i=new Intent(Intent.ACTION_SEND);i.setType("text/plain");i.putExtra(Intent.EXTRA_TEXT,t);startActivity(Intent.createChooser(i,"Share"));} @android.webkit.JavascriptInterface public void vibrate(int ms){if(!VIBRATION)return; ((android.os.Vibrator)getSystemService(VIBRATOR_SERVICE)).vibrate(Math.max(1,Math.min(ms,2000)));} @android.webkit.JavascriptInterface public boolean hasFeature(String f){String x=f==null?"":f.toUpperCase(Locale.ROOT); switch(x){case "CAMERA_MIC":return CAMERA;case "LOCATION":return LOCATION;case "DOWNLOADS":return DOWNLOADS;case "EXTERNAL_LINKS":return EXTERNAL_LINKS;case "FULLSCREEN":return FULLSCREEN;case "SHARE":return SHARE;case "VIBRATION":return VIBRATION;case "ORIENTATION":return ORIENTATION;case "BATTERY":return BATTERY;case "NETWORK_STATUS":return NETWORK_STATUS;case "DEVICE_INFO":return DEVICE_INFO;case "LOCAL_NOTIFICATIONS":return LOCAL_NOTIFICATIONS;case "BIOMETRIC":return BIOMETRIC;case "SECURE_STORAGE":return SECURE_STORAGE;case "SCREEN_CAPTURE":return SCREEN_CAPTURE;case "PICTURE_IN_PICTURE":return PICTURE_IN_PICTURE;case "DEEP_LINKS":return DEEP_LINKS;default:return false;}} }
+  private WebView web;
+  private final boolean CAMERA=__FEATURE_CAMERA__, LOCATION=__FEATURE_LOCATION__, DOWNLOADS=__FEATURE_DOWNLOADS__, EXTERNAL_LINKS=__FEATURE_EXTERNAL_LINKS__, FULLSCREEN=__FEATURE_FULLSCREEN__, SHARE=__FEATURE_SHARE__, VIBRATION=__FEATURE_VIBRATION__, ORIENTATION=__FEATURE_ORIENTATION__, BATTERY=__FEATURE_BATTERY__, NETWORK_STATUS=__FEATURE_NETWORK_STATUS__, DEVICE_INFO=__FEATURE_DEVICE_INFO__, LOCAL_NOTIFICATIONS=__FEATURE_LOCAL_NOTIFICATIONS__, BIOMETRIC=__FEATURE_BIOMETRIC__, SECURE_STORAGE=__FEATURE_SECURE_STORAGE__, SCREEN_CAPTURE=__FEATURE_SCREEN_CAPTURE__, PICTURE_IN_PICTURE=__FEATURE_PICTURE_IN_PICTURE__, DEEP_LINKS=__FEATURE_DEEP_LINKS__;
+
+  // Keep the APK's primary origin on the real WyDev domain. This makes relative /api
+  // requests, OAuth callbacks and routing behave exactly as they do on the website.
+  private static final String APP_URL = "https://wydev.vercel.app/";
+  private static final String APP_HOST = "wydev.vercel.app";
+
+  @Override public void onCreate(Bundle b) {
+    super.onCreate(b);
+    configureFullscreen();
+    web = new WebView(this);
+    WebSettings s = web.getSettings();
+    s.setJavaScriptEnabled(true);
+    s.setDomStorageEnabled(true);
+    s.setAllowFileAccess(true);
+    s.setAllowContentAccess(true);
+    s.setSupportMultipleWindows(false);
+    s.setBuiltInZoomControls(false);
+    s.setDisplayZoomControls(false);
+    web.addJavascriptInterface(new Bridge(), "WyBuild");
+
+    web.setWebViewClient(new WebViewClient() {
+      @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
+        return handleUrl(r.getUrl().toString());
+      }
+      @Override public boolean shouldOverrideUrlLoading(WebView v, String u) {
+        return handleUrl(u);
+      }
+    });
+
+    if (DOWNLOADS) web.setDownloadListener((u, ua, c, m, l) -> {
+      try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(u))); } catch (Exception ignored) {}
+    });
+
+    setContentView(web);
+    web.loadUrl(APP_URL);
+  }
+
+  private boolean handleUrl(String raw) {
+    if (raw == null || raw.isEmpty()) return false;
+    Uri u = Uri.parse(raw);
+    String scheme = u.getScheme();
+    if (scheme == null || "file".equalsIgnoreCase(scheme) || "about".equalsIgnoreCase(scheme)) return false;
+
+    // WyDev remains inside the app. Only genuinely external destinations leave it.
+    if ("https".equalsIgnoreCase(scheme) && APP_HOST.equalsIgnoreCase(u.getHost())) return false;
+    if (!EXTERNAL_LINKS) return false;
+    try {
+      startActivity(new Intent(Intent.ACTION_VIEW, u));
+      return true;
+    } catch (Exception ignored) {
+      return false;
+    }
+  }
+
+  private void configureFullscreen() {
+    // The app shell must not expose browser/system chrome during normal use.
+    getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
+    getWindow().getDecorView().setSystemUiVisibility(
+      View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY |
+      View.SYSTEM_UI_FLAG_FULLSCREEN |
+      View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
+      View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
+      View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
+      View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+    );
+  }
+
+  @Override public void onWindowFocusChanged(boolean hasFocus) {
+    super.onWindowFocusChanged(hasFocus);
+    if (hasFocus) configureFullscreen();
+  }
+
+  @Override public void onResume() {
+    super.onResume();
+    if (web != null) web.onResume();
+    configureFullscreen();
+  }
+
+  @Override public void onPause() {
+    if (web != null) web.onPause();
+    super.onPause();
+  }
+
+  @Override public void onBackPressed() {
+    if (web != null && web.canGoBack()) web.goBack(); else super.onBackPressed();
+  }
+
+  public class Bridge {
+    @android.webkit.JavascriptInterface public void share(String t) {
+      if (!SHARE) return;
+      Intent i=new Intent(Intent.ACTION_SEND); i.setType("text/plain"); i.putExtra(Intent.EXTRA_TEXT,t);
+      startActivity(Intent.createChooser(i,"Share"));
+    }
+    @android.webkit.JavascriptInterface public void vibrate(int ms) {
+      if (!VIBRATION) return;
+      ((android.os.Vibrator)getSystemService(VIBRATOR_SERVICE)).vibrate(Math.max(1,Math.min(ms,2000)));
+    }
+    @android.webkit.JavascriptInterface public boolean hasFeature(String f) {
+      String x=f==null?"":f.toUpperCase(Locale.ROOT);
+      switch(x){
+        case "CAMERA_MIC":return CAMERA; case "LOCATION":return LOCATION; case "DOWNLOADS":return DOWNLOADS;
+        case "EXTERNAL_LINKS":return EXTERNAL_LINKS; case "FULLSCREEN":return true; case "SHARE":return SHARE;
+        case "VIBRATION":return VIBRATION; case "ORIENTATION":return ORIENTATION; case "BATTERY":return BATTERY;
+        case "NETWORK_STATUS":return NETWORK_STATUS; case "DEVICE_INFO":return DEVICE_INFO;
+        case "LOCAL_NOTIFICATIONS":return LOCAL_NOTIFICATIONS; case "BIOMETRIC":return BIOMETRIC;
+        case "SECURE_STORAGE":return SECURE_STORAGE; case "SCREEN_CAPTURE":return SCREEN_CAPTURE;
+        case "PICTURE_IN_PICTURE":return PICTURE_IN_PICTURE; case "DEEP_LINKS":return DEEP_LINKS; default:return false;
+      }
+    }
+  }
 }

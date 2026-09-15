@@ -19,7 +19,7 @@ on:
         description: Native Web-to-App features (server-authorized)
         required: false
         type: string
-        default: free
+        default: FULLSCREEN,NETWORK_STATUS,DEVICE_INFO
 run-name: "WyDev: ${{ inputs.build_type }} (${{ inputs.build_mode }}) [${{ inputs.native_features }}] on ${{ github.ref_name }}"
 permissions:
   contents: read
