@@ -25,7 +25,7 @@ export default function App() {
   const initialBillingReturn = new URLSearchParams(window.location.search).get("billing") === "return";
   const [user, setUser] = useState(null),
     [offline, setOffline] = useState(() => !navigator.onLine),
-    [page, setPage] = useState(() => initialBillingReturn ? "billing" : (window.history.state?.wytelabPage || (window.location.hash.replace("#","") || "home"))),
+    [page, setPage] = useState(() => initialBillingReturn ? "billing" : (window.history.state?.wydevPage || (window.location.hash.replace("#","") || "home"))),
     [repos, setRepos] = useState([]),
     [repoLimit, setRepoLimit] = useState(null),
     [reposLoading, setReposLoading] = useState(false),
@@ -147,15 +147,15 @@ export default function App() {
   // Keep app navigation inside browser history so Android/iOS back returns to the
   // previous Wyte screen instead of closing the PWA/web app.
   useEffect(() => {
-    if (!window.history.state?.wytelabPage) {
-      window.history.replaceState({ wytelabPage: initialBillingReturn ? "billing" : page }, "", window.location.href);
+    if (!window.history.state?.wydevPage) {
+      window.history.replaceState({ wydevPage: initialBillingReturn ? "billing" : page }, "", window.location.href);
     }
     const onPopState = (event) => {
-      const next = event.state?.wytelabPage;
+      const next = event.state?.wydevPage;
       if (next) setPage(next);
       else {
         // Never let the browser back action leave Wyte from its root screen.
-        window.history.pushState({ wytelabPage: "home" }, "", window.location.href);
+        window.history.pushState({ wydevPage: "home" }, "", window.location.href);
         setPage("home");
       }
     };
@@ -165,7 +165,7 @@ export default function App() {
 
   const navigate = (next) => {
     if (!next || next === page) return;
-    window.history.pushState({ wytelabPage: next }, "", `#${next}`);
+    window.history.pushState({ wydevPage: next }, "", `#${next}`);
     setPage(next);
     closeMenu();
   };

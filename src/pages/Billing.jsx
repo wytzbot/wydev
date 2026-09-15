@@ -19,7 +19,7 @@ export default function Billing(){
 
  const showSuccess=()=>{
    pendingRef.current="";
-   try{localStorage.removeItem("wytelab:pendingPayment")}catch{}
+   try{localStorage.removeItem("wydev:pendingPayment")}catch{}
    setStatus(s=>({...s,plan:"pro"}));
    setAuth(null);setAuthValue("");setAuthFields({});setAuthMessage("");setErr("");setSuccess(true);
  };
@@ -57,16 +57,16 @@ export default function Billing(){
    (async()=>{
      try{
        let s=await billing.status();
-       if(s.plan!=="pro"){try{s=await billing.recover(localStorage.getItem("wytelab:pendingPayment")||"")}catch{} }
+       if(s.plan!=="pro"){try{s=await billing.recover(localStorage.getItem("wydev:pendingPayment")||"")}catch{} }
        setStatus(s);
        if(s.plan==="pro")setSuccess(false);
      }catch(e){setErr(e?.message||"Failed to load billing status.")}
    })();
    billing.config().then(setCfg).catch(()=>{});
    const params=new URLSearchParams(location.search),ref=params.get("tx_ref")||params.get("reference")||"";
-   let saved="";try{saved=localStorage.getItem("wytelab:pendingPayment")||""}catch{}
+   let saved="";try{saved=localStorage.getItem("wydev:pendingPayment")||""}catch{}
    const initial=ref||saved;
-   if(initial){try{localStorage.setItem("wytelab:pendingPayment",initial)}catch{};startPolling(initial)}
+   if(initial){try{localStorage.setItem("wydev:pendingPayment",initial)}catch{};startPolling(initial)}
    return stopPolling;
  },[]);
 
@@ -101,7 +101,7 @@ export default function Billing(){
    const ref=data.reference||reference;
    if(String(data.status||d?.status||"").toLowerCase()==="succeeded"&&data.id){return await verify(data.id,ref)}
    if(["failed","cancelled","canceled"].includes(String(data.status||"").toLowerCase())){setErr(data.message||data.processor_response?.message||"Flutterwave declined the payment.");return false}
-   if(ref){pendingRef.current=ref;try{localStorage.setItem("wytelab:pendingPayment",ref)}catch{}}
+   if(ref){pendingRef.current=ref;try{localStorage.setItem("wydev:pendingPayment",ref)}catch{}}
    const redirect=redirectFrom(data)||redirectFrom(d);
    if(redirect){location.href=redirect;return true}
    const a=describeAuth(d);

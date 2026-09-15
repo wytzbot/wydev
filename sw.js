@@ -27,7 +27,7 @@ self.addEventListener("notificationclick",e=>{e.notification.close();e.waitUntil
 // Everything else is left untouched: no app-shell caching, no interception
 // of API/asset requests — only navigations, and only once the network
 // request has actually failed.
-const OFFLINE_CACHE="wytelab-offline-v1";
+const OFFLINE_CACHE="wydev-offline-v1";
 self.addEventListener("install",e=>{
   self.skipWaiting();
   e.waitUntil(caches.open(OFFLINE_CACHE).then(c=>c.add("/offline.html")).catch(()=>{}));

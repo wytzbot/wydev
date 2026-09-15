@@ -326,7 +326,7 @@ async function aiDiagnose(s,payload){
 // largest files Wyte itself ships so real files aren't cut mid-function.
 const REPO_CONTEXT_CHAR_BUDGET=550000;
 const REPO_PER_FILE_CHAR_CAP=90000;
-const TRUNCATION_MARKER="\n/* [WYTELAB DIAGNOSTIC NOTE: file content cut off here because it exceeded the diagnosis size budget. This is NOT a bug in the source file -- it is only how much of it could be included in this analysis. Do not report this cutoff itself as an issue. */";
+const TRUNCATION_MARKER="\n/* [WYDEV DIAGNOSTIC NOTE: file content cut off here because it exceeded the diagnosis size budget. This is NOT a bug in the source file -- it is only how much of it could be included in this analysis. Do not report this cutoff itself as an issue. */";
 async function aiDiagnoseRepo(s,payload){
   const quota=await checkAIQuota(s);
   const incoming=Array.isArray(payload.files)?payload.files:[];
@@ -356,7 +356,7 @@ async function aiDiagnoseRepo(s,payload){
     },required:["title","severity","affected_files","root_cause","evidence","recommended_action"]}},
     confidence:{type:"number"}
   },required:["summary","overall_risk","architecture_notes","issues","confidence"]};
-  const prompt=`You are Wyte's Repository Diagnostic Engine. You are given the contents of an entire codebase (as many files as fit within the supplied context budget). Diagnose only. NEVER edit code, generate patches, rewrite files, commit, push, rename files, or perform autonomous actions.\nIMPORTANT -- read this before diagnosing: some file values in the payload have "truncated": true and end with a WYTELAB DIAGNOSTIC NOTE comment. That comment marks where THIS TOOL cut the file off to stay within its own size budget -- it is not part of the real source file and is never itself a code problem. A file ending abruptly right before that marker is expected and must NOT be reported as "truncated code", "incomplete implementation", or similar. Only report a file as incomplete/broken if the evidence for that appears BEFORE the marker, in code the file's author actually wrote. Likewise, values shown as [REDACTED], [REDACTED_TOKEN], or [REDACTED_PRIVATE_KEY] are secrets this tool intentionally masked before sending you the code -- never report these placeholders as syntax errors, missing values, or broken code.\nPerform a DEEP, holistic diagnosis across the whole repository, not just one file in isolation:\n- Find concrete bugs and correctness issues, including ones that only show up when files interact (mismatched contracts between frontend/backend, inconsistent field names, wrong endpoints, race conditions).\n- Flag structural and architectural risks: duplicated logic, dead code, missing error handling, inconsistent patterns between similar files, security issues (secrets, injection, auth gaps), fragile assumptions.\n- Group findings into discrete "issues", each naming the exact affected file paths and citing concrete evidence (function/variable names, line-level detail) from the supplied content -- never invent files or code that was not given to you.\n- If the supplied context is insufficient to be sure about something, say so in that issue instead of guessing.\nReturn only valid JSON matching the supplied schema. Keep it extremely concise: at most 5 important issues, short direct phrases, no long explanations, no essays, and no repeated context.\nCONTEXT:\n${context}`;
+  const prompt=`You are Wyte's Repository Diagnostic Engine. You are given the contents of an entire codebase (as many files as fit within the supplied context budget). Diagnose only. NEVER edit code, generate patches, rewrite files, commit, push, rename files, or perform autonomous actions.\nIMPORTANT -- read this before diagnosing: some file values in the payload have "truncated": true and end with a WYDEV DIAGNOSTIC NOTE comment. That comment marks where THIS TOOL cut the file off to stay within its own size budget -- it is not part of the real source file and is never itself a code problem. A file ending abruptly right before that marker is expected and must NOT be reported as "truncated code", "incomplete implementation", or similar. Only report a file as incomplete/broken if the evidence for that appears BEFORE the marker, in code the file's author actually wrote. Likewise, values shown as [REDACTED], [REDACTED_TOKEN], or [REDACTED_PRIVATE_KEY] are secrets this tool intentionally masked before sending you the code -- never report these placeholders as syntax errors, missing values, or broken code.\nPerform a DEEP, holistic diagnosis across the whole repository, not just one file in isolation:\n- Find concrete bugs and correctness issues, including ones that only show up when files interact (mismatched contracts between frontend/backend, inconsistent field names, wrong endpoints, race conditions).\n- Flag structural and architectural risks: duplicated logic, dead code, missing error handling, inconsistent patterns between similar files, security issues (secrets, injection, auth gaps), fragile assumptions.\n- Group findings into discrete "issues", each naming the exact affected file paths and citing concrete evidence (function/variable names, line-level detail) from the supplied content -- never invent files or code that was not given to you.\n- If the supplied context is insufficient to be sure about something, say so in that issue instead of guessing.\nReturn only valid JSON matching the supplied schema. Keep it extremely concise: at most 5 important issues, short direct phrases, no long explanations, no essays, and no repeated context.\nCONTEXT:\n${context}`;
   const out=await geminiDiagnose(prompt,schema,{maxOutputTokens:700,validate:o=>o&&typeof o.summary==="string"&&Array.isArray(o.issues)});
   const quotaUsed=await incrementUsage(s.id,quota.day,quota.limit);
   return {...out,filesTotal:incoming.length,filesAnalyzed:included.length,omittedFiles:omitted,usage:{used:quotaUsed,limit:quota.limit,remaining:Math.max(0,quota.limit-quotaUsed),plan:quota.plan}};
@@ -434,7 +434,7 @@ async function resolveCustomerId(customerPayload){
 }
 async function createBillingCheckout(s,payload){
   requirePersistence();
-  const currency=payload.currency==="NGN"?"NGN":"USD", amount=amountFor(currency), reference=`WYTELAB-${String(s.id).slice(0,12)}-${Date.now().toString(36)}-${crypto.randomBytes(5).toString("hex")}`;
+  const currency=payload.currency==="NGN"?"NGN":"USD", amount=amountFor(currency), reference=`WYDEV-${String(s.id).slice(0,12)}-${Date.now().toString(36)}-${crypto.randomBytes(5).toString("hex")}`;
   const fullName=String(payload.name||"").trim();
   const [firstName,...restName]=fullName?fullName.split(/\s+/):[];
   const customerPayload={email:payload.email||`${s.login}@users.noreply.github.com`,name:{first:firstName||s.name||s.login,...(restName.length?{last:restName.join(" ")}:{})},meta:{github_id:String(s.id)}};
@@ -503,7 +503,7 @@ async function renewDue(){
   for(const e of due){
     if(!e.customerId||!e.paymentMethodId||!e.currency)continue;
     try{
-      const renewalAt=Number(e.renewAt||0),reference=`WYTELAB-R-${String(e.id).slice(0,12)}-${renewalAt}`,amount=amountFor(e.currency);
+      const renewalAt=Number(e.renewAt||0),reference=`WYDEV-R-${String(e.id).slice(0,12)}-${renewalAt}`,amount=amountFor(e.currency);
       if(!(await claimRenewal(e.id,reference))) continue;
       const d=await flw("/charges",{method:"POST",idempotencyKey:reference,body:JSON.stringify({reference,currency:e.currency,amount,customer_id:e.customerId,payment_method_id:e.paymentMethodId,recurring:true})});
       const status=String(d.data?.status||"failed").toLowerCase();
@@ -536,7 +536,7 @@ async function recoverEntitlement(s,requestedReference=""){
   if(existing?.status==="active"&&(!existing.expiresAt||existing.expiresAt>Date.now()))return {active:true,expiresAt:existing.expiresAt,recovered:false};
   let transactions=await findRecentTransactions(s.id);
   const wanted=String(requestedReference||"").trim();
-  if(wanted && wanted.startsWith(`WYTELAB-${String(s.id).slice(0,12)}-`) && !transactions.some(t=>t.reference===wanted)){
+  if(wanted && wanted.startsWith(`WYDEV-${String(s.id).slice(0,12)}-`) && !transactions.some(t=>t.reference===wanted)){
     try{
       const list=await flw(`/charges?reference=${encodeURIComponent(wanted)}`);
       const rows=Array.isArray(list.data)?list.data:(list.data?[list.data]:[]);

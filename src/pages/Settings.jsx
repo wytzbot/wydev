@@ -53,7 +53,7 @@ export default function Settings() {
       danger: true,
     });
     if (!ok) return;
-    Object.keys(localStorage).filter((k) => k.startsWith("wytelab:project:")).forEach((k) => localStorage.removeItem(k));
+    Object.keys(localStorage).filter((k) => k.startsWith("wydev:project:")).forEach((k) => localStorage.removeItem(k));
     location.reload();
   };
 
@@ -111,7 +111,7 @@ export default function Settings() {
       </section>
       <section className="panel">
         <h3>LOCAL DATA</h3>
-        <button onClick={() => { localStorage.removeItem("wytelab:recentProjects"); location.reload(); }}>Clear recent projects</button>
+        <button onClick={() => { localStorage.removeItem("wydev:recentProjects"); location.reload(); }}>Clear recent projects</button>
         <button onClick={clearWorkingData}>Clear local working data</button>
       </section>
     </div>

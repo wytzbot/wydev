@@ -246,7 +246,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
       setChangesOpen(false);
       toastSuccess(`Committed and pushed successfully · ${r.commitSha.slice(0, 7)}`);
       try { await load({silent:true,retries:2}); } catch {}
-      localStorage.removeItem("wytelab:project:" + repo.id);
+      localStorage.removeItem("wydev:project:" + repo.id);
     } catch (e) {
       // A missing branch is an actionable push error, not a remote-change
       // conflict. The server now repairs stale/missing branch refs when safe;
@@ -666,7 +666,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
       toastSuccess(`Reverted to ${c.sha.slice(0, 7)} · new commit ${r.commitSha.slice(0, 7)}`);
       setHistoryOpen(false);
       setChangesOpen(false);
-      localStorage.removeItem("wytelab:project:" + repo.id);
+      localStorage.removeItem("wydev:project:" + repo.id);
       await load({ silent: true, retries: 2 });
     } catch (e) {
       if (e.code === "BRANCH_NOT_FOUND") toastError(e.message || `Branch "${branch}" could not be found.`);
@@ -710,7 +710,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
     setBusy(true);
     try {
       await github.deleteRepo(repo.owner?.login || repo.owner?.name || repo.full_name.split("/")[0], repo.name);
-      localStorage.removeItem(`wytelab:project:${repo.id}`);
+      localStorage.removeItem(`wydev:project:${repo.id}`);
       localStorage.removeItem(`project:${repo.id}`);
       try {
         const recent = loadState("recentProjects", []);
