@@ -1,4 +1,4 @@
-# WyDev Production Deployment
+# Wyte Production Deployment
 
 ## Architecture
 - Frontend: Vite static build deployed on Vercel.
@@ -38,7 +38,7 @@ Never prefix server secrets with `VITE_`.
 
 ## GitHub OAuth
 Register the production callback:
-`https://wydev.vercel.app/api/auth/github/callback`
+`https://wyte.name.ng/api/auth/github/callback`
 
 Use the minimum GitHub permissions required by the application. Never put the GitHub client secret in frontend code.
 
@@ -53,7 +53,7 @@ Collections:
 No repository source is intentionally stored in Firestore.
 
 ## Flutterwave
-Use sandbox first. Configure the production callback/redirect URL required by the selected v4 payment flow. Set the merchant encryption key as `FLW_ENCRYPTION_KEY`. WyDev reads it server-side through `/billing/config`, so no `VITE_`-prefixed Flutterwave encryption variable is required in Vercel.
+Use sandbox first. Configure the production callback/redirect URL required by the selected v4 payment flow. Set the merchant encryption key as `FLW_ENCRYPTION_KEY`. Wyte reads it server-side through `/billing/config`, so no `VITE_`-prefixed Flutterwave encryption variable is required in Vercel.
 
 Never activate Pro from a frontend redirect alone. The gateway verifies the payment and/or processes a trusted webhook.
 
@@ -61,7 +61,7 @@ Never activate Pro from a frontend redirect alone. The gateway verifies the paym
 Keep the Gemini model configurable through `GEMINI_MODEL`. The application uses Gemini for developer diagnostics and enforces a daily quota through Firestore.
 
 ## GitHub Actions failed-build notifications
-`.github/workflows/wydev-build.yml` notifies your deployed WyDev instance at `https://wydev.vercel.app/api/notifications/build-failed` when a build fails, so the failed-build push notification feature works out of the box.
+`.github/workflows/wydev-build.yml` notifies your deployed Wyte instance at `https://wyte.name.ng/api/notifications/build-failed` when a build fails, so the failed-build push notification feature works out of the box.
 
 ## Pre-launch checklist
 1. Run `npm run check`.

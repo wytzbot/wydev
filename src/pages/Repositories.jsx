@@ -45,7 +45,7 @@ export default function Repositories({ repos, repoLimit, loading, onOpen, onCrea
       </header>
       {repoLimit?.limit != null && repoLimit.total > repoLimit.limit && (
         <p className="muted" style={{ padding: "0 16px" }}>
-          Showing {repoLimit.limit} of {repoLimit.total} repositories on the Free plan. Upgrade to WyDev Pro to see and manage all of them.
+          Showing {repoLimit.limit} of {repoLimit.total} repositories on the Free plan. Upgrade to Wyte Pro to see and manage all of them.
         </p>
       )}
       <section className="panel">

@@ -1,19 +1,19 @@
-const KEY="wydev:diagnosisLogs";
+const KEY="wytelab:diagnosisLogs";
 const MAX=30;
 export function getLogs(){try{const v=JSON.parse(localStorage.getItem(KEY)||"[]");return Array.isArray(v)?v.slice(0,MAX):[]}catch{return []}}
 export function addLog(log){const item={id:`log_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,createdAt:new Date().toISOString(),...log};try{localStorage.setItem(KEY,JSON.stringify([item,...getLogs()].slice(0,MAX)))}catch{}return item}
 export function clearLogs(){try{localStorage.removeItem(KEY)}catch{}}
 export function formatLog(log){return `[${new Date(log.createdAt).toLocaleString()}] ${log.type||"Log"}\n${log.repo?`Repo: ${log.repo}\n`:""}${log.branch?`Branch: ${log.branch}\n`:""}${log.text||""}`}
 function escPdf(s){return String(s).replace(/[^\x20-\x7E]/g,"?").replace(/\\/g,"\\\\").replace(/\(/g,"\\(").replace(/\)/g,"\\)")}
-export function downloadText(logs,filename="wydev-logs.txt"){
+export function downloadText(logs,filename="wytelab-logs.txt"){
  const text=logs.map(formatLog).join("\n\n---\n\n");
  downloadBlob(new Blob([text],{type:"text/plain;charset=utf-8"}),filename)
 }
-export function downloadPdf(logs,filename="wydev-logs.pdf"){
+export function downloadPdf(logs,filename="wytelab-logs.pdf"){
  const lines=[];
  logs.forEach((x,i)=>{formatLog(x).split(/\r?\n/).forEach(l=>lines.push(l));if(i<logs.length-1)lines.push("---")});
  const perPage=48,pages=[];for(let i=0;i<lines.length;i+=perPage)pages.push(lines.slice(i,i+perPage));
- if(!pages.length)pages.push(["WyDev Logs"]);
+ if(!pages.length)pages.push(["Wyte Logs"]);
  const objs=[];const add=o=>{objs.push(o);return objs.length};
  const font=add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');const contentIds=[];
  pages.forEach(pg=>{let y=770,stream="BT\n/F1 9 Tf\n";pg.forEach(line=>{stream+=`1 0 0 1 40 ${y} Tm (${escPdf(line.slice(0,120))}) Tj\n`;y-=15});stream+="ET";const streamBytes=new TextEncoder().encode(stream);contentIds.push(add(`<< /Length ${streamBytes.byteLength} >>\nstream\n${stream}endstream`))});

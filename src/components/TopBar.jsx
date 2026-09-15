@@ -6,7 +6,7 @@ export default function TopBar({ user, onMenu, onSearch, onAvatar }) {
       <button className="topbarIcon" aria-label="Open menu" onClick={onMenu}>
         <MenuIcon size={20} />
       </button>
-      <span className="topbarBrand">WYDEV</span>
+      <span className="topbarBrand">WYTE</span>
       <button className="topbarIcon" aria-label="Search" onClick={onSearch}>
         <Search size={19} />
       </button>

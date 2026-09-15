@@ -77,7 +77,7 @@ if(api.includes('OPENAI_API_KEY') || api.includes('AI_ENDPOINT_1')) throw new Er
 if(!fs.readFileSync(path.join(root,"src/pages/Billing.jsx"),"utf8").includes("5 AI diagnoses/day")) throw new Error("Pro AI plan text is not 5/day");
 if(!fs.readFileSync(path.join(root,"src/pages/Actions.jsx"),"utf8").includes("../components/Select")) throw new Error("Actions page still uses a native picker");
 
-console.log("WyDev source checks passed.");
+console.log("Wyte source checks passed.");
 console.log("GitHub OAuth: present");
 console.log("GitHub commit/push + remote SHA guard: present");
 console.log("AI diagnostic + quota + fallback: present");

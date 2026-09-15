@@ -1,6 +1,6 @@
-# WyDev
+# Wyte
 
-WyDev is a mobile-friendly GitHub developer workspace for repository browsing, file editing, code search, changes, commits, pull requests, diagnostics, and deployment handoffs.
+Wyte is a mobile-friendly GitHub developer workspace for repository browsing, file editing, code search, changes, commits, pull requests, diagnostics, and deployment handoffs.
 
 ## Public pages
 - /

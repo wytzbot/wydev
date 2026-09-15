@@ -246,7 +246,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
       setChangesOpen(false);
       toastSuccess(`Committed and pushed successfully · ${r.commitSha.slice(0, 7)}`);
       try { await load({silent:true,retries:2}); } catch {}
-      localStorage.removeItem("wydev:project:" + repo.id);
+      localStorage.removeItem("wytelab:project:" + repo.id);
     } catch (e) {
       // A missing branch is an actionable push error, not a remote-change
       // conflict. The server now repairs stale/missing branch refs when safe;
@@ -654,7 +654,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
       : "";
     const ok = await confirmDialog({
       title: "Revert to this commit",
-      message: `The current state of "${branch}" will be deleted and replaced with the repository exactly as it was at commit ${c.sha.slice(0, 7)} ("${(c.message || "").split("\n")[0]}"). A new commit recording this revert will be pushed to GitHub.${localNote} This cannot be undone from WyDev. Continue?`,
+      message: `The current state of "${branch}" will be deleted and replaced with the repository exactly as it was at commit ${c.sha.slice(0, 7)} ("${(c.message || "").split("\n")[0]}"). A new commit recording this revert will be pushed to GitHub.${localNote} This cannot be undone from Wyte. Continue?`,
       confirmLabel: "Continue",
       danger: true,
     });
@@ -666,7 +666,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
       toastSuccess(`Reverted to ${c.sha.slice(0, 7)} · new commit ${r.commitSha.slice(0, 7)}`);
       setHistoryOpen(false);
       setChangesOpen(false);
-      localStorage.removeItem("wydev:project:" + repo.id);
+      localStorage.removeItem("wytelab:project:" + repo.id);
       await load({ silent: true, retries: 2 });
     } catch (e) {
       if (e.code === "BRANCH_NOT_FOUND") toastError(e.message || `Branch "${branch}" could not be found.`);
@@ -680,7 +680,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
 
   const deleteRepository = async () => {
     if (plan !== "pro") {
-      toastError("Delete repository is a WyDev Pro feature.");
+      toastError("Delete repository is a Wyte Pro feature.");
       return;
     }
     const confirmation = await promptDialog({
@@ -710,7 +710,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
     setBusy(true);
     try {
       await github.deleteRepo(repo.owner?.login || repo.owner?.name || repo.full_name.split("/")[0], repo.name);
-      localStorage.removeItem(`wydev:project:${repo.id}`);
+      localStorage.removeItem(`wytelab:project:${repo.id}`);
       localStorage.removeItem(`project:${repo.id}`);
       try {
         const recent = loadState("recentProjects", []);
@@ -721,12 +721,12 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
       onBack?.();
     } catch (e) {
       if (e.status === 401) toastError("GitHub authentication expired. Sign in again before deleting the repository.");
-      else if (e.status === 403) toastError(e.code === "PRO_REQUIRED" ? "Delete repository is a WyDev Pro feature." : "GitHub denied repository deletion. Re-authorize WyDev with repository deletion permission or check your GitHub permissions.");
+      else if (e.status === 403) toastError(e.code === "PRO_REQUIRED" ? "Delete repository is a Wyte Pro feature." : "GitHub denied repository deletion. Re-authorize Wyte with repository deletion permission or check your GitHub permissions.");
       else if (e.status === 404) toastError("GitHub could not find this repository. It may already have been deleted.");
       else if (e.status === 409) toastError("GitHub could not delete this repository because it is currently in a conflicting state. Check GitHub and try again.");
       else if (e.status === 422) toastError("GitHub rejected the deletion request. Check your repository permissions and try again.");
-      else if (e.code === "GITHUB_DELETE_SCOPE_MISSING") toastError("WyDev does not have GitHub's delete permission. Sign out and authorize WyDev again, then retry.");
-      else toastError(e.message || "Repository deletion failed. Nothing was changed by WyDev.");
+      else if (e.code === "GITHUB_DELETE_SCOPE_MISSING") toastError("Wyte does not have GitHub's delete permission. Sign out and authorize Wyte again, then retry.");
+      else toastError(e.message || "Repository deletion failed. Nothing was changed by Wyte.");
     } finally {
       setBusy(false);
     }
@@ -819,7 +819,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
           <GitBranch size={16} />
           Pull Requests
         </button>
-        <button className="danger" onClick={deleteRepository} disabled={busy} title={plan === "pro" ? "Permanently delete this GitHub repository" : "Delete repository requires WyDev Pro"}>
+        <button className="danger" onClick={deleteRepository} disabled={busy} title={plan === "pro" ? "Permanently delete this GitHub repository" : "Delete repository requires Wyte Pro"}>
           <Trash2 size={16} />
           Delete repository{plan !== "pro" ? " (Pro)" : ""}
         </button>

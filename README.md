@@ -1,4 +1,4 @@
-# WyDev — GitHub + AI + Flutterwave build
+# Wyte — GitHub + AI + Flutterwave build
 
 Mobile-first GitHub code editor/workspace. GitHub remains the source of truth.
 
@@ -59,7 +59,7 @@ Create a GitHub OAuth App and set its callback URL to `/api/auth/github/callback
 
 Use v4 sandbox credentials first. Configure the webhook URL as:
 
-`https://wydev.vercel.app/api/billing/webhook`
+`https://wyte.name.ng/api/billing/webhook`
 
 The backend verifies webhook signatures and then re-queries the charge before activating Pro.
 
@@ -81,12 +81,12 @@ The Firebase Admin credentials are server-only. Do not put them in `VITE_*` vari
 
 ## Flutterwave v4 card encryption
 
-The browser encrypts card number, expiry month/year and CVV with the Flutterwave AES-256 encryption key before the request reaches the WyDev backend. Flutterwave's current v4 docs require encrypted card fields plus a 12-character nonce. The backend then sends only encrypted card data to Flutterwave.
+The browser encrypts card number, expiry month/year and CVV with the Flutterwave AES-256 encryption key before the request reaches the Wyte backend. Flutterwave's current v4 docs require encrypted card fields plus a 12-character nonce. The backend then sends only encrypted card data to Flutterwave.
 
 Set the merchant encryption key as:
 `FLW_ENCRYPTION_KEY`
 
-WyDev reads this server environment variable through `/billing/config` so the Vite frontend does not require a `VITE_`-prefixed environment variable.
+Wyte reads this server environment variable through `/billing/config` so the Vite frontend does not require a `VITE_`-prefixed environment variable.
 
 This is deliberately different from `FLW_CLIENT_SECRET`. Never put `FLW_CLIENT_SECRET` in a VITE variable.
 
@@ -94,14 +94,14 @@ The frontend also supports Flutterwave's returned authorization redirect (for 3D
 
 ## Production persistence requirement
 
-Firestore removes the Vercel in-memory state problem for AI quotas, transaction records and Pro entitlements. GitHub source remains remote; WyDev does not turn Firestore into another Git host.
+Firestore removes the Vercel in-memory state problem for AI quotas, transaction records and Pro entitlements. GitHub source remains remote; Wyte does not turn Firestore into another Git host.
 
 Recommended Firestore rules: deny all direct client reads/writes and access these collections only through the Admin SDK server gateway.
 
 
 ### Flutterwave v4 troubleshooting
 
-WyDev generates alphanumeric `X-Trace-Id` and `X-Idempotency-Key` values as required by Flutterwave v4. A `10403 FORBIDDEN` response is surfaced with the endpoint, environment, and trace ID so the account/API permission issue can be identified without exposing credentials.
+Wyte generates alphanumeric `X-Trace-Id` and `X-Idempotency-Key` values as required by Flutterwave v4. A `10403 FORBIDDEN` response is surfaced with the endpoint, environment, and trace ID so the account/API permission issue can be identified without exposing credentials.
 
 
 ## Current product limits
@@ -112,11 +112,11 @@ WyDev generates alphanumeric `X-Trace-Id` and `X-Idempotency-Key` values as requ
 - Pro-only workspace actions include pull requests, commit revert, and extended local undo history.
 
 ## Notifications
-Push notifications are optional. WyDev includes its public Firebase Web/FCM configuration directly in the source for the `wydev0` Firebase project. Only Firebase Admin server credentials remain environment variables for secure token storage and server-side notification sending. WyDev can send failed-build alerts, Good Morning notifications, free-limit reminders, and Pro renewal reminders at 10 and 5 days before renewal.
+Push notifications are optional. Wyte includes its public Firebase Web/FCM configuration directly in the source for the `wydev0` Firebase project. Only Firebase Admin server credentials remain environment variables for secure token storage and server-side notification sending. Wyte can send failed-build alerts, Good Morning notifications, free-limit reminders, and Pro renewal reminders at 10 and 5 days before renewal.
 
 ## Payment model
-The initial card payment creates a tokenized Flutterwave payment method. Later monthly renewals use that stored Flutterwave payment method with `recurring: true`. WyDev verifies the charge server-side by reference, amount, currency and status and processes signed webhooks before granting or extending Pro.
+The initial card payment creates a tokenized Flutterwave payment method. Later monthly renewals use that stored Flutterwave payment method with `recurring: true`. Wyte verifies the charge server-side by reference, amount, currency and status and processes signed webhooks before granting or extending Pro.
 
 
 ### GitHub Actions Control Center
-WyDev includes a mobile-friendly Actions view for recent workflow runs, failed-job retries and job inspection. Free includes manual workflow dispatch and cancellation. Pro adds failed-job reruns and debug-enabled failed-job reruns. These operations use the signed-in developer's GitHub permissions through the WyDev server.
+Wyte includes a mobile-friendly Actions view for recent workflow runs, failed-job retries and job inspection. Free includes manual workflow dispatch and cancellation. Pro adds failed-job reruns and debug-enabled failed-job reruns. These operations use the signed-in developer's GitHub permissions through the Wyte server.

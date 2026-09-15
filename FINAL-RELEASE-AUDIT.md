@@ -1,4 +1,4 @@
-# WyDev Final Release Audit — 2026-08-26
+# Wyte Final Release Audit — 2026-08-26
 
 ## Result
 
@@ -57,4 +57,4 @@ npm run build:source
 
 ## Product boundary
 
-WyDev does not host repositories, deploy projects, replace GitHub, or let AI modify code. GitHub remains the source of truth; Firebase stores only required application state; AI diagnoses problems; Flutterwave controls Pro billing.
+Wyte does not host repositories, deploy projects, replace GitHub, or let AI modify code. GitHub remains the source of truth; Firebase stores only required application state; AI diagnoses problems; Flutterwave controls Pro billing.

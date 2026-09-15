@@ -25,7 +25,7 @@ export default function App() {
   const initialBillingReturn = new URLSearchParams(window.location.search).get("billing") === "return";
   const [user, setUser] = useState(null),
     [offline, setOffline] = useState(() => !navigator.onLine),
-    [page, setPage] = useState(() => initialBillingReturn ? "billing" : (window.history.state?.wydevPage || (window.location.hash.replace("#","") || "home"))),
+    [page, setPage] = useState(() => initialBillingReturn ? "billing" : (window.history.state?.wytelabPage || (window.location.hash.replace("#","") || "home"))),
     [repos, setRepos] = useState([]),
     [repoLimit, setRepoLimit] = useState(null),
     [reposLoading, setReposLoading] = useState(false),
@@ -145,17 +145,17 @@ export default function App() {
   }, [user]);
 
   // Keep app navigation inside browser history so Android/iOS back returns to the
-  // previous WyDev screen instead of closing the PWA/web app.
+  // previous Wyte screen instead of closing the PWA/web app.
   useEffect(() => {
-    if (!window.history.state?.wydevPage) {
-      window.history.replaceState({ wydevPage: initialBillingReturn ? "billing" : page }, "", window.location.href);
+    if (!window.history.state?.wytelabPage) {
+      window.history.replaceState({ wytelabPage: initialBillingReturn ? "billing" : page }, "", window.location.href);
     }
     const onPopState = (event) => {
-      const next = event.state?.wydevPage;
+      const next = event.state?.wytelabPage;
       if (next) setPage(next);
       else {
-        // Never let the browser back action leave WyDev from its root screen.
-        window.history.pushState({ wydevPage: "home" }, "", window.location.href);
+        // Never let the browser back action leave Wyte from its root screen.
+        window.history.pushState({ wytelabPage: "home" }, "", window.location.href);
         setPage("home");
       }
     };
@@ -165,7 +165,7 @@ export default function App() {
 
   const navigate = (next) => {
     if (!next || next === page) return;
-    window.history.pushState({ wydevPage: next }, "", `#${next}`);
+    window.history.pushState({ wytelabPage: next }, "", `#${next}`);
     setPage(next);
     closeMenu();
   };
@@ -199,7 +199,7 @@ export default function App() {
   }, [repo]);
 
   if (offline) return <Offline />;
-  if (loading) return <div className="loading">Loading WyDev…</div>;
+  if (loading) return <div className="loading">Loading Wyte…</div>;
   if (!user) return <Login />;
 
   const open = (r) => {
@@ -320,9 +320,9 @@ function Help() {
       <section className="panel">
         <h3>GETTING STARTED</h3>
         <p>Sign in with GitHub, open a repository, edit files locally, review Changes, then Commit & Push.</p>
-        <p className="muted">GitHub remains the source of truth. WyDev never deploys or hosts your repository.</p>
+        <p className="muted">GitHub remains the source of truth. Wyte never deploys or hosts your repository.</p>
         <h3>WHEN A PUSH FAILS</h3>
-        <p>Pull the latest GitHub state and review the changes before retrying. WyDev refuses to overwrite a newer remote branch.</p>
+        <p>Pull the latest GitHub state and review the changes before retrying. Wyte refuses to overwrite a newer remote branch.</p>
         <a href="https://github.com" target="_blank" rel="noreferrer">Open GitHub</a>
       </section>
     </div>

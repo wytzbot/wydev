@@ -10,7 +10,7 @@ export default function Logs(){
  const clear=()=>{clearLogs();setLogs([]);toastSuccess("Local logs cleared")};
  const refresh=()=>setLogs(getLogs());
  return <div className="page logsPage">
-  <header><div><span className="eyebrow">LOCAL HISTORY</span><h1>Logs</h1><p className="muted">Latest WyDev logs saved on this device only.</p></div></header>
+  <header><div><span className="eyebrow">LOCAL HISTORY</span><h1>Logs</h1><p className="muted">Latest Wyte logs saved on this device only.</p></div></header>
   <section className="panel logsToolbar">
    <div className="logActions"><button onClick={()=>downloadText(logs)} disabled={!logs.length}><Download size={16}/>TXT</button><button onClick={()=>downloadPdf(logs)} disabled={!logs.length}><Download size={16}/>PDF</button><button onClick={clear} disabled={!logs.length}><Trash2 size={16}/>Clear</button></div>
    <span className="muted">{logs.length} latest log{logs.length===1?"":"s"}</span>

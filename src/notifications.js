@@ -5,7 +5,7 @@ import { loadState, saveState } from "./storage";
 // Browser Notification permission is a one-way ratchet: once the user grants
 // it, JS can never programmatically revoke it (only the user can, via their
 // browser's site settings). That means `Notification.permission` alone can't
-// tell us whether *WyDev* currently has an active subscription — it only
+// tell us whether *Wyte* currently has an active subscription — it only
 // tells us whether the browser would *allow* one. We track the user's actual
 // choice (did they press Enable or Disable in Settings) separately, here.
 const ENABLED_KEY = "notificationsEnabled";
@@ -16,7 +16,7 @@ export function getNotificationPermission(){
 }
 
 // True only when the browser permission is granted AND the user has
-// explicitly enabled notifications in WyDev (and hasn't since disabled them).
+// explicitly enabled notifications in Wyte (and hasn't since disabled them).
 export function isNotificationsEnabled(){
   return getNotificationPermission()==="granted" && !!loadState(ENABLED_KEY,false);
 }
@@ -43,12 +43,12 @@ export async function enableNotifications(){
   if(!token) throw new Error("Firebase did not return a push token.");
 
   // FCM notification payloads are delivered to the page through onMessage
-  // while WyDev is open. Background/closed delivery is handled by sw.js.
+  // while Wyte is open. Background/closed delivery is handled by sw.js.
   if(!window.__wydevFcmForegroundListener){
     window.__wydevFcmForegroundListener=onMessage(messaging,payload=>{
       if(Notification.permission!=="granted") return;
       const n=payload?.notification||{},d=payload?.data||{};
-      const title=String(n.title||d.title||"WyDev");
+      const title=String(n.title||d.title||"Wyte");
       const body=String(n.body||d.body||"");
       try{
         const note=new Notification(title,{body,icon:"/icon-192.png",tag:String(d.type||"wydev-notification")});

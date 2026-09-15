@@ -124,7 +124,7 @@ async function getTransaction(reference){
 }
 
 function requirePersistence(){
-  if(!db) throw Object.assign(new Error("WyDev billing storage is not configured. Set FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY in Vercel before accepting payments."),{status:503,code:"BILLING_STORAGE_NOT_CONFIGURED"});
+  if(!db) throw Object.assign(new Error("Wyte billing storage is not configured. Set FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY in Vercel before accepting payments."),{status:503,code:"BILLING_STORAGE_NOT_CONFIGURED"});
 }
 async function findRecentTransactions(userId){
   if(!db)return [];
@@ -166,7 +166,7 @@ function setSession(res,user){const value=seal(user);res.setHeader("Set-Cookie",
 function clearSession(res){res.setHeader("Set-Cookie","wydev_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0");}
 function session(req){const c=parseCookies(req).wydev_session;return c?openCookie(c):null;}
 function requireSession(req,res){const s=session(req);if(!s?.token||!s?.login){json(res,401,{error:"GitHub authentication required"});return null}return s;}
-function ghHeaders(token){return{"Authorization":`Bearer ${token}`,"Accept":"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28","User-Agent":"WyDev-Mobile-Editor"};}
+function ghHeaders(token){return{"Authorization":`Bearer ${token}`,"Accept":"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28","User-Agent":"Wyte-Mobile-Editor"};}
 async function gh(token,path,opts={}){const r=await fetch(GH+path,{...opts,headers:{...ghHeaders(token),...(opts.headers||{})}});const text=await r.text();let data;try{data=JSON.parse(text)}catch{data={message:text}}if(!r.ok)throw Object.assign(new Error(data.message||`GitHub request failed (${r.status})`),{status:r.status,data});return data;}
 
 function origin(req){const proto=(req.headers["x-forwarded-proto"]||"https").split(",")[0];const host=req.headers["x-forwarded-host"]||req.headers.host;return `${proto}://${host}`;}
@@ -309,7 +309,7 @@ async function aiDiagnose(s,payload){
   const files=Array.isArray(payload.relatedFiles)?payload.relatedFiles.slice(0,8):[];
   const context=JSON.stringify({error:redactSecrets(payload.error),logs:redactSecrets(String(payload.logs||"").slice(0,12000)),file:redactSecrets(payload.file),content:redactSecrets(String(payload.content||"").slice(0,24000)),relatedFiles:files.map(x=>({path:redactSecrets(x.path),content:redactSecrets(String(x.content||"").slice(0,10000))})),package:redactSecrets(payload.package)});
   const schema={type:"object",properties:{title:{type:"string"},severity:{type:"string"},root_cause:{type:"string"},affected_files:{type:"array",items:{type:"string"}},affected_lines:{type:"array",items:{type:"string"}},evidence:{type:"array",items:{type:"string"}},likely_reason:{type:"string"},recommended_action:{type:"string"},confidence:{type:"number"}},required:["title","severity","root_cause","affected_files","affected_lines","evidence","likely_reason","recommended_action","confidence"]};
-  const prompt=`You are WyDev Diagnostic Engine. Diagnose only. NEVER edit code, generate patches, replace files, commit, push, rename files, or perform autonomous actions. Identify the exact problem from the supplied minimum context. If evidence is insufficient, say so. Return only valid JSON matching the supplied schema. Keep the diagnosis very concise: identify the problem, evidence, and next action in short sentences; do not write a long explanation.\nCONTEXT:\n${context}`;
+  const prompt=`You are Wyte Diagnostic Engine. Diagnose only. NEVER edit code, generate patches, replace files, commit, push, rename files, or perform autonomous actions. Identify the exact problem from the supplied minimum context. If evidence is insufficient, say so. Return only valid JSON matching the supplied schema. Keep the diagnosis very concise: identify the problem, evidence, and next action in short sentences; do not write a long explanation.\nCONTEXT:\n${context}`;
   const out=await geminiDiagnose(prompt,schema,{maxOutputTokens:700});
   const used=await incrementUsage(s.id,quota.day,quota.limit);
   return {...out,usage:{used,limit:quota.limit,remaining:Math.max(0,quota.limit-used),plan:quota.plan}};
@@ -323,10 +323,10 @@ async function aiDiagnose(s,payload){
 // user happened to have open. Still diagnosis-only, still one AI credit.
 // Budgeted generously (well above this repo's ~230KB of source) so ordinary
 // projects are sent in full; per-file cap is likewise sized above the
-// largest files WyDev itself ships so real files aren't cut mid-function.
+// largest files Wyte itself ships so real files aren't cut mid-function.
 const REPO_CONTEXT_CHAR_BUDGET=550000;
 const REPO_PER_FILE_CHAR_CAP=90000;
-const TRUNCATION_MARKER="\n/* [WYDEV DIAGNOSTIC NOTE: file content cut off here because it exceeded the diagnosis size budget. This is NOT a bug in the source file -- it is only how much of it could be included in this analysis. Do not report this cutoff itself as an issue. */";
+const TRUNCATION_MARKER="\n/* [WYTELAB DIAGNOSTIC NOTE: file content cut off here because it exceeded the diagnosis size budget. This is NOT a bug in the source file -- it is only how much of it could be included in this analysis. Do not report this cutoff itself as an issue. */";
 async function aiDiagnoseRepo(s,payload){
   const quota=await checkAIQuota(s);
   const incoming=Array.isArray(payload.files)?payload.files:[];
@@ -356,7 +356,7 @@ async function aiDiagnoseRepo(s,payload){
     },required:["title","severity","affected_files","root_cause","evidence","recommended_action"]}},
     confidence:{type:"number"}
   },required:["summary","overall_risk","architecture_notes","issues","confidence"]};
-  const prompt=`You are WyDev's Repository Diagnostic Engine. You are given the contents of an entire codebase (as many files as fit within the supplied context budget). Diagnose only. NEVER edit code, generate patches, rewrite files, commit, push, rename files, or perform autonomous actions.\nIMPORTANT -- read this before diagnosing: some file values in the payload have "truncated": true and end with a WYDEV DIAGNOSTIC NOTE comment. That comment marks where THIS TOOL cut the file off to stay within its own size budget -- it is not part of the real source file and is never itself a code problem. A file ending abruptly right before that marker is expected and must NOT be reported as "truncated code", "incomplete implementation", or similar. Only report a file as incomplete/broken if the evidence for that appears BEFORE the marker, in code the file's author actually wrote. Likewise, values shown as [REDACTED], [REDACTED_TOKEN], or [REDACTED_PRIVATE_KEY] are secrets this tool intentionally masked before sending you the code -- never report these placeholders as syntax errors, missing values, or broken code.\nPerform a DEEP, holistic diagnosis across the whole repository, not just one file in isolation:\n- Find concrete bugs and correctness issues, including ones that only show up when files interact (mismatched contracts between frontend/backend, inconsistent field names, wrong endpoints, race conditions).\n- Flag structural and architectural risks: duplicated logic, dead code, missing error handling, inconsistent patterns between similar files, security issues (secrets, injection, auth gaps), fragile assumptions.\n- Group findings into discrete "issues", each naming the exact affected file paths and citing concrete evidence (function/variable names, line-level detail) from the supplied content -- never invent files or code that was not given to you.\n- If the supplied context is insufficient to be sure about something, say so in that issue instead of guessing.\nReturn only valid JSON matching the supplied schema. Keep it extremely concise: at most 5 important issues, short direct phrases, no long explanations, no essays, and no repeated context.\nCONTEXT:\n${context}`;
+  const prompt=`You are Wyte's Repository Diagnostic Engine. You are given the contents of an entire codebase (as many files as fit within the supplied context budget). Diagnose only. NEVER edit code, generate patches, rewrite files, commit, push, rename files, or perform autonomous actions.\nIMPORTANT -- read this before diagnosing: some file values in the payload have "truncated": true and end with a WYTELAB DIAGNOSTIC NOTE comment. That comment marks where THIS TOOL cut the file off to stay within its own size budget -- it is not part of the real source file and is never itself a code problem. A file ending abruptly right before that marker is expected and must NOT be reported as "truncated code", "incomplete implementation", or similar. Only report a file as incomplete/broken if the evidence for that appears BEFORE the marker, in code the file's author actually wrote. Likewise, values shown as [REDACTED], [REDACTED_TOKEN], or [REDACTED_PRIVATE_KEY] are secrets this tool intentionally masked before sending you the code -- never report these placeholders as syntax errors, missing values, or broken code.\nPerform a DEEP, holistic diagnosis across the whole repository, not just one file in isolation:\n- Find concrete bugs and correctness issues, including ones that only show up when files interact (mismatched contracts between frontend/backend, inconsistent field names, wrong endpoints, race conditions).\n- Flag structural and architectural risks: duplicated logic, dead code, missing error handling, inconsistent patterns between similar files, security issues (secrets, injection, auth gaps), fragile assumptions.\n- Group findings into discrete "issues", each naming the exact affected file paths and citing concrete evidence (function/variable names, line-level detail) from the supplied content -- never invent files or code that was not given to you.\n- If the supplied context is insufficient to be sure about something, say so in that issue instead of guessing.\nReturn only valid JSON matching the supplied schema. Keep it extremely concise: at most 5 important issues, short direct phrases, no long explanations, no essays, and no repeated context.\nCONTEXT:\n${context}`;
   const out=await geminiDiagnose(prompt,schema,{maxOutputTokens:700,validate:o=>o&&typeof o.summary==="string"&&Array.isArray(o.issues)});
   const quotaUsed=await incrementUsage(s.id,quota.day,quota.limit);
   return {...out,filesTotal:incoming.length,filesAnalyzed:included.length,omittedFiles:omitted,usage:{used:quotaUsed,limit:quota.limit,remaining:Math.max(0,quota.limit-quotaUsed),plan:quota.plan}};
@@ -429,12 +429,12 @@ async function resolveCustomerId(customerPayload){
     if(inline)return inline;
     const found=await findCustomerByEmail(customerPayload.email);
     if(found)return found;
-    throw Object.assign(new Error(`Flutterwave reports a customer already exists for ${customerPayload.email}, but WyDev could not look up its ID to reuse it. Trace: ${e.traceId||"n/a"}`),{status:e.status||500});
+    throw Object.assign(new Error(`Flutterwave reports a customer already exists for ${customerPayload.email}, but Wyte could not look up its ID to reuse it. Trace: ${e.traceId||"n/a"}`),{status:e.status||500});
   }
 }
 async function createBillingCheckout(s,payload){
   requirePersistence();
-  const currency=payload.currency==="NGN"?"NGN":"USD", amount=amountFor(currency), reference=`WYDEV-${String(s.id).slice(0,12)}-${Date.now().toString(36)}-${crypto.randomBytes(5).toString("hex")}`;
+  const currency=payload.currency==="NGN"?"NGN":"USD", amount=amountFor(currency), reference=`WYTELAB-${String(s.id).slice(0,12)}-${Date.now().toString(36)}-${crypto.randomBytes(5).toString("hex")}`;
   const fullName=String(payload.name||"").trim();
   const [firstName,...restName]=fullName?fullName.split(/\s+/):[];
   const customerPayload={email:payload.email||`${s.login}@users.noreply.github.com`,name:{first:firstName||s.name||s.login,...(restName.length?{last:restName.join(" ")}:{})},meta:{github_id:String(s.id)}};
@@ -470,7 +470,7 @@ async function runScheduledNotifications(){
   const active=await db.collection("wydev_entitlements").where("status","==","active").limit(500).get();
   for(const doc of active.docs){
     const e=doc.data(),uid=doc.id,days=daysUntil(e.renewAt);
-    if(days===10||days===5) renewalWarnings+=await sendPushOnce(uid,`renewal:${e.renewAt}:${days}`,"WyDev Pro renewal reminder",`Your Pro subscription renews in ${days} days. Your Pro access stays active while renewal succeeds.`,{type:"renewal",days:String(days)});
+    if(days===10||days===5) renewalWarnings+=await sendPushOnce(uid,`renewal:${e.renewAt}:${days}`,"Wyte Pro renewal reminder",`Your Pro subscription renews in ${days} days. Your Pro access stays active while renewal succeeds.`,{type:"renewal",days:String(days)});
   }
   const subs=await db.collection("wydev_fcm_tokens").where("enabled","==",true).limit(1000).get();
   const users=new Map();
@@ -503,7 +503,7 @@ async function renewDue(){
   for(const e of due){
     if(!e.customerId||!e.paymentMethodId||!e.currency)continue;
     try{
-      const renewalAt=Number(e.renewAt||0),reference=`WYDEV-R-${String(e.id).slice(0,12)}-${renewalAt}`,amount=amountFor(e.currency);
+      const renewalAt=Number(e.renewAt||0),reference=`WYTELAB-R-${String(e.id).slice(0,12)}-${renewalAt}`,amount=amountFor(e.currency);
       if(!(await claimRenewal(e.id,reference))) continue;
       const d=await flw("/charges",{method:"POST",idempotencyKey:reference,body:JSON.stringify({reference,currency:e.currency,amount,customer_id:e.customerId,payment_method_id:e.paymentMethodId,recurring:true})});
       const status=String(d.data?.status||"failed").toLowerCase();
@@ -536,7 +536,7 @@ async function recoverEntitlement(s,requestedReference=""){
   if(existing?.status==="active"&&(!existing.expiresAt||existing.expiresAt>Date.now()))return {active:true,expiresAt:existing.expiresAt,recovered:false};
   let transactions=await findRecentTransactions(s.id);
   const wanted=String(requestedReference||"").trim();
-  if(wanted && wanted.startsWith(`WYDEV-${String(s.id).slice(0,12)}-`) && !transactions.some(t=>t.reference===wanted)){
+  if(wanted && wanted.startsWith(`WYTELAB-${String(s.id).slice(0,12)}-`) && !transactions.some(t=>t.reference===wanted)){
     try{
       const list=await flw(`/charges?reference=${encodeURIComponent(wanted)}`);
       const rows=Array.isArray(list.data)?list.data:(list.data?[list.data]:[]);
@@ -558,7 +558,7 @@ async function recoverEntitlement(s,requestedReference=""){
       if(x.status==="succeeded"&&String(x.reference||"")===String(tx.reference)&&Number(x.amount)===Number(tx.amount)&&String(x.currency)===String(tx.currency)){
         const expiresAt=addOneMonth(Date.now());
         await setEntitlement(s.id,{status:"active",expiresAt,renewAt:expiresAt,reference:tx.reference,customerId:tx.customerId||x.customer_id||null,paymentMethodId:tx.paymentMethodId||x.payment_method_details?.id||null,currency:tx.currency,updatedAt:Date.now(),recoveredAt:Date.now()});
-        try{await sendPushOnce(s.id,`pro-unlocked:${tx.reference}`,"WyDev Pro unlocked 🎉","Your Pro subscription is active.",{type:"pro_unlocked"})}catch{}
+        try{await sendPushOnce(s.id,`pro-unlocked:${tx.reference}`,"Wyte Pro unlocked 🎉","Your Pro subscription is active.",{type:"pro_unlocked"})}catch{}
         return {active:true,expiresAt,recovered:true,reference:tx.reference};
       }
     }catch{}
@@ -583,7 +583,7 @@ async function verifyCharge(s,id,reference){
   if(x.status==="succeeded"&&providerRef===ref&&Number(x.amount)===Number(expected.amount)&&String(x.currency)===String(expected.currency)){
     const expiresAt=addOneMonth(Date.now());
     await setEntitlement(s.id,{status:"active",expiresAt,renewAt:expiresAt,reference:ref,customerId:expected.customerId,paymentMethodId:expected.paymentMethodId,currency:expected.currency,updatedAt:Date.now()});
-    try{await sendPushOnce(s.id,`pro-unlocked:${ref}`,"WyDev Pro unlocked 🎉","Your Pro subscription is active. Pro limits now apply to repositories, AI, reverts and workflow reruns.",{type:"pro_unlocked"})}catch{}
+    try{await sendPushOnce(s.id,`pro-unlocked:${ref}`,"Wyte Pro unlocked 🎉","Your Pro subscription is active. Pro limits now apply to repositories, AI, reverts and workflow reruns.",{type:"pro_unlocked"})}catch{}
     return {active:true,status:x.status,expiresAt};
   }
   return {active:false,status:x.status||"pending"};
@@ -606,7 +606,7 @@ async function handler(req,res){
       const b=await body(req),repository=String(b.repository||"").trim(),runId=String(b.runId||"").trim(); if(!repository)return json(res,400,{error:"Repository required"});
       const repo=await gh(token,`/repos/${repository}`); const ownerLogin=repo?.owner?.login; if(!ownerLogin)return json(res,404,{error:"Repository owner not found"});
       if(String(repo.full_name||"").toLowerCase()!==repository.toLowerCase())return json(res,403,{error:"Repository mismatch"});
-      if(db){const snap=await db.collection("wydev_fcm_tokens").where("login","==",String(ownerLogin)).where("enabled","==",true).limit(100).get(); const ids=[...new Set(snap.docs.map(d=>String(d.data().userId)))]; for(const uid of ids) await sendPushToUser(uid,"Build failed ❌",`${repository} has a failed GitHub Actions build. Open WyDev to inspect the run.`,{type:"build_failed",repository,runId});}
+      if(db){const snap=await db.collection("wydev_fcm_tokens").where("login","==",String(ownerLogin)).where("enabled","==",true).limit(100).get(); const ids=[...new Set(snap.docs.map(d=>String(d.data().userId)))]; for(const uid of ids) await sendPushToUser(uid,"Build failed ❌",`${repository} has a failed GitHub Actions build. Open Wyte to inspect the run.`,{type:"build_failed",repository,runId});}
       return json(res,200,{ok:true});
     }
     // Machine-to-machine billing endpoints must authenticate with their own
@@ -630,7 +630,7 @@ async function handler(req,res){
               const base=rec.renewal?Math.max(Date.now(),Number(existing?.expiresAt)||0):Date.now();
               const expiresAt=addOneMonth(base);
               await setEntitlement(rec.userId,{status:"active",expiresAt,renewAt:expiresAt,reference:ref,customerId:rec.customerId,paymentMethodId:rec.paymentMethodId,currency:rec.currency,updatedAt:Date.now(),renewalPending:false});
-              try{await sendPushOnce(rec.userId,`pro-unlocked:${ref}`,rec.renewal?"WyDev Pro renewed 🎉":"WyDev Pro unlocked 🎉",rec.renewal?"Your Pro subscription was renewed successfully.":"Your Pro subscription is active.",{type:rec.renewal?"pro_renewed":"pro_unlocked"})}catch{}
+              try{await sendPushOnce(rec.userId,`pro-unlocked:${ref}`,rec.renewal?"Wyte Pro renewed 🎉":"Wyte Pro unlocked 🎉",rec.renewal?"Your Pro subscription was renewed successfully.":"Your Pro subscription is active.",{type:rec.renewal?"pro_renewed":"pro_unlocked"})}catch{}
             } else if(rec.renewal&&["failed","cancelled","canceled","voided"].includes(String(x.status||"").toLowerCase())){
               await setEntitlement(rec.userId,{status:"past_due",renewalPending:false,lastRenewalReference:ref,updatedAt:Date.now()});
             }
@@ -678,7 +678,7 @@ async function handler(req,res){
       if(plan!=="pro"){
         const limit=Number(process.env.FREE_REPO_LIMIT||10);
         const existing=await gh(s.token,"/user/repos?per_page=100");
-        if(existing.length>=limit)return json(res,403,{error:`Free plan is limited to ${limit} repositories. Upgrade to WyDev Pro for unlimited repositories.`,code:"REPO_LIMIT"});
+        if(existing.length>=limit)return json(res,403,{error:`Free plan is limited to ${limit} repositories. Upgrade to Wyte Pro for unlimited repositories.`,code:"REPO_LIMIT"});
       }
       const payload={name,private:!!b.private,auto_init:true};
       if(b.description)payload.description=String(b.description).slice(0,350);
@@ -692,12 +692,12 @@ async function handler(req,res){
     const drm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)$/);
     if(drm&&req.method==="DELETE"){
       const plan=await entitlement(s);
-      if(plan!=="pro") return json(res,403,{error:"Delete repository is a WyDev Pro feature.",code:"PRO_REQUIRED",plan});
+      if(plan!=="pro") return json(res,403,{error:"Delete repository is a Wyte Pro feature.",code:"PRO_REQUIRED",plan});
       const owner=decodeURIComponent(drm[1]),repo=decodeURIComponent(drm[2]);
       if(!owner||!repo) return json(res,400,{error:"Repository owner and name are required."});
       const scope=String(s.scope||"");
       if(!scope || !scope.split(/[\s,]+/).includes("delete_repo")){
-        return json(res,403,{error:"GitHub deletion permission is missing. Sign out and authorize WyDev again so GitHub can grant delete_repo permission.",code:"GITHUB_DELETE_SCOPE_MISSING"});
+        return json(res,403,{error:"GitHub deletion permission is missing. Sign out and authorize Wyte again so GitHub can grant delete_repo permission.",code:"GITHUB_DELETE_SCOPE_MISSING"});
       }
       await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,{method:"DELETE"});
       return json(res,200,{ok:true,owner,repo});
@@ -739,7 +739,7 @@ async function handler(req,res){
     const arrm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/actions\/runs\/([^/]+)\/rerun-failed$/);
     if(arrm&&req.method==="POST"){
       const owner=decodeURIComponent(arrm[1]),repo=decodeURIComponent(arrm[2]),runId=decodeURIComponent(arrm[3]),b=await body(req);
-      if(await entitlement(s)!=="pro")return json(res,402,{error:"Retrying a GitHub Actions workflow is a WyDev Pro feature. Upgrade to Pro to rerun failed jobs.",code:"PRO_REQUIRED"});
+      if(await entitlement(s)!=="pro")return json(res,402,{error:"Retrying a GitHub Actions workflow is a Wyte Pro feature. Upgrade to Pro to rerun failed jobs.",code:"PRO_REQUIRED"});
       const path=`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${encodeURIComponent(runId)}/rerun-failed-jobs`;
       await gh(s.token,path,{method:"POST",body:JSON.stringify({enable_debug_logging:!!b.debug})});
       return json(res,201,{ok:true,debug:!!b.debug});
@@ -844,7 +844,7 @@ async function handler(req,res){
     if(rvm&&req.method==="POST"){
       const owner=decodeURIComponent(rvm[1]),repo=decodeURIComponent(rvm[2]),b=await body(req);
       const plan=await entitlement(s);
-      if(plan!=="pro")return json(res,402,{error:"Reverting to a previous commit is a WyDev Pro feature. Upgrade to unlock it.",code:"PRO_REQUIRED"});
+      if(plan!=="pro")return json(res,402,{error:"Reverting to a previous commit is a Wyte Pro feature. Upgrade to unlock it.",code:"PRO_REQUIRED"});
       const branch=String(b.branch||"").trim(), targetSha=String(b.sha||"").trim();
       if(!branch||!targetSha) return json(res,400,{error:"A branch and a commit to revert to are required"});
       const encodedOwner=encodeURIComponent(owner),encodedRepo=encodeURIComponent(repo);
@@ -866,7 +866,7 @@ async function handler(req,res){
         gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/trees/${currentCommit.tree.sha}?recursive=1`)
       ]);
       const touchesWorkflow=[...(targetTree.tree||[]),...(currentTree.tree||[])].some(x=>x.type==="blob"&&isWorkflowPath(x.path));
-      if(touchesWorkflow&&!hasOAuthScope(s,"workflow")) return json(res,403,{error:"GitHub requires the workflow permission to revert changes touching .github/workflows/. Sign out and sign in again so WyDev can request the GitHub Actions workflow permission.",code:"GITHUB_WORKFLOW_SCOPE_REQUIRED"});
+      if(touchesWorkflow&&!hasOAuthScope(s,"workflow")) return json(res,403,{error:"GitHub requires the workflow permission to revert changes touching .github/workflows/. Sign out and sign in again so Wyte can request the GitHub Actions workflow permission.",code:"GITHUB_WORKFLOW_SCOPE_REQUIRED"});
       const shortMsg=String(targetCommit.message||"").split("\n")[0].slice(0,72);
       const message=`Revert to ${targetSha.slice(0,7)}: ${shortMsg}`.slice(0,200);
       const commit=await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/commits`,{method:"POST",body:JSON.stringify({message,tree:targetCommit.tree.sha,parents:[currentSha]})});
@@ -886,7 +886,7 @@ async function handler(req,res){
       if(!branch||!message||message.length>200)return json(res,400,{error:"A commit message (1-200 characters) is required"});
       if(changes.length>300)return json(res,413,{error:"Too many changed files in one push. Split the work into smaller commits."});
       for(const c of changes) safePath(c.path);
-      if(changes.some(c=>isWorkflowPath(c.path))&&!hasOAuthScope(s,"workflow")) return json(res,403,{error:"GitHub requires the workflow permission to add or update files under .github/workflows/. Sign out and sign in again so WyDev can request the GitHub Actions workflow permission.",code:"GITHUB_WORKFLOW_SCOPE_REQUIRED"});
+      if(changes.some(c=>isWorkflowPath(c.path))&&!hasOAuthScope(s,"workflow")) return json(res,403,{error:"GitHub requires the workflow permission to add or update files under .github/workflows/. Sign out and sign in again so Wyte can request the GitHub Actions workflow permission.",code:"GITHUB_WORKFLOW_SCOPE_REQUIRED"});
       let ref;
       let emptyRepo=false;
       const encodedOwner=encodeURIComponent(owner),encodedRepo=encodeURIComponent(repo);
@@ -967,7 +967,7 @@ async function handler(req,res){
       let initialSha=emptyRepo?"":String(ref.object.sha||"");
       let head=emptyRepo?null:await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/commits/${initialSha}`);
 
-      // If the branch moved since WyDev loaded the project, safely replay the
+      // If the branch moved since Wyte loaded the project, safely replay the
       // user's local changes on top of the newer remote tree. A conflict is
       // reported only when the same path was also changed remotely. Unrelated
       // remote commits therefore no longer cause a false "REMOTE CHANGES
@@ -1012,7 +1012,7 @@ async function handler(req,res){
       // contents directly to the commit endpoint.
       const blobResults=await Promise.all(uploads.map(async ({c,binary})=>{
         const raw=binary?String(c.content.base64):String(c.content??"");
-        if(Buffer.byteLength(raw,"utf8")>5_500_000) throw Object.assign(new Error(`File ${c.path} is too large for the commit request. Re-upload with the latest WyDev version.`),{status:413});
+        if(Buffer.byteLength(raw,"utf8")>5_500_000) throw Object.assign(new Error(`File ${c.path} is too large for the commit request. Re-upload with the latest Wyte version.`),{status:413});
         const blob=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/blobs`,{method:"POST",body:JSON.stringify({content:raw,encoding:binary?"base64":"utf-8"})});
         return {path:c.path,mode:"100644",type:"blob",sha:blob.sha};
       }));
@@ -1052,7 +1052,7 @@ async function handler(req,res){
         try {
           const latest=await readBranchRefWithRetry(branch,5);
           if(String(latest.object?.sha||"")!==initialSha){
-            return json(res,409,{error:"GitHub changed this branch while WyDev was preparing your push. Your local changes were kept. Review or reload the latest repository state before pushing again.",code:"PUSH_RACE",remoteSha:latest.object?.sha||"",localSha:initialSha});
+            return json(res,409,{error:"GitHub changed this branch while Wyte was preparing your push. Your local changes were kept. Review or reload the latest repository state before pushing again.",code:"PUSH_RACE",remoteSha:latest.object?.sha||"",localSha:initialSha});
           }
         } catch(e){
           if(e.status===404)return json(res,409,{error:`Branch "${branch}" no longer exists on GitHub. Your local changes were kept. Refresh the repository and select an existing branch.`,code:"BRANCH_NOT_FOUND",branch});
@@ -1076,7 +1076,7 @@ async function handler(req,res){
             if(e.status===422){
               const live=await readBranchRefWithRetry(branch,5);
               return json(res,409,{
-                error:"Another commit was pushed to this repository while WyDev was creating the first branch. Your local changes were kept and no force-push was performed.",
+                error:"Another commit was pushed to this repository while Wyte was creating the first branch. Your local changes were kept and no force-push was performed.",
                 code:"PUSH_RACE",
                 remoteSha:live.object?.sha||"",
                 localSha:""
@@ -1088,7 +1088,7 @@ async function handler(req,res){
           const result=await patchBranchWithRetry(branch,initialSha,commit.sha);
           if(result?.race){
             return json(res,409,{
-              error:"GitHub changed this branch while WyDev was committing. Your local changes were kept and no force-push was performed.",
+              error:"GitHub changed this branch while Wyte was committing. Your local changes were kept and no force-push was performed.",
               code:"PUSH_RACE",
               remoteSha:result.remoteSha,
               localSha:initialSha
@@ -1126,7 +1126,7 @@ async function handler(req,res){
                 const retryResult=await patchBranchWithRetry(branch,initialSha,commit.sha);
                 if(retryResult?.race){
                   return json(res,409,{
-                    error:"GitHub changed this branch while WyDev was committing. Your local changes were kept and no force-push was performed.",
+                    error:"GitHub changed this branch while Wyte was committing. Your local changes were kept and no force-push was performed.",
                     code:"PUSH_RACE",
                     remoteSha:retryResult.remoteSha,
                     localSha:initialSha
@@ -1149,7 +1149,7 @@ async function handler(req,res){
         }
         if(e.status===422 || e.status===409){
           return json(res,409,{
-            error:"GitHub changed or rejected the branch during the push. Your local changes were kept and WyDev did not force-push.",
+            error:"GitHub changed or rejected the branch during the push. Your local changes were kept and Wyte did not force-push.",
             code:"PUSH_RACE",
             details:e.data||null
           });

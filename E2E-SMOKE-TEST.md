@@ -1,4 +1,4 @@
-# WyDev E2E Smoke Test
+# Wyte E2E Smoke Test
 
 Run after deploying with real sandbox credentials.
 

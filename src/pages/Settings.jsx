@@ -48,12 +48,12 @@ export default function Settings() {
   const clearWorkingData = async () => {
     const ok = await confirmDialog({
       title: "Clear local working data",
-      message: "Delete WyDev local working states? Unsaved changes will be lost.",
+      message: "Delete Wyte local working states? Unsaved changes will be lost.",
       confirmLabel: "Clear data",
       danger: true,
     });
     if (!ok) return;
-    Object.keys(localStorage).filter((k) => k.startsWith("wydev:project:")).forEach((k) => localStorage.removeItem(k));
+    Object.keys(localStorage).filter((k) => k.startsWith("wytelab:project:")).forEach((k) => localStorage.removeItem(k));
     location.reload();
   };
 
@@ -66,7 +66,7 @@ export default function Settings() {
         <label>Density<Select value={density} onChange={(v) => update("density", v)} options={[{value:"compact",label:"Compact"},{value:"comfortable",label:"Comfortable"}]} /></label>
         <label>Word wrap<input type="checkbox" checked={wrap} onChange={(e) => update("wordWrap", e.target.checked)} /></label>
         <label>Reduced motion<input type="checkbox" checked={motion} onChange={(e) => update("reducedMotion", e.target.checked)} /></label>
-        <p className="muted">{syncing ? "Syncing preferences…" : syncError || "Preferences sync to your WyDev account."}</p>
+        <p className="muted">{syncing ? "Syncing preferences…" : syncError || "Preferences sync to your Wyte account."}</p>
       </section>
       <section className="panel">
         <h3>NOTIFICATIONS</h3>
@@ -111,7 +111,7 @@ export default function Settings() {
       </section>
       <section className="panel">
         <h3>LOCAL DATA</h3>
-        <button onClick={() => { localStorage.removeItem("wydev:recentProjects"); location.reload(); }}>Clear recent projects</button>
+        <button onClick={() => { localStorage.removeItem("wytelab:recentProjects"); location.reload(); }}>Clear recent projects</button>
         <button onClick={clearWorkingData}>Clear local working data</button>
       </section>
     </div>

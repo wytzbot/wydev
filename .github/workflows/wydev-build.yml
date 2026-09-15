@@ -1,5 +1,5 @@
-# wydev-workflow-version: 27
-name: WyDev
+# wytelab-workflow-version: 27
+name: Wyte
 on:
   workflow_dispatch:
     inputs:
@@ -20,7 +20,7 @@ on:
         required: false
         type: string
         default: FULLSCREEN,NETWORK_STATUS,DEVICE_INFO
-run-name: "WyDev: ${{ inputs.build_type }} (${{ inputs.build_mode }}) [${{ inputs.native_features }}] on ${{ github.ref_name }}"
+run-name: "Wyte: ${{ inputs.build_type }} (${{ inputs.build_mode }}) [${{ inputs.native_features }}] on ${{ github.ref_name }}"
 permissions:
   contents: read
 concurrency:
@@ -110,21 +110,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p wydev-output
+          mkdir -p wytelab-output
           if [ '${{ steps.detect.outputs.type }}' = node-web ] && node -e "const p=require('./package.json'); process.exit(typeof p.scripts?.build === 'string' ? 0 : 1)"; then npm run build; fi
-          if [ -d dist ]; then cp -R dist/. wydev-output/
-          elif [ -d build ]; then cp -R build/. wydev-output/
-          elif [ -d out ]; then cp -R out/. wydev-output/
-          elif [ -f index.html ]; then rsync -a --exclude node_modules --exclude .git --exclude wydev-output ./ wydev-output/
-          elif [ -f web/index.html ]; then rsync -a --exclude node_modules --exclude .git --exclude wydev-output web/ wydev-output/
+          if [ -d dist ]; then cp -R dist/. wytelab-output/
+          elif [ -d build ]; then cp -R build/. wytelab-output/
+          elif [ -d out ]; then cp -R out/. wytelab-output/
+          elif [ -f index.html ]; then rsync -a --exclude node_modules --exclude .git --exclude wytelab-output ./ wytelab-output/
+          elif [ -f web/index.html ]; then rsync -a --exclude node_modules --exclude .git --exclude wytelab-output web/ wytelab-output/
           else echo '::error::No static output found'; exit 1; fi
-          test -f wydev-output/index.html || { echo '::error::Static output has no index.html'; exit 1; }
+          test -f wytelab-output/index.html || { echo '::error::Static output has no index.html'; exit 1; }
       - name: Set up Gradle
         if: (inputs.build_type == 'apk' || inputs.build_type == 'aab' || inputs.build_type == 'auto') && (steps.detect.outputs.type == 'node-web' || steps.detect.outputs.type == 'vanilla')
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Prepare maintained WyDev native shell
+      - name: Prepare maintained Wyte native shell
         if: (inputs.build_type == 'apk' || inputs.build_type == 'aab' || inputs.build_type == 'auto') && (steps.detect.outputs.type == 'node-web' || steps.detect.outputs.type == 'vanilla')
         shell: bash
         env:
@@ -136,17 +136,17 @@ jobs:
           test -f .wydev/android-shell/app/build.gradle
           test -f .wydev/android-shell/app/src/main/AndroidManifest.xml
           test -f .wydev/android-shell/app/src/main/java/com/wydev/wrapper/MainActivity.java
-          rm -rf wydev-wrapper
-          cp -R .wydev/android-shell wydev-wrapper
-          rm -rf wydev-wrapper/app/src/main/assets/www
-          mkdir -p wydev-wrapper/app/src/main/assets/www
-          cp -R wydev-output/. wydev-wrapper/app/src/main/assets/www/
+          rm -rf wytelab-wrapper
+          cp -R .wydev/android-shell wytelab-wrapper
+          rm -rf wytelab-wrapper/app/src/main/assets/www
+          mkdir -p wytelab-wrapper/app/src/main/assets/www
+          cp -R wytelab-output/. wytelab-wrapper/app/src/main/assets/www/
           FEATURES="${FEATURES:-FREE}"; FEATURES="$(printf '%s' "$FEATURES" | tr '[:lower:]' '[:upper:]')"
           has(){ case ",$FEATURES," in *,"$1",*) return 0;; *) return 1;; esac; }
-          for pair in CAMERA_MIC:CAMERA LOCATION:LOCATION DOWNLOADS:DOWNLOADS EXTERNAL_LINKS:EXTERNAL_LINKS FULLSCREEN:FULLSCREEN SHARE:SHARE VIBRATION:VIBRATION ORIENTATION:ORIENTATION BATTERY:BATTERY NETWORK_STATUS:NETWORK_STATUS DEVICE_INFO:DEVICE_INFO LOCAL_NOTIFICATIONS:LOCAL_NOTIFICATIONS BIOMETRIC:BIOMETRIC SECURE_STORAGE:SECURE_STORAGE SCREEN_CAPTURE:SCREEN_CAPTURE PICTURE_IN_PICTURE:PICTURE_IN_PICTURE DEEP_LINKS:DEEP_LINKS; do key="${pair%%:*}"; ph="${pair##*:}"; v=false; has "$key" && v=true || true; sed -i "s/__FEATURE_${ph}__/$v/g" wydev-wrapper/app/src/main/java/com/wydev/wrapper/MainActivity.java; done
-          sed -i "s/__APP_NAME__/WyDev App/g" wydev-wrapper/app/src/main/AndroidManifest.xml
+          for pair in CAMERA_MIC:CAMERA LOCATION:LOCATION DOWNLOADS:DOWNLOADS EXTERNAL_LINKS:EXTERNAL_LINKS FULLSCREEN:FULLSCREEN SHARE:SHARE VIBRATION:VIBRATION ORIENTATION:ORIENTATION BATTERY:BATTERY NETWORK_STATUS:NETWORK_STATUS DEVICE_INFO:DEVICE_INFO LOCAL_NOTIFICATIONS:LOCAL_NOTIFICATIONS BIOMETRIC:BIOMETRIC SECURE_STORAGE:SECURE_STORAGE SCREEN_CAPTURE:SCREEN_CAPTURE PICTURE_IN_PICTURE:PICTURE_IN_PICTURE DEEP_LINKS:DEEP_LINKS; do key="${pair%%:*}"; ph="${pair##*:}"; v=false; has "$key" && v=true || true; sed -i "s/__FEATURE_${ph}__/$v/g" wytelab-wrapper/app/src/main/java/com/wydev/wrapper/MainActivity.java; done
+          sed -i "s/__APP_NAME__/WyteLab/g" wytelab-wrapper/app/src/main/AndroidManifest.xml
           # The shell owns its Gradle wrapper; do not regenerate the Android project.
-          cd wydev-wrapper
+          cd wytelab-wrapper
           if [ '${{ inputs.build_type }}' = aab ]; then gradle bundleRelease --no-daemon --stacktrace
           elif [ '${{ inputs.build_mode }}' = debug ]; then gradle assembleDebug --no-daemon --stacktrace
           else gradle assembleRelease --no-daemon --stacktrace; fi
@@ -160,11 +160,11 @@ jobs:
           ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
         run: |
           set -euo pipefail
-          KEYSTORE=/tmp/wydev-release.jks
+          KEYSTORE=/tmp/wytelab-release.jks
           if [ -n "${ANDROID_KEYSTORE_BASE64:-}" ] && [ -n "${ANDROID_KEY_ALIAS:-}" ] && [ -n "${ANDROID_KEY_PASSWORD:-}" ] && [ -n "${ANDROID_STORE_PASSWORD:-}" ]; then
             printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE"; ALIAS="$ANDROID_KEY_ALIAS"; KP="$ANDROID_KEY_PASSWORD"; SP="$ANDROID_STORE_PASSWORD"
           else
-            keytool -genkeypair -v -keystore "$KEYSTORE" -storepass wydev-temp-store -keypass wydev-temp-key -alias wydev -keyalg RSA -keysize 4096 -validity 10000 -dname 'CN=WyDev Release, O=WyDev, C=NG'; ALIAS=wydev; KP=wydev-temp-key; SP=wydev-temp-store
+            keytool -genkeypair -v -keystore "$KEYSTORE" -storepass wytelab-temp-store -keypass wytelab-temp-key -alias wytelab -keyalg RSA -keysize 4096 -validity 10000 -dname 'CN=Wyte Release, O=Wyte, C=NG'; ALIAS=wytelab; KP=wytelab-temp-key; SP=wytelab-temp-store
           fi
           find . -type f -name '*.apk' -path '*/build/outputs/apk/*' -print0 | while IFS= read -r -d '' apk; do tool="$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -1)"; "$tool" sign --ks "$KEYSTORE" --ks-key-alias "$ALIAS" --ks-pass "pass:$SP" --key-pass "pass:$KP" "$apk"; "$tool" verify "$apk"; done
           find . -type f -name '*.aab' -path '*/build/outputs/bundle/*' -print0 | while IFS= read -r -d '' aab; do jarsigner -keystore "$KEYSTORE" -storepass "$SP" -keypass "$KP" "$aab" "$ALIAS"; jarsigner -verify -strict "$aab"; done
@@ -175,15 +175,15 @@ jobs:
         if: inputs.build_type == 'web' || inputs.build_type == 'auto'
         uses: actions/upload-artifact@v4
         with:
-          name: wydev-web-${{ github.run_number }}
-          path: 'wydev-output/*'
+          name: wytelab-web-${{ github.run_number }}
+          path: 'wytelab-output/*'
           if-no-files-found: error
           retention-days: 7
       - name: Upload APK
         if: inputs.build_type == 'apk' || (inputs.build_type == 'auto' && (steps.detect.outputs.type == 'flutter' || steps.detect.outputs.type == 'gradle' || steps.detect.outputs.type == 'node-web' || steps.detect.outputs.type == 'vanilla'))
         uses: actions/upload-artifact@v4
         with:
-          name: wydev-apk-${{ github.run_number }}
+          name: wytelab-apk-${{ github.run_number }}
           path: '**/build/outputs/apk/**/*.apk'
           if-no-files-found: error
           retention-days: 7
@@ -191,18 +191,18 @@ jobs:
         if: inputs.build_type == 'aab'
         uses: actions/upload-artifact@v4
         with:
-          name: wydev-aab-${{ github.run_number }}
+          name: wytelab-aab-${{ github.run_number }}
           path: '**/build/outputs/bundle/**/*.aab'
           if-no-files-found: error
           retention-days: 7
-      - name: Notify WyDev of failed build
+      - name: Notify Wyte of failed build
         if: failure()
         continue-on-error: true
         shell: bash
         env:
-          WYDEV_NOTIFICATION_URL: https://wydev.vercel.app/api/notifications/build-failed
+          WYTE_NOTIFICATION_URL: https://wyte.name.ng/api/notifications/build-failed
         run: |
-          curl --fail-with-body --max-time 15 -X POST "$WYDEV_NOTIFICATION_URL" \
+          curl --fail-with-body --max-time 15 -X POST "$WYTE_NOTIFICATION_URL" \
             -H "Authorization: Bearer ${{ github.token }}" \
             -H "Content-Type: application/json" \
             --data "{\"repository\":\"${{ github.repository }}\",\"runId\":\"${{ github.run_id }}\"}" || true

@@ -1,4 +1,4 @@
-package com.wydev.wrapper;
+package com.wytelab.wrapper;
 
 import android.app.Activity;
 import android.content.*;
@@ -12,10 +12,10 @@ public class MainActivity extends Activity {
   private WebView web;
   private final boolean CAMERA=__FEATURE_CAMERA__, LOCATION=__FEATURE_LOCATION__, DOWNLOADS=__FEATURE_DOWNLOADS__, EXTERNAL_LINKS=__FEATURE_EXTERNAL_LINKS__, FULLSCREEN=__FEATURE_FULLSCREEN__, SHARE=__FEATURE_SHARE__, VIBRATION=__FEATURE_VIBRATION__, ORIENTATION=__FEATURE_ORIENTATION__, BATTERY=__FEATURE_BATTERY__, NETWORK_STATUS=__FEATURE_NETWORK_STATUS__, DEVICE_INFO=__FEATURE_DEVICE_INFO__, LOCAL_NOTIFICATIONS=__FEATURE_LOCAL_NOTIFICATIONS__, BIOMETRIC=__FEATURE_BIOMETRIC__, SECURE_STORAGE=__FEATURE_SECURE_STORAGE__, SCREEN_CAPTURE=__FEATURE_SCREEN_CAPTURE__, PICTURE_IN_PICTURE=__FEATURE_PICTURE_IN_PICTURE__, DEEP_LINKS=__FEATURE_DEEP_LINKS__;
 
-  // Keep the APK's primary origin on the real WyDev domain. This makes relative /api
+  // Keep the APK's primary origin on the real Wyte domain. This makes relative /api
   // requests, OAuth callbacks and routing behave exactly as they do on the website.
-  private static final String APP_URL = "https://wydev.vercel.app/";
-  private static final String APP_HOST = "wydev.vercel.app";
+  private static final String APP_URL = "https://wyte.name.ng/";
+  private static final String APP_HOST = "wyte.name.ng";
 
   @Override public void onCreate(Bundle b) {
     super.onCreate(b);
@@ -54,7 +54,7 @@ public class MainActivity extends Activity {
     String scheme = u.getScheme();
     if (scheme == null || "file".equalsIgnoreCase(scheme) || "about".equalsIgnoreCase(scheme)) return false;
 
-    // WyDev remains inside the app. Only genuinely external destinations leave it.
+    // Wyte remains inside the app. Only genuinely external destinations leave it.
     if ("https".equalsIgnoreCase(scheme) && APP_HOST.equalsIgnoreCase(u.getHost())) return false;
     if (!EXTERNAL_LINKS) return false;
     try {
