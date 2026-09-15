@@ -15,4 +15,4 @@ for(const p of src){const s=fs.readFileSync(p,"utf8");for(const x of secrets)if(
 const env=fs.readFileSync(".env.example","utf8");
 if(!env.includes("FLW_PRO_NGN=7500"))throw new Error("NGN Pro price must be 7500.");
 if(!env.includes("FLW_PRO_USD=7"))throw new Error("USD Pro price must be 7.");
-console.log("Wyte release audit: PASS");
+console.log("WyteLab release audit: PASS");

@@ -654,7 +654,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
       : "";
     const ok = await confirmDialog({
       title: "Revert to this commit",
-      message: `The current state of "${branch}" will be deleted and replaced with the repository exactly as it was at commit ${c.sha.slice(0, 7)} ("${(c.message || "").split("\n")[0]}"). A new commit recording this revert will be pushed to GitHub.${localNote} This cannot be undone from Wyte. Continue?`,
+      message: `The current state of "${branch}" will be deleted and replaced with the repository exactly as it was at commit ${c.sha.slice(0, 7)} ("${(c.message || "").split("\n")[0]}"). A new commit recording this revert will be pushed to GitHub.${localNote} This cannot be undone from WyteLab. Continue?`,
       confirmLabel: "Continue",
       danger: true,
     });
@@ -680,7 +680,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
 
   const deleteRepository = async () => {
     if (plan !== "pro") {
-      toastError("Delete repository is a Wyte Pro feature.");
+      toastError("Delete repository is a WyteLab Pro feature.");
       return;
     }
     const confirmation = await promptDialog({
@@ -721,12 +721,12 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
       onBack?.();
     } catch (e) {
       if (e.status === 401) toastError("GitHub authentication expired. Sign in again before deleting the repository.");
-      else if (e.status === 403) toastError(e.code === "PRO_REQUIRED" ? "Delete repository is a Wyte Pro feature." : "GitHub denied repository deletion. Re-authorize Wyte with repository deletion permission or check your GitHub permissions.");
+      else if (e.status === 403) toastError(e.code === "PRO_REQUIRED" ? "Delete repository is a WyteLab Pro feature." : "GitHub denied repository deletion. Re-authorize WyteLab with repository deletion permission or check your GitHub permissions.");
       else if (e.status === 404) toastError("GitHub could not find this repository. It may already have been deleted.");
       else if (e.status === 409) toastError("GitHub could not delete this repository because it is currently in a conflicting state. Check GitHub and try again.");
       else if (e.status === 422) toastError("GitHub rejected the deletion request. Check your repository permissions and try again.");
-      else if (e.code === "GITHUB_DELETE_SCOPE_MISSING") toastError("Wyte does not have GitHub's delete permission. Sign out and authorize Wyte again, then retry.");
-      else toastError(e.message || "Repository deletion failed. Nothing was changed by Wyte.");
+      else if (e.code === "GITHUB_DELETE_SCOPE_MISSING") toastError("WyteLab does not have GitHub's delete permission. Sign out and authorize WyteLab again, then retry.");
+      else toastError(e.message || "Repository deletion failed. Nothing was changed by WyteLab.");
     } finally {
       setBusy(false);
     }
@@ -819,7 +819,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
           <GitBranch size={16} />
           Pull Requests
         </button>
-        <button className="danger" onClick={deleteRepository} disabled={busy} title={plan === "pro" ? "Permanently delete this GitHub repository" : "Delete repository requires Wyte Pro"}>
+        <button className="danger" onClick={deleteRepository} disabled={busy} title={plan === "pro" ? "Permanently delete this GitHub repository" : "Delete repository requires WyteLab Pro"}>
           <Trash2 size={16} />
           Delete repository{plan !== "pro" ? " (Pro)" : ""}
         </button>

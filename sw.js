@@ -16,14 +16,14 @@ try{
   firebase.initializeApp(FIREBASE_CONFIG);
   firebase.messaging().onBackgroundMessage(p=>{
     const n=p.notification||{},d=p.data||{};
-    self.registration.showNotification(n.title||d.title||"Wyte",{body:n.body||d.body||"",icon:"/icon-192.png",data:d});
+    self.registration.showNotification(n.title||d.title||"WyteLab",{body:n.body||d.body||"",icon:"/icon-192.png",data:d});
   });
 }catch{}
 
 self.addEventListener("notificationclick",e=>{e.notification.close();e.waitUntil(clients.matchAll({type:"window",includeUncontrolled:true}).then(list=>{const c=list.find(x=>x.url.includes(location.origin));return c?c.focus():clients.openWindow(location.origin)}));});
 // Cache the standalone offline fallback page so a navigation made while
 // offline (including a cold start before the SPA's own JS has ever run)
-// shows Wyte's own offline screen instead of the browser's generic error.
+// shows WyteLab's own offline screen instead of the browser's generic error.
 // Everything else is left untouched: no app-shell caching, no interception
 // of API/asset requests — only navigations, and only once the network
 // request has actually failed.

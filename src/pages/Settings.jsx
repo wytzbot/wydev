@@ -48,7 +48,7 @@ export default function Settings() {
   const clearWorkingData = async () => {
     const ok = await confirmDialog({
       title: "Clear local working data",
-      message: "Delete Wyte local working states? Unsaved changes will be lost.",
+      message: "Delete WyteLab local working states? Unsaved changes will be lost.",
       confirmLabel: "Clear data",
       danger: true,
     });
@@ -66,7 +66,7 @@ export default function Settings() {
         <label>Density<Select value={density} onChange={(v) => update("density", v)} options={[{value:"compact",label:"Compact"},{value:"comfortable",label:"Comfortable"}]} /></label>
         <label>Word wrap<input type="checkbox" checked={wrap} onChange={(e) => update("wordWrap", e.target.checked)} /></label>
         <label>Reduced motion<input type="checkbox" checked={motion} onChange={(e) => update("reducedMotion", e.target.checked)} /></label>
-        <p className="muted">{syncing ? "Syncing preferences…" : syncError || "Preferences sync to your Wyte account."}</p>
+        <p className="muted">{syncing ? "Syncing preferences…" : syncError || "Preferences sync to your WyteLab account."}</p>
       </section>
       <section className="panel">
         <h3>NOTIFICATIONS</h3>

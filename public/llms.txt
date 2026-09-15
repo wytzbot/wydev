@@ -1,6 +1,6 @@
-# Wyte
+# WyteLab
 
-Wyte is a mobile-friendly GitHub developer workspace for repository browsing, file editing, code search, changes, commits, pull requests, diagnostics, and deployment handoffs.
+WyteLab is a mobile-friendly GitHub developer workspace for repository browsing, file editing, code search, changes, commits, pull requests, diagnostics, and deployment handoffs.
 
 ## Public pages
 - /

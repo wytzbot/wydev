@@ -1,5 +1,5 @@
 # wydev-workflow-version: 27
-name: Wyte
+name: WyteLab
 on:
   workflow_dispatch:
     inputs:
@@ -20,7 +20,7 @@ on:
         required: false
         type: string
         default: FULLSCREEN,NETWORK_STATUS,DEVICE_INFO
-run-name: "Wyte: ${{ inputs.build_type }} (${{ inputs.build_mode }}) [${{ inputs.native_features }}] on ${{ github.ref_name }}"
+run-name: "WyteLab: ${{ inputs.build_type }} (${{ inputs.build_mode }}) [${{ inputs.native_features }}] on ${{ github.ref_name }}"
 permissions:
   contents: read
 concurrency:
@@ -124,7 +124,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Prepare maintained Wyte native shell
+      - name: Prepare maintained WyteLab native shell
         if: (inputs.build_type == 'apk' || inputs.build_type == 'aab' || inputs.build_type == 'auto') && (steps.detect.outputs.type == 'node-web' || steps.detect.outputs.type == 'vanilla')
         shell: bash
         env:
@@ -144,7 +144,7 @@ jobs:
           FEATURES="${FEATURES:-FREE}"; FEATURES="$(printf '%s' "$FEATURES" | tr '[:lower:]' '[:upper:]')"
           has(){ case ",$FEATURES," in *,"$1",*) return 0;; *) return 1;; esac; }
           for pair in CAMERA_MIC:CAMERA LOCATION:LOCATION DOWNLOADS:DOWNLOADS EXTERNAL_LINKS:EXTERNAL_LINKS FULLSCREEN:FULLSCREEN SHARE:SHARE VIBRATION:VIBRATION ORIENTATION:ORIENTATION BATTERY:BATTERY NETWORK_STATUS:NETWORK_STATUS DEVICE_INFO:DEVICE_INFO LOCAL_NOTIFICATIONS:LOCAL_NOTIFICATIONS BIOMETRIC:BIOMETRIC SECURE_STORAGE:SECURE_STORAGE SCREEN_CAPTURE:SCREEN_CAPTURE PICTURE_IN_PICTURE:PICTURE_IN_PICTURE DEEP_LINKS:DEEP_LINKS; do key="${pair%%:*}"; ph="${pair##*:}"; v=false; has "$key" && v=true || true; sed -i "s/__FEATURE_${ph}__/$v/g" wydev-wrapper/app/src/main/java/com/wydev/wrapper/MainActivity.java; done
-          sed -i "s/__APP_NAME__/Wyte App/g" wydev-wrapper/app/src/main/AndroidManifest.xml
+          sed -i "s/__APP_NAME__/WyteLab App/g" wydev-wrapper/app/src/main/AndroidManifest.xml
           # The shell owns its Gradle wrapper; do not regenerate the Android project.
           cd wydev-wrapper
           if [ '${{ inputs.build_type }}' = aab ]; then gradle bundleRelease --no-daemon --stacktrace
@@ -164,7 +164,7 @@ jobs:
           if [ -n "${ANDROID_KEYSTORE_BASE64:-}" ] && [ -n "${ANDROID_KEY_ALIAS:-}" ] && [ -n "${ANDROID_KEY_PASSWORD:-}" ] && [ -n "${ANDROID_STORE_PASSWORD:-}" ]; then
             printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE"; ALIAS="$ANDROID_KEY_ALIAS"; KP="$ANDROID_KEY_PASSWORD"; SP="$ANDROID_STORE_PASSWORD"
           else
-            keytool -genkeypair -v -keystore "$KEYSTORE" -storepass wydev-temp-store -keypass wydev-temp-key -alias wydev -keyalg RSA -keysize 4096 -validity 10000 -dname 'CN=Wyte Release, O=Wyte, C=NG'; ALIAS=wydev; KP=wydev-temp-key; SP=wydev-temp-store
+            keytool -genkeypair -v -keystore "$KEYSTORE" -storepass wydev-temp-store -keypass wydev-temp-key -alias wydev -keyalg RSA -keysize 4096 -validity 10000 -dname 'CN=WyteLab Release, O=WyteLab, C=NG'; ALIAS=wydev; KP=wydev-temp-key; SP=wydev-temp-store
           fi
           find . -type f -name '*.apk' -path '*/build/outputs/apk/*' -print0 | while IFS= read -r -d '' apk; do tool="$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -1)"; "$tool" sign --ks "$KEYSTORE" --ks-key-alias "$ALIAS" --ks-pass "pass:$SP" --key-pass "pass:$KP" "$apk"; "$tool" verify "$apk"; done
           find . -type f -name '*.aab' -path '*/build/outputs/bundle/*' -print0 | while IFS= read -r -d '' aab; do jarsigner -keystore "$KEYSTORE" -storepass "$SP" -keypass "$KP" "$aab" "$ALIAS"; jarsigner -verify -strict "$aab"; done
@@ -195,14 +195,14 @@ jobs:
           path: '**/build/outputs/bundle/**/*.aab'
           if-no-files-found: error
           retention-days: 7
-      - name: Notify Wyte of failed build
+      - name: Notify WyteLab of failed build
         if: failure()
         continue-on-error: true
         shell: bash
         env:
-          WYTE_NOTIFICATION_URL: https://wyte.name.ng/api/notifications/build-failed
+          WyteLab_NOTIFICATION_URL: https://wyte.name.ng/api/notifications/build-failed
         run: |
-          curl --fail-with-body --max-time 15 -X POST "$WYTE_NOTIFICATION_URL" \
+          curl --fail-with-body --max-time 15 -X POST "$WyteLab_NOTIFICATION_URL" \
             -H "Authorization: Bearer ${{ github.token }}" \
             -H "Content-Type: application/json" \
             --data "{\"repository\":\"${{ github.repository }}\",\"runId\":\"${{ github.run_id }}\"}" || true

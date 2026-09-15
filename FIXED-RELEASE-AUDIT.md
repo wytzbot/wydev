@@ -1,4 +1,4 @@
-# Wyte Fixed Release Audit
+# WyteLab Fixed Release Audit
 
 - Full JS/MJS syntax audit: PASS
 - Release audit: PASS

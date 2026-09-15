@@ -26,13 +26,13 @@ export default function Offline() {
         <span className="eyebrow">CONNECTION LOST</span>
         <h1 id="offline-title">You're offline</h1>
         <p>
-          Wyte needs an internet connection for GitHub, syncing, billing and other
+          WyteLab needs an internet connection for GitHub, syncing, billing and other
           cloud actions. Check your connection and try again.
         </p>
         <button className="primaryButton offlineRetry" type="button" onClick={retry} disabled={checking}>
           {checking ? "Checking…" : "Try again"}
         </button>
-        <p className="offlineHint">Your local Wyte data is kept on this device.</p>
+        <p className="offlineHint">Your local WyteLab data is kept on this device.</p>
       </div>
     </main>
   );

@@ -1,4 +1,4 @@
-// Public Firebase Web SDK configuration for Wyte notifications.
+// Public Firebase Web SDK configuration for WyteLab notifications.
 // These values are safe to ship to the browser. They are used only for FCM
 // client initialization and are intentionally separate from Firebase Admin
 // service-account credentials, which must remain server-side.

@@ -20,7 +20,7 @@ function pickTargets(fileIndex) {
 function formatReport(result, meta) {
   const issues = (result.issues || []).slice(0, 5);
   const lines = [
-    `Wyte AI Diagnosis`,
+    `WyteLab AI Diagnosis`,
     `Repo: ${meta.repoName || "—"} · Branch: ${meta.branch || "—"}`,
     `Files: ${result.filesAnalyzed ?? "?"}/${result.filesTotal ?? "?"}`,
     `Risk: ${result.overall_risk || "unknown"}`,

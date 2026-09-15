@@ -1,4 +1,4 @@
-# Wyte Dead-Flow Audit — Fixed
+# WyteLab Dead-Flow Audit — Fixed
 
 ## Fixed in a later pass (this pass found what the previous "Fixed" pass missed)
 

@@ -20,7 +20,7 @@ export default function ToastHost() {
   const dismiss = (id) => setItems((list) => list.filter((x) => x.id !== id));
 
   return (
-    <aside className="notificationBar" aria-label="Wyte notifications" aria-live="polite">
+    <aside className="notificationBar" aria-label="WyteLab notifications" aria-live="polite">
       <div className="notificationHead">
         <strong>Notifications</strong>
         <button type="button" className="notificationClear" onClick={() => setItems([])}>Clear all</button>
@@ -32,7 +32,7 @@ export default function ToastHost() {
             <div className={`notificationItem notification-${t.type}`} key={t.id}>
               <Icon size={17} />
               <div className="notificationBody">
-                <b>{t.type === "error" ? "Action failed" : t.type === "success" ? "Action successful" : "Wyte"}</b>
+                <b>{t.type === "error" ? "Action failed" : t.type === "success" ? "Action successful" : "WyteLab"}</b>
                 <span>{t.message}</span>
                 {t.type === "error" && t.details && (
                   <details>
