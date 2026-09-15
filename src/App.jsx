@@ -136,6 +136,10 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (user && page === "project" && !repo) setPage("repos");
+  }, [user, page, repo]);
+
+  useEffect(() => {
     document.documentElement.style.setProperty("--ui-font", loadState("fontSize", 16) + "px");
     github
       .session()

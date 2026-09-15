@@ -397,7 +397,7 @@ async function flw(path,opts={}){
   }
   return d;
 }
-function amountFor(currency){if(currency==="NGN"){const n=Number(process.env.FLW_PRO_NGN||1000);if(!n)throw new Error("FLW_PRO_NGN is required for NGN checkout");return n}return Number(process.env.FLW_PRO_USD||1);}
+function amountFor(currency){if(currency==="NGN"){const n=Number(process.env.FLW_PRO_NGN||7500);if(!n)throw new Error("FLW_PRO_NGN is required for NGN checkout");return n}return Number(process.env.FLW_PRO_USD||7);}
 
 async function findCustomerByEmail(email){
   // Flutterwave v4 does not document a customer-search endpoint consistently across environments,
@@ -685,7 +685,7 @@ async function handler(req,res){
       const created=await gh(s.token,"/user/repos",{method:"POST",body:JSON.stringify(payload)});
       if(plan!=="pro"){
         const totalAfterCreate=Number((await gh(s.token,"/user/repos?per_page=100")).length||0);
-        if(totalAfterCreate>=8) await sendPushOnce(s.id,`repo-limit:${totalAfterCreate}:${new Date().toISOString().slice(0,10)}`,"Free repository limit is getting close",`You now have ${totalAfterCreate} of 10 free repositories. Upgrade to Pro before you reach the limit.`,{type:"repo_limit",count:String(totalAfterCreate)});
+        if(totalAfterCreate>=8) await sendPushOnce(s.id,`repo-limit:${totalAfterCreate}:${new Date().toISOString().slice(0,10)}`,"Free repository limit is getting close",`You now have ${totalAfterCreate} of ${limit} free repositories. Upgrade to Pro before you reach the limit.`,{type:"repo_limit",count:String(totalAfterCreate)});
       }
       return json(res,201,created);
     }
@@ -1166,7 +1166,7 @@ async function handler(req,res){
       const e=await getEntitlement(s.id);
       return json(res,200,{plan:await entitlement(s),expiresAt:e?.expiresAt||null,renewAt:e?.renewAt||null,renewalPending:!!e?.renewalPending,recovered:!!recovered?.recovered});
     }
-    if(p==="/billing/config"&&req.method==="GET")return json(res,200,{usd:Number(process.env.FLW_PRO_USD||1),ngn:Number(process.env.FLW_PRO_NGN||1000),environment:FLW_LIVE?"live":"sandbox",encryptionKey:process.env.FLW_ENCRYPTION_KEY||""});
+    if(p==="/billing/config"&&req.method==="GET")return json(res,200,{usd:Number(process.env.FLW_PRO_USD||7),ngn:Number(process.env.FLW_PRO_NGN||7500),environment:FLW_LIVE?"live":"sandbox",encryptionKey:process.env.FLW_ENCRYPTION_KEY||""});
     if(p==="/billing/verify"&&req.method==="POST"){const b=await body(req);if(!b.reference)return json(res,400,{error:"Transaction reference required"});return json(res,200,await verifyCharge(s,b.id,b.reference));}
     if(p==="/billing/recover"&&req.method==="POST"){const b=await body(req);return json(res,200,await recoverEntitlement(s,String(b.reference||"")));}
     if(p==="/billing/resolve"&&req.method==="POST"){

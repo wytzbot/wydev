@@ -11,7 +11,7 @@ async function encryptCard(card,key){const raw=await keyBytes(key),ns=nonce();re
 
 
 export default function Billing(){
- const [status,setStatus]=useState({plan:"free"}),[cfg,setCfg]=useState({usd:1,ngn:1000,encryptionKey:""}),[currency,setCurrency]=useState("NGN"),[busy,setBusy]=useState(false),[err,setErr]=useState(""),[card,setCard]=useState({number:"",expiry:"",cvv:""}),[billingInfo,setBillingInfo]=useState({name:"",email:""}),[auth,setAuth]=useState(null),[authValue,setAuthValue]=useState(""),[authFields,setAuthFields]=useState({}),[authMessage,setAuthMessage]=useState(""),[success,setSuccess]=useState(false),[cancelling,setCancelling]=useState(false),[cancelled,setCancelled]=useState(false);
+ const [status,setStatus]=useState({plan:"free"}),[cfg,setCfg]=useState({usd:7,ngn:7500,encryptionKey:""}),[currency,setCurrency]=useState("NGN"),[busy,setBusy]=useState(false),[err,setErr]=useState(""),[card,setCard]=useState({number:"",expiry:"",cvv:""}),[billingInfo,setBillingInfo]=useState({name:"",email:""}),[auth,setAuth]=useState(null),[authValue,setAuthValue]=useState(""),[authFields,setAuthFields]=useState({}),[authMessage,setAuthMessage]=useState(""),[success,setSuccess]=useState(false),[cancelling,setCancelling]=useState(false),[cancelled,setCancelled]=useState(false);
  const pollRef=useRef(null);
  const pollTimeoutRef=useRef(null);
  const pendingRef=useRef("");
@@ -111,7 +111,23 @@ export default function Billing(){
    if(ref)startPolling(ref);
    return false;
  };
- const pay=async()=>{setBusy(true);setErr("");try{const name=billingInfo.name.trim();if(!name)throw new Error("Enter the cardholder's full name.");const email=billingInfo.email.trim();if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))throw new Error("Enter a valid email address.");const [month,year]=card.expiry.split("/");if(!/^\d{1,2}$/.test(month)||!/^(\d{2}|\d{4})$/.test(year)||card.number.length<12||card.cvv.length<3)throw new Error("Enter a valid card number, MM/YY and CVV.");const enc=await encryptCard({number:card.number,month,year:year.length===4?year.slice(-2):year,cvv:card.cvv},cfg.encryptionKey);const d=await billing.checkout({currency,name,email,payment_method:{type:"card",card:enc}});const ok=await handleChargeResponse(d);if(!ok)throw new Error("Flutterwave did not return a payment action or charge status.")}catch(e){setErr(e?.message||"Flutterwave payment failed. Check the payment details and your v4 credentials.")}finally{setBusy(false)}};
+ const pay=async()=>{setBusy(true);setErr("");try{
+   const name=billingInfo.name.trim();
+   if(!name)throw new Error("Enter the cardholder's full name.");
+   const email=billingInfo.email.trim();
+   if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))throw new Error("Enter a valid email address.");
+   const [month,year]=card.expiry.split("/");
+   const mm=Number(month), yy=Number(year);
+   const now=new Date(), currentYear=now.getUTCFullYear()%100, currentMonth=now.getUTCMonth()+1;
+   if(!/^\d{1,2}$/.test(month)||!/^\d{2,4}$/.test(year)||mm<1||mm>12||card.number.length<12||card.number.length>19||card.cvv.length<3||card.cvv.length>4)throw new Error("Enter valid card details and an expiry date in MM/YY format.");
+   const normalizedYear=year.length===4?yy%100:yy;
+   if(normalizedYear<currentYear || (normalizedYear===currentYear && mm<currentMonth))throw new Error("Your card expiry date has passed.");
+   const digits=card.number; let sum=0,doubleIt=false; for(let i=digits.length-1;i>=0;i--){let n=Number(digits[i]);if(doubleIt){n*=2;if(n>9)n-=9}sum+=n;doubleIt=!doubleIt;}
+   if(sum%10!==0)throw new Error("Check the card number and try again.");
+   const enc=await encryptCard({number:card.number,month:month.padStart(2,"0"),year:String(normalizedYear).padStart(2,"0"),cvv:card.cvv},cfg.encryptionKey);
+   const d=await billing.checkout({currency,name,email,payment_method:{type:"card",card:enc}});
+   const ok=await handleChargeResponse(d);if(!ok)throw new Error("Flutterwave did not return a payment action or charge status.");
+ }catch(e){setErr(e?.message||"Flutterwave payment failed. Check the payment details and your v4 credentials.")}finally{setBusy(false)}};
  const authorize=async()=>{setBusy(true);setErr("");try{if(auth.kind!=="fields"&&!authValue.trim())throw new Error("Enter the verification value sent by your bank.");let authorization;if(auth.kind==="pin"||auth.type==="requires_pin"){const raw=await keyBytes(cfg.encryptionKey),ns=auth.nonce||nonce();authorization={type:"pin",pin:{nonce:ns,encrypted_pin:await encryptField(authValue.trim(),raw,ns)}}}else if(auth.kind==="otp"||auth.type==="requires_otp"){authorization={type:"otp",otp:{code:authValue.trim()}}}else if(auth.kind==="fields"){const avs={address:{city:authFields.city||"",country:authFields.country||"",line1:authFields.line1||"",line2:authFields.line2||"",postal_code:authFields.postal_code||"",state:authFields.state||""}};authorization={type:"avs",avs};}else if(auth.kind==="redirect"){const u=auth.redirect||redirectFrom(auth);if(u){location.href=u;return}throw new Error("Flutterwave did not provide an authorization URL.");}else throw new Error("Flutterwave returned an unsupported authorization method. Please retry the payment so the required bank verification can be requested again.");const d=await billing.authorize({id:auth.id,reference:auth.reference,authorization});setAuth(null);setAuthValue("");setAuthFields({});setAuthMessage("");const ok=await handleChargeResponse(d,auth.reference);if(!ok)startPolling(auth.reference)}catch(e){setErr(e.message)}finally{setBusy(false)}};
  const authLabel=auth?.kind==="pin"?"Card PIN":auth?.kind==="fields"?"Billing address":(auth?.kind==="otp"?"Password / OTP":"Bank verification");
  const authPlaceholder=auth?.kind==="pin"?"Enter card PIN":auth?.kind==="otp"?"Enter the password or OTP sent by your bank":"Enter verification value";
