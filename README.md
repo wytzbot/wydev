@@ -107,7 +107,7 @@ WyDev generates alphanumeric `X-Trace-Id` and `X-Idempotency-Key` values as requ
 ## Current product limits
 - Free: 10 repositories maximum. A reminder is sent around the 8th repository when push notifications are enabled.
 - Free: 3 AI diagnoses per UTC day.
-- Pro: $1 USD or ₦1,000 NGN per month, recurring.
+- Pro: $7 USD or ₦7,500 NGN per month, recurring.
 - Pro AI: 5 diagnoses per day.
 - Pro-only workspace actions include pull requests, commit revert, and extended local undo history.
 

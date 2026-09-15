@@ -13,6 +13,6 @@ walk("src");
 const secrets=["GITHUB_CLIENT_SECRET","FLW_CLIENT_SECRET","OPENAI_API_KEY","FIREBASE_PRIVATE_KEY","SESSION_SECRET"];
 for(const p of src){const s=fs.readFileSync(p,"utf8");for(const x of secrets)if(s.includes(x))throw new Error(`Server secret in frontend: ${p}: ${x}`)}
 const env=fs.readFileSync(".env.example","utf8");
-if(!env.includes("FLW_PRO_NGN=9000"))throw new Error("NGN Pro price must be 9000.");
-if(!env.includes("FLW_PRO_USD=9.99"))throw new Error("USD Pro price must be 9.99.");
+if(!env.includes("FLW_PRO_NGN=7500"))throw new Error("NGN Pro price must be 7500.");
+if(!env.includes("FLW_PRO_USD=7"))throw new Error("USD Pro price must be 7.");
 console.log("WyDev release audit: PASS");

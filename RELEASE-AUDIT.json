@@ -15,8 +15,8 @@
     "Run npm ci && npm run build:source in Vercel/CI to validate the production bundle."
   ],
   "pro_pricing": {
-    "NGN": 9000,
-    "USD": 9.99
+    "NGN": 7500,
+    "USD": 7
   },
   "nigerian_default_currency": "NGN"
 }

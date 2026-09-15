@@ -11,7 +11,7 @@ WyDev is a mobile-friendly GitHub developer workspace for repository browsing, f
 
 ## Product limits
 - Free: up to 10 repositories and 3 AI diagnoses per day.
-- Pro: $1 USD or ₦1,000 NGN per month, recurring, with higher limits and Pro-only capabilities.
+- Pro: $7 USD or ₦7,500 NGN per month, recurring, with higher limits and Pro-only capabilities.
 
 ## Contact
 - wytetechcompany@gmail.com

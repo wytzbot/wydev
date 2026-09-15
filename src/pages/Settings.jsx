@@ -14,7 +14,6 @@ export default function Settings() {
   const [notificationsEnabled, setNotificationsEnabled] = useState(() => isNotificationsEnabled());
   const [notificationBusy, setNotificationBusy] = useState(false);
   const [syncError, setSyncError] = useState("");
-  const [notificationError, setNotificationError] = useState("");
   const syncTimer = useRef(null);
 
   const apply = (prefs) => {
@@ -73,13 +72,13 @@ export default function Settings() {
         <h3>NOTIFICATIONS</h3>
         <p className="muted">Receive failed-build alerts, a gentle Good Morning message, free-plan limit reminders, and Pro renewal reminders.</p>
         <button
-          disabled={notificationBusy || notificationsEnabled || notificationPermission === "denied" || notificationPermission === "unsupported"}
+          disabled={notificationBusy || notificationsEnabled}
           onClick={async () => {
-            setNotificationBusy(true); setNotificationError("");
+            setNotificationBusy(true); setSyncError("");
             try {
               await enableNotifications();
             } catch (e) {
-              setNotificationError(e.message || "Notifications could not be enabled.");
+              setSyncError(e.message || "Notifications could not be enabled.");
             } finally {
               setNotificationPermission(getNotificationPermission());
               setNotificationsEnabled(isNotificationsEnabled());
@@ -87,17 +86,17 @@ export default function Settings() {
             }
           }}
         >
-          {notificationsEnabled ? "Notifications enabled" : notificationPermission === "denied" ? "Notifications blocked" : notificationPermission === "unsupported" ? "Not supported" : "Enable notifications"}
+          {notificationsEnabled ? "Notifications enabled" : "Enable notifications"}
         </button>
         {notificationsEnabled && (
           <button
             disabled={notificationBusy}
             onClick={async () => {
-              setNotificationBusy(true); setNotificationError("");
+              setNotificationBusy(true); setSyncError("");
               try {
                 await disableNotifications();
               } catch (e) {
-                setNotificationError(e.message || "Notifications could not be disabled.");
+                setSyncError(e.message || "Notifications could not be disabled.");
               } finally {
                 setNotificationPermission(getNotificationPermission());
                 setNotificationsEnabled(isNotificationsEnabled());
@@ -109,8 +108,6 @@ export default function Settings() {
           </button>
         )}
         {notificationPermission === "denied" && <p className="muted">Notifications are blocked by the browser. Allow them in your browser site settings.</p>}
-        {notificationPermission === "unsupported" && <p className="muted">This browser does not support push notifications.</p>}
-        {notificationError && <p className="error">{notificationError}</p>}
       </section>
       <section className="panel">
         <h3>LOCAL DATA</h3>

@@ -685,7 +685,7 @@ async function handler(req,res){
       const created=await gh(s.token,"/user/repos",{method:"POST",body:JSON.stringify(payload)});
       if(plan!=="pro"){
         const totalAfterCreate=Number((await gh(s.token,"/user/repos?per_page=100")).length||0);
-        if(totalAfterCreate>=8) await sendPushOnce(s.id,`repo-limit:${totalAfterCreate}:${new Date().toISOString().slice(0,10)}`,"Free repository limit is getting close",`You now have ${totalAfterCreate} of ${limit} free repositories. Upgrade to Pro before you reach the limit.`,{type:"repo_limit",count:String(totalAfterCreate)});
+        if(totalAfterCreate>=8) await sendPushOnce(s.id,`repo-limit:${totalAfterCreate}:${new Date().toISOString().slice(0,10)}`,"Free repository limit is getting close",`You now have ${totalAfterCreate} of 10 free repositories. Upgrade to Pro before you reach the limit.`,{type:"repo_limit",count:String(totalAfterCreate)});
       }
       return json(res,201,created);
     }
