@@ -3,7 +3,7 @@
   --text:#e6edf3;--muted:#8b949e;--accent:#58a6ff;--accent-strong:#1f6feb;
   --success:#238636;--success-strong:#2ea043;--danger:#f85149;
   --ui-font:16px;--topbar-h:56px;--tabbar-h:60px;
-  --safe-top:env(safe-area-inset-top,0px);--safe-bottom:env(safe-area-inset-bottom,0px);
+  --safe-top:var(--native-safe-top, env(safe-area-inset-top,0px));--safe-bottom:var(--native-safe-bottom, env(safe-area-inset-bottom,0px));
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font:var(--ui-font)/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif;-webkit-tap-highlight-color:transparent}

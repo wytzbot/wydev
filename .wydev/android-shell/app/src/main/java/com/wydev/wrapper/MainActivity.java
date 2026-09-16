@@ -8,6 +8,12 @@ import android.view.*;
 import android.webkit.*;
 import java.util.*;
 
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
+
 public class MainActivity extends Activity {
   private WebView web;
   private final boolean CAMERA=__FEATURE_CAMERA__, LOCATION=__FEATURE_LOCATION__, DOWNLOADS=__FEATURE_DOWNLOADS__, EXTERNAL_LINKS=__FEATURE_EXTERNAL_LINKS__, FULLSCREEN=__FEATURE_FULLSCREEN__, SHARE=__FEATURE_SHARE__, VIBRATION=__FEATURE_VIBRATION__, ORIENTATION=__FEATURE_ORIENTATION__, BATTERY=__FEATURE_BATTERY__, NETWORK_STATUS=__FEATURE_NETWORK_STATUS__, DEVICE_INFO=__FEATURE_DEVICE_INFO__, LOCAL_NOTIFICATIONS=__FEATURE_LOCAL_NOTIFICATIONS__, BIOMETRIC=__FEATURE_BIOMETRIC__, SECURE_STORAGE=__FEATURE_SECURE_STORAGE__, SCREEN_CAPTURE=__FEATURE_SCREEN_CAPTURE__, PICTURE_IN_PICTURE=__FEATURE_PICTURE_IN_PICTURE__, DEEP_LINKS=__FEATURE_DEEP_LINKS__;
@@ -17,9 +23,21 @@ public class MainActivity extends Activity {
   private static final String APP_URL = "https://wyte.name.ng/";
   private static final String APP_HOST = "wyte.name.ng";
 
+  // Real system-bar / cutout insets in CSS px, kept up to date by setupInsets()
+  // and pushed into the page so its safe-area CSS reflects the actual screen,
+  // not env(safe-area-inset-*) which old-style fullscreen flags never populate
+  // reliably (that's why content used to sit under the status bar / gesture bar).
+  private float safeTop = 0f, safeBottom = 0f, safeLeft = 0f, safeRight = 0f;
+
   @Override public void onCreate(Bundle b) {
     super.onCreate(b);
-    configureFullscreen();
+
+    // Edge-to-edge: the app (not the OS) positions content around system bars.
+    // This is also what makes WindowInsets available at all in onCreate/insets
+    // listeners below - the old FLAG_FULLSCREEN-only approach never dispatched
+    // usable insets to the WebView.
+    WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+
     web = new WebView(this);
     WebSettings s = web.getSettings();
     s.setJavaScriptEnabled(true);
@@ -38,6 +56,11 @@ public class MainActivity extends Activity {
       @Override public boolean shouldOverrideUrlLoading(WebView v, String u) {
         return handleUrl(u);
       }
+      @Override public void onPageFinished(WebView v, String u) {
+        super.onPageFinished(v, u);
+        // Each navigation gets a fresh document - reapply the current insets to it.
+        injectSafeAreaVars();
+      }
     });
 
     if (DOWNLOADS) web.setDownloadListener((u, ua, c, m, l) -> {
@@ -45,6 +68,8 @@ public class MainActivity extends Activity {
     });
 
     setContentView(web);
+    setupInsets();
+    configureFullscreen();
     web.loadUrl(APP_URL);
   }
 
@@ -65,17 +90,41 @@ public class MainActivity extends Activity {
     }
   }
 
+  // Listens for the real window insets (status bar, gesture/nav bar, notch cutout)
+  // and mirrors them onto the page as CSS custom properties, in CSS px.
+  private void setupInsets() {
+    ViewCompat.setOnApplyWindowInsetsListener(web, (view, insets) -> {
+      Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
+      Insets cutout = insets.getInsets(WindowInsetsCompat.Type.displayCutout());
+      float density = getResources().getDisplayMetrics().density;
+      safeTop = Math.max(bars.top, cutout.top) / density;
+      safeBottom = Math.max(bars.bottom, cutout.bottom) / density;
+      safeLeft = Math.max(bars.left, cutout.left) / density;
+      safeRight = Math.max(bars.right, cutout.right) / density;
+      injectSafeAreaVars();
+      return insets;
+    });
+  }
+
+  private void injectSafeAreaVars() {
+    if (web == null) return;
+    String js = "document.documentElement.style.setProperty('--native-safe-top','" + safeTop + "px');"
+      + "document.documentElement.style.setProperty('--native-safe-bottom','" + safeBottom + "px');"
+      + "document.documentElement.style.setProperty('--native-safe-left','" + safeLeft + "px');"
+      + "document.documentElement.style.setProperty('--native-safe-right','" + safeRight + "px');";
+    web.evaluateJavascript(js, null);
+  }
+
   private void configureFullscreen() {
     // The app shell must not expose browser/system chrome during normal use.
-    getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
-    getWindow().getDecorView().setSystemUiVisibility(
-      View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY |
-      View.SYSTEM_UI_FLAG_FULLSCREEN |
-      View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
-      View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
-      View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
-      View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-    );
+    // Modern replacement for the deprecated View.SYSTEM_UI_FLAG_* immersive flags,
+    // which on Android 11+ (especially gesture-nav devices) frequently failed to
+    // hide the bars and/or failed to report insets, leaving content clipped under
+    // the status bar and the tab bar pinned to the true edge under the gesture pill.
+    WindowInsetsControllerCompat controller = WindowCompat.getInsetsController(getWindow(), web);
+    if (controller == null) return;
+    controller.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+    controller.hide(WindowInsetsCompat.Type.systemBars());
   }
 
   @Override public void onWindowFocusChanged(boolean hasFocus) {
