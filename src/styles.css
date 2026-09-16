@@ -15,7 +15,7 @@ a:hover{text-decoration:underline}
 
 /* ---------- app shell (mobile-first) ---------- */
 .app{min-height:100vh;display:flex;flex-direction:column}
-.content{flex:1;min-width:0;padding-top:var(--topbar-h);padding-bottom:calc(var(--tabbar-h) + var(--safe-bottom))}
+.content{flex:1;min-width:0;padding-top:calc(var(--topbar-h) + var(--safe-top));padding-bottom:calc(var(--tabbar-h) + var(--safe-bottom))}
 
 /* top bar: GitHub-web style header, mobile default */
 .topbar{position:fixed;top:0;left:0;right:0;z-index:40;display:flex;align-items:center;gap:6px;
