@@ -10,3 +10,5 @@ The maintained Android shell now:
 - keeps relative `/api` routes, OAuth callbacks and browser routing on the real WyteLab origin.
 
 Build from GitHub Actions with `build_type=apk` and release mode. The workflow defaults to the `FULLSCREEN` native feature.
+
+The repo previously also carried a leftover generic `WyBuild` workflow/shell (`.wybuild/`), copied over from the WyBuild product template. It lacked the same-origin check and persistent immersive fullscreen fix above, so building with it showed the system browser bar on navigation. It has been removed — **"WyteLab" is now the only Android build workflow in this repo.**
