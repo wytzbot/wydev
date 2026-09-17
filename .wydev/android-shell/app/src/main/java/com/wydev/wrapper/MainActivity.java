@@ -16,6 +16,13 @@ import androidx.core.view.WindowInsetsControllerCompat;
 
 public class MainActivity extends Activity {
   private WebView web;
+  // Bare android.webkit.WebView never shows a file picker for <input type="file">
+  // unless the hosting Activity's WebChromeClient implements onShowFileChooser.
+  // Without this, "Upload file"/"Upload folder" in the project explorer silently
+  // does nothing in the APK, with no JS-visible error. See onShowFileChooser()
+  // and onActivityResult() below, which together implement that contract.
+  private ValueCallback<Uri[]> filePathCallback;
+  private static final int FILE_CHOOSER_REQUEST_CODE = 51426;
   private final boolean CAMERA=__FEATURE_CAMERA__, LOCATION=__FEATURE_LOCATION__, DOWNLOADS=__FEATURE_DOWNLOADS__, EXTERNAL_LINKS=__FEATURE_EXTERNAL_LINKS__, FULLSCREEN=__FEATURE_FULLSCREEN__, SHARE=__FEATURE_SHARE__, VIBRATION=__FEATURE_VIBRATION__, ORIENTATION=__FEATURE_ORIENTATION__, BATTERY=__FEATURE_BATTERY__, NETWORK_STATUS=__FEATURE_NETWORK_STATUS__, DEVICE_INFO=__FEATURE_DEVICE_INFO__, LOCAL_NOTIFICATIONS=__FEATURE_LOCAL_NOTIFICATIONS__, BIOMETRIC=__FEATURE_BIOMETRIC__, SECURE_STORAGE=__FEATURE_SECURE_STORAGE__, SCREEN_CAPTURE=__FEATURE_SCREEN_CAPTURE__, PICTURE_IN_PICTURE=__FEATURE_PICTURE_IN_PICTURE__, DEEP_LINKS=__FEATURE_DEEP_LINKS__;
 
   // Keep the APK's primary origin on the real WyteLab domain. This makes relative /api
@@ -65,6 +72,21 @@ public class MainActivity extends Activity {
 
     if (DOWNLOADS) web.setDownloadListener((u, ua, c, m, l) -> {
       try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(u))); } catch (Exception ignored) {}
+    });
+
+    web.setWebChromeClient(new WebChromeClient() {
+      @Override public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> callback, FileChooserParams params) {
+        if (filePathCallback != null) filePathCallback.onReceiveValue(null);
+        filePathCallback = callback;
+        Intent intent = params.createIntent();
+        try {
+          startActivityForResult(intent, FILE_CHOOSER_REQUEST_CODE);
+        } catch (Exception e) {
+          filePathCallback = null;
+          return false;
+        }
+        return true;
+      }
     });
 
     setContentView(web);
@@ -145,6 +167,26 @@ public class MainActivity extends Activity {
 
   @Override public void onBackPressed() {
     if (web != null && web.canGoBack()) web.goBack(); else super.onBackPressed();
+  }
+
+  @Override public void onActivityResult(int requestCode, int resultCode, Intent data) {
+    if (requestCode != FILE_CHOOSER_REQUEST_CODE) {
+      super.onActivityResult(requestCode, resultCode, data);
+      return;
+    }
+    if (filePathCallback == null) return;
+    Uri[] results = null;
+    if (resultCode == Activity.RESULT_OK && data != null) {
+      if (data.getClipData() != null) {
+        int count = data.getClipData().getItemCount();
+        results = new Uri[count];
+        for (int i = 0; i < count; i++) results[i] = data.getClipData().getItemAt(i).getUri();
+      } else if (data.getData() != null) {
+        results = new Uri[]{data.getData()};
+      }
+    }
+    filePathCallback.onReceiveValue(results);
+    filePathCallback = null;
   }
 
   public class Bridge {

@@ -85,7 +85,7 @@ const FLW_BASE=String(process.env.FLW_BASE_URL||"").trim().replace(/\/$/,"") || 
   ?"https://f4bexperience.flutterwave.com"
   :"https://developersandbox-api.flutterwave.com");
 
-const memory={usage:new Map(),entitlements:new Map(),transactions:new Map(),preferences:new Map(),cache:new Map(),oauthStates:new Map(),repoCreations:new Map(),flwToken:null};
+const memory={usage:new Map(),entitlements:new Map(),transactions:new Map(),preferences:new Map(),cache:new Map(),oauthStates:new Map(),flwToken:null};
 async function getEntitlement(userId){
   if(db){const d=await db.collection("wydev_entitlements").doc(String(userId)).get();return d.exists?d.data():null}
   return memory.entitlements.get(String(userId))||null;
@@ -138,6 +138,18 @@ async function saveRepoSnapshot(userId,data){
   memory.cache.set(`repos:${key}`,snapshot);return snapshot;
 }
 
+async function getRepoCreateOperation(userId,operationId){
+  const key=String(operationId||""); if(!key)return null;
+  if(db){const d=await db.collection("wydev_repo_create_ops").doc(key).get();return d.exists?d.data():null;}
+  return memory.cache.get(`repo-create:${String(userId)}:${key}`)||null;
+}
+async function saveRepoCreateOperation(userId,operationId,data){
+  const key=String(operationId||""); if(!key)return;
+  const value={...data,userId:String(userId),operationId:key,updatedAt:Date.now()};
+  if(db){await db.collection("wydev_repo_create_ops").doc(key).set(value,{merge:true});return value;}
+  memory.cache.set(`repo-create:${String(userId)}:${key}`,value);return value;
+}
+
 async function findRecentTransactions(userId){
   if(!db)return [];
   const snap=await db.collection("wydev_transactions").where("userId","==",String(userId)).limit(25).get();
@@ -180,22 +192,56 @@ function session(req){const c=parseCookies(req).wydev_session;return c?openCooki
 function requireSession(req,res){const s=session(req);if(!s?.token||!s?.login){json(res,401,{error:"GitHub authentication required"});return null}return s;}
 function ghHeaders(token){return{"Authorization":`Bearer ${token}`,"Accept":"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28","User-Agent":"WyteLab-Mobile-Editor"};}
 async function gh(token,path,opts={}){
-  const {timeoutMs=45000,...fetchOpts}=opts;
   const controller=new AbortController();
-  const timer=setTimeout(()=>controller.abort(),Math.max(5000,Number(timeoutMs)||45000));
+  const timeoutMs=Math.max(5000,Number(opts.timeoutMs)||45000);
+  const timer=setTimeout(()=>controller.abort(),timeoutMs);
+  const callerSignal=opts.signal;
+  const abortCaller=()=>controller.abort();
+  if(callerSignal){
+    if(callerSignal.aborted)controller.abort();
+    else callerSignal.addEventListener("abort",abortCaller,{once:true});
+  }
+  const fetchOpts={...opts}; delete fetchOpts.timeoutMs;
   try{
-    const r=await fetch(GH+path,{...fetchOpts,signal:controller.signal,headers:{...ghHeaders(token),...(fetchOpts.headers||{})}});
-    const text=await r.text();
-    let data; try{data=JSON.parse(text)}catch{data={message:text}}
+    const r=await fetch(GH+path,{...fetchOpts,signal:controller.signal,headers:{...ghHeaders(token),...(opts.headers||{})}});
+    const text=await r.text(); let data;
+    try{data=JSON.parse(text)}catch{data={message:text}}
     if(!r.ok){
-      const err=Object.assign(new Error(data.message||`GitHub request failed (${r.status})`),{status:r.status,data,githubRequestId:r.headers.get("x-github-request-id")||""});
+      const retryAfter=Number(r.headers.get("retry-after")||0)||0;
+      const reset=Number(r.headers.get("x-ratelimit-reset")||0)||0;
+      const remaining=r.headers.get("x-ratelimit-remaining");
+      const err=Object.assign(new Error(data.message||`GitHub request failed (${r.status})`),{status:r.status,data,headers:{retryAfter,reset,remaining}});
+      if(r.status===403||r.status===429){
+        if(retryAfter)err.retryAfter=retryAfter;
+        else if(remaining==="0"&&reset)err.retryAfter=Math.max(1,reset-Math.floor(Date.now()/1000));
+        else if(r.status===403 && /rate limit|secondary rate limit/i.test(String(data.message||"")))err.retryAfter=60;
+        err.code=remaining==="0"?"GITHUB_RATE_LIMIT":"GITHUB_FORBIDDEN";
+      }
       throw err;
     }
     return data;
   }catch(e){
-    if(e?.name==="AbortError") throw Object.assign(new Error("GitHub took too long to respond. Your request may still have completed; refresh repositories before trying the same action again."),{status:504,code:"GITHUB_TIMEOUT"});
+    if(e?.name==="AbortError"&&!callerSignal?.aborted)throw Object.assign(new Error(`GitHub request timed out after ${Math.round(timeoutMs/1000)} seconds.`),{code:"GITHUB_TIMEOUT",retryable:true});
+    if(e?.code==="ECONNRESET"||e?.code==="ETIMEDOUT"||/fetch failed|network/i.test(String(e?.message||"")))throw Object.assign(new Error(e.message||"Unable to reach GitHub."),{code:e.code||"GITHUB_NETWORK_ERROR",retryable:true});
     throw e;
-  }finally{clearTimeout(timer)}
+  }finally{
+    clearTimeout(timer);
+    if(callerSignal)callerSignal.removeEventListener("abort",abortCaller);
+  }
+}
+async function getGitHubRepo(token,owner,name){
+  try{return await gh(token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`,{timeoutMs:25000});}
+  catch(e){if(Number(e?.status)===404)return null;throw e;}
+}
+function isAmbiguousCreateError(e){return !!e&&(e.code==="GITHUB_TIMEOUT"||e.code==="GITHUB_NETWORK_ERROR"||e.status===502||e.status===503||e.status===504||e.status===422);}
+async function recoverCreatedRepo(token,owner,name){
+  try{
+    // A POST can succeed on GitHub even when its response is lost by a mobile/WebView connection.
+    return await getGitHubRepo(token,owner,name);
+  }catch(e){
+    if(e?.status===403||e?.status===429)throw e;
+    return null;
+  }
 }
 
 function origin(req){const proto=(req.headers["x-forwarded-proto"]||"https").split(",")[0];const host=req.headers["x-forwarded-host"]||req.headers.host;return `${proto}://${host}`;}
@@ -733,28 +779,40 @@ async function handler(req,res){
       const b=await body(req);
       const name=String(b.name||"").trim();
       if(!/^[A-Za-z0-9._-]{1,100}$/.test(name))return json(res,400,{error:"Repository name may only contain letters, numbers, dots, dashes and underscores.",code:"INVALID_REPO_NAME"});
-      const plan=await entitlement(s);
-      const requestId=String(b.requestId||"").trim().slice(0,100);
-      const creationKey=requestId?`${s.id}:${requestId}`:"";
-      // A mobile/WebView request can time out after GitHub has already created
-      // the repository. Idempotency prevents a retry from creating a second
-      // request that then fails with a misleading 422/name-already-exists error.
-      if(creationKey){
-        const prior=memory.repoCreations.get(creationKey);
-        if(prior?.repo?.id) return json(res,200,{...prior.repo,wyteLabIdempotent:true});
-        if(db){
-          const d=await db.collection("wydev_repo_creations").doc(crypto.createHash("sha256").update(creationKey).digest("hex")).get();
-          if(d.exists&&d.data()?.repo?.id) return json(res,200,{...d.data().repo,wyteLabIdempotent:true});
-        }
+      const operationId=String(b.operationId||"").trim();
+      if(operationId && !/^[A-Za-z0-9_-]{12,120}$/.test(operationId))return json(res,400,{error:"Invalid repository creation operation id.",code:"INVALID_OPERATION_ID"});
+
+      // If the APK retries after losing the response, first check whether GitHub
+      // already created the requested repository. This makes creation safe across
+      // WebView suspension, radio handoffs and lost HTTP responses.
+      const owner=String(s.login||"").trim();
+      if(operationId){
+        const prior=await getRepoCreateOperation(s.id,operationId);
+        if(prior?.status==="completed"&&prior.repo?.id)return json(res,200,{...prior.repo,recovered:true,idempotent:true});
       }
+      const already=await recoverCreatedRepo(s.token,owner,name);
+      if(already){
+        if(operationId)await saveRepoCreateOperation(s.id,operationId,{status:"completed",repo:already,recovered:true});
+        return json(res,200,{...already,recovered:true});
+      }
+
+      const plan=await entitlement(s);
       if(plan!=="pro"){
         const limit=Number(process.env.FREE_REPO_LIMIT||10);
-        // One preflight is required for the free-plan limit. Do not perform
-        // additional repo-list requests after creation; those were the main
-        // source of slow creates/timeouts on mobile connections.
-        const existing=await gh(s.token,"/user/repos?per_page=100",{timeoutMs:30000});
-        if(existing.length>=limit)return json(res,403,{error:`Free plan is limited to ${limit} repositories. You currently have ${existing.length}/${limit}.`,code:"REPO_LIMIT",used:existing.length,limit});
+        const snapshot=await getRepoSnapshot(s.id);
+        // Prefer a recent local/server snapshot to avoid a slow extra GitHub call.
+        // If there is no trustworthy snapshot, perform one bounded owner-only list.
+        let total=Number(snapshot?.total||0);
+        const fresh=Number(snapshot?.savedAt||0)>Date.now()-5*60*1000;
+        if(!fresh){
+          const existing=await gh(s.token,"/user/repos?affiliation=owner&per_page=100",{timeoutMs:30000});
+          total=existing.length;
+          const nextLimit=limit;
+          await saveRepoSnapshot(s.id,{repos:nextLimit==null?existing:existing.slice(0,nextLimit),total,limit:nextLimit,plan});
+        }
+        if(total>=limit)return json(res,403,{error:`Free plan is limited to ${limit} repositories. Upgrade to WyteLab Pro for unlimited repositories.`,code:"REPO_LIMIT",limit,total});
       }
+
       const payload={name,private:!!b.private,auto_init:true};
       if(b.description)payload.description=String(b.description).slice(0,350);
       if(b.license_template){
@@ -762,40 +820,45 @@ async function handler(req,res){
         const KNOWN_LICENSES=new Set(["mit","apache-2.0","gpl-3.0","gpl-2.0","lgpl-3.0","lgpl-2.1","agpl-3.0","bsd-2-clause","bsd-3-clause","mpl-2.0","epl-2.0","unlicense","cc0-1.0","bsl-1.0"]);
         if(KNOWN_LICENSES.has(lt))payload.license_template=lt;
       }
-      if(creationKey){
-        const record={userId:String(s.id),name,createdAt:Date.now(),status:"creating"};
-        memory.repoCreations.set(creationKey,record);
-        if(db){try{await db.collection("wydev_repo_creations").doc(crypto.createHash("sha256").update(creationKey).digest("hex")).set(record,{merge:true});}catch{}}
-      }
+      if(operationId)await saveRepoCreateOperation(s.id,operationId,{status:"creating",name,owner,startedAt:Date.now()});
+
       let created;
       try{
-        created=await gh(s.token,"/user/repos",{method:"POST",body:JSON.stringify(payload),timeoutMs:60000});
+        created=await gh(s.token,"/user/repos",{method:"POST",body:JSON.stringify(payload),timeoutMs:90000});
       }catch(e){
-        // If GitHub accepted the request but the mobile connection failed while
-        // waiting for the response, recover the repository instead of forcing
-        // the user to guess whether it was created.
-        if(e?.status===504&&creationKey){
-          try{
-            const recovered=await gh(s.token,`/repos/${encodeURIComponent(s.login)}/${encodeURIComponent(name)}`,{timeoutMs:20000});
-            created=recovered;
-          }catch{}
+        // Never blindly repeat POST /user/repos. The first request may have succeeded
+        // even though the APK/server lost the response. Verify the authoritative resource.
+        if(isAmbiguousCreateError(e)){
+          const recovered=await recoverCreatedRepo(s.token,owner,name);
+          if(recovered){
+            if(operationId)await saveRepoCreateOperation(s.id,operationId,{status:"completed",repo:recovered,recovered:true});
+            return json(res,200,{...recovered,recovered:true});
+          }
         }
-        if(!created)throw e;
+        if(e.status===422){
+          const recovered=await recoverCreatedRepo(s.token,owner,name);
+          if(recovered){
+            if(operationId)await saveRepoCreateOperation(s.id,operationId,{status:"completed",repo:recovered,recovered:true});
+            return json(res,200,{...recovered,recovered:true});
+          }
+        }
+        if(e.status===403||e.status===429){
+          const wait=Math.max(0,Number(e.retryAfter||0));
+          return json(res,e.status,{error:wait?`GitHub is rate limiting this request. Please wait ${wait} seconds before trying again.`:String(e.message||"GitHub denied the request."),code:e.code||"GITHUB_RATE_LIMIT",retryAfter:wait});
+        }
+        if(operationId)await saveRepoCreateOperation(s.id,operationId,{status:"unknown",name,owner,error:e.message,code:e.code});
+        throw e;
       }
-      if(creationKey){
-        const record={userId:String(s.id),name,createdAt:Date.now(),status:"created",repo:created};
-        memory.repoCreations.set(creationKey,record);
-        if(db){try{await db.collection("wydev_repo_creations").doc(crypto.createHash("sha256").update(creationKey).digest("hex")).set(record,{merge:true});}catch{}}
-      }
-      // Update the local/server snapshot from the newly returned object only.
-      // A full repo-list refresh can happen in the background; it must never
-      // block the successful Create operation.
-      try{
-        const snapshot=await getRepoSnapshot(s.id);
+
+      if(operationId)await saveRepoCreateOperation(s.id,operationId,{status:"completed",repo:created});
+      const snapshot=await getRepoSnapshot(s.id);
+      if(snapshot){
         const nextLimit=plan==="pro"?null:Number(process.env.FREE_REPO_LIMIT||10);
-        const next=[created,...(snapshot?.repos||[]).filter(x=>x.id!==created.id)];
-        await saveRepoSnapshot(s.id,{repos:next.slice(0,nextLimit==null?next.length:nextLimit),total:Math.max(Number(snapshot?.total||0)+1,next.length),limit:nextLimit,plan});
-      }catch{}
+        const nextRepos=[created,...(snapshot.repos||[]).filter(x=>x.id!==created.id)];
+        const total=Number(snapshot.total||0)+1;
+        await saveRepoSnapshot(s.id,{repos:nextLimit==null?nextRepos:nextRepos.slice(0,nextLimit),total,limit:nextLimit,plan});
+        if(plan!=="pro"&&total>=8){try{await sendPushOnce(s.id,`repo-limit:${total}:${new Date().toISOString().slice(0,10)}`,"Free repository limit is getting close",`You now have ${total} of ${Number(process.env.FREE_REPO_LIMIT||10)} free repositories.`,{type:"repo_limit",count:String(total)});}catch{}}
+      }
       return json(res,201,created);
     }
     const lkm=p.match(/^\/github\/licenses\/([^/]+)$/);
@@ -1009,7 +1072,15 @@ async function handler(req,res){
       const owner=decodeURIComponent(cm[1]),repo=decodeURIComponent(cm[2]),b=await body(req); let branch=String(b.branch||"").trim(); const message=String(b.message||"").trim(),changes=Array.isArray(b.changes)?b.changes:[];
       if(!branch||!message||message.length>200)return json(res,400,{error:"A commit message (1-200 characters) is required"});
       if(changes.length>300)return json(res,413,{error:"Too many changed files in one push. Split the work into smaller commits."});
-      for(const c of changes) safePath(c.path);
+      // safePath both validates AND normalizes (strips leading slashes,
+      // converts backslashes to forward slashes). The normalized value must
+      // be written back onto each change, otherwise validation runs against
+      // the cleaned path while the tree entries below still use the raw,
+      // un-normalized one — so a path with a leading "/" or a Windows-style
+      // "\" backslash would pass the check but still get sent to GitHub's
+      // Trees API verbatim, creating a literally-named file instead of the
+      // intended nested path.
+      for(const c of changes) c.path=safePath(c.path);
       if(changes.some(c=>isWorkflowPath(c.path))&&!hasOAuthScope(s,"workflow")) return json(res,403,{error:"GitHub requires the workflow permission to add or update files under .github/workflows/. Sign out and sign in again so WyteLab can request the GitHub Actions workflow permission.",code:"GITHUB_WORKFLOW_SCOPE_REQUIRED"});
       let ref;
       let emptyRepo=false;

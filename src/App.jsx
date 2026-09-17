@@ -57,6 +57,13 @@ export default function App() {
       setRepoLimit(cached?.repoLimit || null);
     }
 
+    if (!navigator.onLine) {
+      setRepos(cachedRepos);
+      setRepoLimit(cached?.repoLimit || null);
+      setReposLoading(false);
+      return cachedRepos;
+    }
+
     setReposLoading(true);
     const accountId = String(user.id);
     const request = (async () => {
@@ -235,6 +242,7 @@ export default function App() {
     }
   }, [repo]);
 
+  if (offline) return <Offline />;
   if (loading) return <div className="loading">Loading WyteLab…</div>;
   if (!user) return <Login />;
 
@@ -246,16 +254,32 @@ export default function App() {
     } else navigate("repos");
   };
   const createRepo = async (payload) => {
-    const requestId = (globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    const r = await github.createRepo({ ...payload, requestId });
-    setRepos((rs) => {
-      const next=[r,...rs.filter(x=>x.id!==r.id)];
-      saveState(`reposCache:${String(user.id)}`, { repos: next, repoLimit, savedAt: Date.now() });
-      if(next.length>=8 && next.length<=10) toastInfo(`Free plan: ${next.length}/10 repositories used.`);
-      return next;
-    });
-    toastSuccess(`Repository ${r.full_name || r.name || payload.name} created successfully`);
-    return r;
+    const name = String(payload?.name || "").trim();
+    const key = `repoCreatePending:${String(user.id)}:${name.toLowerCase()}`;
+    let operationId = loadState(key, null)?.operationId;
+    if (!operationId) {
+      const uuid = globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}_${Math.random().toString(36).slice(2)}`;
+      operationId = `repo_${uuid.replace(/-/g, "")}`;
+      saveState(key, { operationId, name, createdAt: Date.now() });
+    }
+    try {
+      const r = await github.createRepo({ ...payload, operationId });
+      setRepos((rs) => {
+        const next=[r,...rs.filter(x=>x.id!==r.id)];
+        saveState(`reposCache:${String(user.id)}`, { repos: next, repoLimit, savedAt: Date.now() });
+        if(next.length>=8 && next.length<=10) toastInfo(`Free plan: ${next.length}/10 repositories used.`);
+        return next;
+      });
+      saveState(key, null);
+      toastSuccess(r.recovered ? `Repository ${r.full_name || r.name || name} is ready` : `Repository ${r.full_name || r.name || name} created successfully`);
+      return r;
+    } catch (e) {
+      // Keep the operation ID after ambiguous failures. A user retry therefore
+      // verifies/reuses the same creation operation instead of creating another repo.
+      const wait = Number(e?.retryAfter || 0);
+      if (wait > 0) e.message = `${e.message} (${wait}s)`;
+      throw e;
+    }
   };
   const workingChanges = working?.changes || [];
   const openFile = (path) => {

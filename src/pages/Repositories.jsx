@@ -36,7 +36,7 @@ export default function Repositories({ repos, repoLimit, loading, onOpen, onCrea
       });
       onOpen(repo);
     } catch (e) {
-      toastError(e?.code === "GITHUB_TIMEOUT" ? "GitHub is taking longer than expected. Refresh repositories before retrying so you don’t accidentally repeat a successful creation." : (e?.message || "Repository creation failed. Nothing was changed."));
+      toastError(e.message);
     } finally {
       setBusy(false);
     }
