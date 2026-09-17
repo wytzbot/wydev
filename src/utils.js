@@ -1,3 +1,5 @@
+import { nativeShare, nativeHaptic, isNativeApp } from "./mobileBridge";
+
 export const ext=p=>p.split(".").pop()?.toLowerCase()||"";
 export const languageFor=p=>({js:"javascript",jsx:"javascript",ts:"javascript",tsx:"javascript",json:"json",md:"markdown",py:"python",css:"css",html:"html"}[ext(p)]||"text");
 
@@ -77,11 +79,11 @@ export async function saveFile(blob, filename, mime) {
     const file = new File([blob], filename, { type: mime || blob.type || "application/octet-stream" });
     if (navigator.canShare?.({ files: [file] })) {
       await navigator.share({ files: [file], title: filename });
+      nativeHaptic("notificationSuccess");
       return true;
     }
   } catch (e) {
-    if (e?.name === "AbortError") return false; // user dismissed the share sheet — not a failure
-    // Any other error (unsupported, permission, etc.) — fall through below.
+    if (e?.name === "AbortError") return false;
   }
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -95,6 +97,19 @@ export async function saveFile(blob, filename, mime) {
 }
 
 // "now" / "N mins ago" / "N hrs ago" / "N days ago" ... for file/folder last-modified display.
+export async function shareWyteLab(text = "WyteLab — GitHub development from your phone") {
+  if (isNativeApp() && await nativeShare({ url: window.location.href, text })) {
+    nativeHaptic("impactLight");
+    return true;
+  }
+  if (navigator.share) {
+    try { await navigator.share({ title: "WyteLab", text, url: window.location.href }); return true; }
+    catch (e) { if (e?.name === "AbortError") return false; }
+  }
+  return copy(`${text}
+${window.location.href}`);
+}
+
 export function relativeTime(ts){
   if(!ts) return "";
   const diff=Math.max(0,Date.now()-ts);

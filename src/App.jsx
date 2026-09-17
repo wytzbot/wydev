@@ -21,6 +21,8 @@ import Logs from "./pages/Logs";
 import { github } from "./github";
 import { loadState, saveState } from "./storage";
 import { initNotifications } from "./notifications";
+import { installShareIntoAppHandler, consumeSharedPayload, nativeHaptic } from "./mobileBridge";
+import { shareWyteLab } from "./utils";
 
 export default function App() {
   const initialBillingReturn = new URLSearchParams(window.location.search).get("billing") === "return";
@@ -219,6 +221,20 @@ export default function App() {
   };
 
   useEffect(() => {
+    const handleShared = (payload) => {
+      if (!payload?.url) return;
+      setSearchQuery(payload.url);
+      navigate("search");
+      nativeHaptic("notificationSuccess");
+      toastInfo("Link received from the Android share menu. Search is ready.");
+    };
+    const cleanup = installShareIntoAppHandler(handleShared);
+    const initial = consumeSharedPayload();
+    if (initial) handleShared(initial);
+    return cleanup;
+  }, []);
+
+  useEffect(() => {
     document.documentElement.style.setProperty("--ui-font", loadState("fontSize", 16) + "px");
     github
       .session()
@@ -277,7 +293,7 @@ export default function App() {
 
   return (
     <div className="app">
-      <TopBar user={user} onMenu={openMenu} onSearch={() => navigate("search")} onAvatar={() => navigate("settings")} />
+      <TopBar user={user} onMenu={openMenu} onSearch={() => navigate("search")} onShare={async () => { const ok = await shareWyteLab("Manage GitHub repositories, files and Actions from your phone with WyteLab."); if (ok) nativeHaptic("notificationSuccess"); }} onAvatar={() => navigate("settings")} />
       <Menu page={page} setPage={navigate} onSearch={(q) => setSearchQuery(q)} onLogout={async () => { await github.logout(); location.reload(); }} />
       <div className="menuScrim" onClick={closeMenu} />
       <section className="content">
