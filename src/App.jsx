@@ -5,6 +5,7 @@ import TabBar from "./components/TabBar";
 import DialogHost from "./components/DialogHost";
 import ToastHost from "./components/ToastHost";
 import { toastSuccess, toastError, toastInfo } from "./toast";
+import { openExternal } from "./utils";
 import Login from "./pages/Login";
 import Home from "./pages/Home";
 import Repositories from "./pages/Repositories";
@@ -279,7 +280,7 @@ export default function App() {
         {page === "terms" && <LegalPage type="terms" />}
         {page === "about" && <LegalPage type="about" />}
         {page === "contact" && <LegalPage type="contact" />}
-        {page === "vercel" && <div className="page"><header><div><span className="eyebrow">DEPLOYMENT</span><h1>Vercel</h1></div></header><section className="panel"><p className="muted">Open Vercel to import or deploy a GitHub repository.</p><button className="primary" onClick={() => window.open("https://vercel.com","_blank","noopener,noreferrer")}>Open Vercel</button></section></div>}
+        {page === "vercel" && <div className="page"><header><div><span className="eyebrow">DEPLOYMENT</span><h1>Vercel</h1></div></header><section className="panel"><p className="muted">Open Vercel to import or deploy a GitHub repository.</p><button className="primary" onClick={() => openExternal("https://vercel.com")}>Open Vercel</button></section></div>}
       </section>
       <TabBar page={page} setPage={navigate} onMore={openMenu} />
       <DialogHost />
@@ -332,7 +333,7 @@ function Help() {
         <p className="muted">GitHub remains the source of truth. WyteLab never deploys or hosts your repository.</p>
         <h3>WHEN A PUSH FAILS</h3>
         <p>Pull the latest GitHub state and review the changes before retrying. WyteLab refuses to overwrite a newer remote branch.</p>
-        <a href="https://github.com" target="_blank" rel="noreferrer">Open GitHub</a>
+        <a href="https://github.com" onClick={(e) => { e.preventDefault(); openExternal("https://github.com"); }} rel="noreferrer">Open GitHub</a>
       </section>
     </div>
   );

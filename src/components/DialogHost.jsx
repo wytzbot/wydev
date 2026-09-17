@@ -114,6 +114,21 @@ export default function DialogHost() {
                 )}
               </div>
             </details>
+          ) : f.type === "select" ? (
+            <label className="modalField" key={f.key}>
+              {f.label}
+              <select
+                ref={i === 0 ? firstFieldRef : undefined}
+                value={values[f.key] || ""}
+                onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+              >
+                {(f.options || []).map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </label>
           ) : f.type === "textarea" ? (
             <label className="modalField" key={f.key}>
               {f.label}

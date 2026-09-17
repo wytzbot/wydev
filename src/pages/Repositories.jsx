@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Plus, Lock, BookMarked, RefreshCw } from "lucide-react";
 import { promptDialog } from "../dialog";
 import { toastError } from "../toast";
+import { LICENSES } from "../licenses";
 
 export default function Repositories({ repos, repoLimit, loading, onOpen, onCreate, onRefresh }) {
   const [busy, setBusy] = useState(false);
@@ -13,13 +14,26 @@ export default function Repositories({ repos, repoLimit, loading, onOpen, onCrea
       fields: [
         { key: "name", label: "Repository name", placeholder: "my-project" },
         { key: "description", label: "Description (optional)", placeholder: "What is this project?", required: false },
+        {
+          key: "license",
+          label: "License",
+          type: "select",
+          required: false,
+          defaultValue: "",
+          options: LICENSES.map((l) => ({ value: l.key, label: l.name })),
+        },
         { key: "private", label: "Private repository", type: "checkbox", required: false },
       ],
     });
     if (!result) return;
     setBusy(true);
     try {
-      const repo = await onCreate({ name: result.name.trim(), description: result.description?.trim(), private: !!result.private });
+      const repo = await onCreate({
+        name: result.name.trim(),
+        description: result.description?.trim(),
+        private: !!result.private,
+        license_template: result.license || undefined,
+      });
       onOpen(repo);
     } catch (e) {
       toastError(e.message);

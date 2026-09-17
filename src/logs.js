@@ -1,3 +1,4 @@
+import {saveFile} from "./utils";
 const KEY="wydev:diagnosisLogs";
 const MAX=30;
 export function getLogs(){try{const v=JSON.parse(localStorage.getItem(KEY)||"[]");return Array.isArray(v)?v.slice(0,MAX):[]}catch{return []}}
@@ -22,4 +23,4 @@ export function downloadPdf(logs,filename="wydev-logs.pdf"){
  for(let i=0;i<objs.length;i++)objs[i]=objs[i].replace(/PAGES/g,`${pagesId} 0 R`);
  const enc=new TextEncoder();let pdf="%PDF-1.4\n",offs=[0];objs.forEach((o,i)=>{offs.push(enc.encode(pdf).byteLength);pdf+=`${i+1} 0 obj\n${o}\nendobj\n`});const x=enc.encode(pdf).byteLength;pdf+=`xref\n0 ${objs.length+1}\n0000000000 65535 f \n`;for(let i=1;i<offs.length;i++)pdf+=String(offs[i]).padStart(10,"0")+" 00000 n \n";pdf+=`trailer\n<< /Size ${objs.length+1} /Root ${catalogId} 0 R >>\nstartxref\n${x}\n%%EOF`;downloadBlob(new Blob([pdf],{type:"application/pdf"}),filename)
 }
-function downloadBlob(blob,filename){const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
+function downloadBlob(blob,filename){saveFile(blob,filename,blob.type)}

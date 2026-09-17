@@ -7,10 +7,11 @@ import AIDiagnostics from "../components/AIDiagnostics";
 import { github } from "../github";
 import { billing } from "../billing";
 import { buildChangeSet, renameFolder } from "../git";
-import { copy } from "../utils";
+import { copy, saveFile, openExternal } from "../utils";
 import { loadState, saveState } from "../storage";
 import { shouldSkipUpload, readUploadedFile, isZipFile, extractZipEntries, stripCommonRoot, safeRepoPath } from "../files";
 import { promptDialog, confirmDialog } from "../dialog";
+import { LICENSES, fillLicensePlaceholders } from "../licenses";
 import { toastSuccess, toastError, toastInfo } from "../toast";
 import Select from "../components/Select";
 
@@ -569,17 +570,50 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
         else zip.file(path, String(content ?? ""));
       });
       const blob = await zip.generateAsync({ type: "blob" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${repo.name}-${branch}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      toastSuccess("Repository exported as ZIP");
+      const saved = await saveFile(blob, `${repo.name}-${branch}.zip`, "application/zip");
+      if (saved) toastSuccess("Repository exported as ZIP");
     } catch (e) {
       toastError(e.message || "Export failed");
+    }
+  };
+
+  // Lets a repo pick up a license after it already has commits (creating a
+  // repo fresh can set one via GitHub's own license_template at init time —
+  // see Repositories.jsx — but existing repos have no such hook). Fetches
+  // GitHub's official template text, fills in the placeholders GitHub itself
+  // would fill in at creation time, and stages it like any other file edit
+  // so it goes through the normal review + commit flow rather than pushing
+  // straight to GitHub.
+  const addLicense = async () => {
+    if (plan !== "pro") {
+      toastError("Adding a license to an existing repository is a WyteLab Pro feature.");
+      return;
+    }
+    const result = await promptDialog({
+      title: "Add a license",
+      confirmLabel: "Add LICENSE",
+      fields: [
+        {
+          key: "license",
+          label: "License",
+          type: "select",
+          required: false,
+          defaultValue: "mit",
+          options: LICENSES.filter((l) => l.key).map((l) => ({ value: l.key, label: l.name })),
+        },
+      ],
+    });
+    if (!result?.license) return;
+    try {
+      const tpl = await github.licenseTemplate(result.license);
+      const text = fillLicensePlaceholders(tpl.body, {
+        year: new Date().getFullYear(),
+        fullname: repo.owner?.login || repo.full_name || "",
+      });
+      applyFiles({ ...files, LICENSE: text }, `Added ${tpl.name}`);
+      toastSuccess(`${tpl.name} staged as LICENSE — commit to publish it`);
+    } catch (e) {
+      toastError(e.code === "PRO_REQUIRED" || e.status === 402 ? "Adding a license to an existing repository is a WyteLab Pro feature." : e.message || "Could not fetch that license template");
     }
   };
 
@@ -755,10 +789,10 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
         <button onClick={load} disabled={busy}>
           <RefreshCw size={16} />
         </button>
-        <a href={`https://${vercelDomain(repo.name)}`} target="_blank" rel="noreferrer" title="Open this repository's Vercel deployment">
+        <a href={`https://${vercelDomain(repo.name)}`} onClick={(e) => { e.preventDefault(); openExternal(`https://${vercelDomain(repo.name)}`); }} rel="noreferrer" title="Open this repository's Vercel deployment">
           <ExternalLink size={17} /> Vercel
         </a>
-        <a href={repo.html_url} target="_blank" rel="noreferrer" title="Open on GitHub">
+        <a href={repo.html_url} onClick={(e) => { e.preventDefault(); openExternal(repo.html_url); }} rel="noreferrer" title="Open on GitHub">
           <ExternalLink size={17} /> GitHub
         </a>
       </header>
@@ -815,6 +849,10 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
           <Upload size={16} />
           Export ZIP
         </button>
+        <button onClick={addLicense} title={plan === "pro" ? "Add a GitHub license template to this repository" : "Adding a license to an existing repository requires WyteLab Pro"}>
+          <FileText size={16} />
+          Add license{plan !== "pro" ? " (Pro)" : ""}
+        </button>
         <button onClick={loadPRs}>
           <GitBranch size={16} />
           Pull Requests
@@ -861,7 +899,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
             {prs.length ? (
               prs.map((pr) => (
                 <div className="change" key={pr.id}>
-                  <a href={pr.html_url} target="_blank" rel="noreferrer">
+                  <a href={pr.html_url} onClick={(e) => { e.preventDefault(); openExternal(pr.html_url); }} rel="noreferrer">
                     <b>#{pr.number}</b>
                     <span>{pr.title} · {pr.state}</span>
                   </a>
@@ -880,7 +918,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
           <p className="muted">Your local changes are still here. Review the latest branch on GitHub before deciding how to continue.</p>
           <div className="sheetActions">
             <button onClick={() => setRemoteConflict(null)}>Keep editing</button>
-            <a className="button" href={repo.html_url} target="_blank" rel="noreferrer">Review on GitHub</a>
+            <a className="button" href={repo.html_url} onClick={(e) => { e.preventDefault(); openExternal(repo.html_url); }} rel="noreferrer">Review on GitHub</a>
             <button onClick={() => { setRemoteConflict(null); load(); }}>Reload repository</button>
           </div>
         </div>
@@ -962,6 +1000,15 @@ function FileViewer({ path, value, onChange, onViewReady, unsaved=false, onBack,
     const src = canPreview ? `data:${binary.mime || "application/octet-stream"};base64,${binary.base64}` : "";
     const image = canPreview && /^image\//i.test(binary.mime || "") && !/\.svgz?$/i.test(path);
     const openUrl = binary.html_url || "";
+    const downloadOriginal = async () => {
+      try {
+        const res = await fetch(src);
+        const blob = await res.blob();
+        await saveFile(blob, path.split("/").pop() || "download", binary.mime);
+      } catch (e) {
+        toastError(e.message || "Download failed");
+      }
+    };
     return <div className="fileViewer">
       <div className="fileTitle"><button className="fileBack" aria-label="Back to files" onClick={onBack}>‹</button><b>{path}</b></div>
       <div className="binaryViewer">
@@ -969,9 +1016,9 @@ function FileViewer({ path, value, onChange, onViewReady, unsaved=false, onBack,
         {!canPreview && <p className="muted">This file is kept out of the in-app preview to protect mobile memory. Open it on GitHub instead.</p>}
         {failed && <p className="muted">This image could not be previewed safely.</p>}
         {canPreview ? (
-          <a className="primary" href={src} download={path.split("/").pop() || "download"}><Download size={16}/> Download original</a>
+          <button className="primary" onClick={downloadOriginal}><Download size={16}/> Download original</button>
         ) : openUrl ? (
-          <a className="primary" href={openUrl} target="_blank" rel="noreferrer"><ExternalLink size={16}/> Open on GitHub</a>
+          <a className="primary" href={openUrl} onClick={(e) => { e.preventDefault(); openExternal(openUrl); }} rel="noreferrer"><ExternalLink size={16}/> Open on GitHub</a>
         ) : null}
       </div>
     </div>;

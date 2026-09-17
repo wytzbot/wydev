@@ -724,6 +724,14 @@ async function handler(req,res){
       }
       const payload={name,private:!!b.private,auto_init:true};
       if(b.description)payload.description=String(b.description).slice(0,350);
+      if(b.license_template){
+        const lt=String(b.license_template).trim().toLowerCase();
+        // Whitelist against GitHub's own supported slugs (mirrors src/licenses.js)
+        // rather than passing the client value straight through, since this
+        // string is sent on to the GitHub API unescaped.
+        const KNOWN_LICENSES=new Set(["mit","apache-2.0","gpl-3.0","gpl-2.0","lgpl-3.0","lgpl-2.1","agpl-3.0","bsd-2-clause","bsd-3-clause","mpl-2.0","epl-2.0","unlicense","cc0-1.0","bsl-1.0"]);
+        if(KNOWN_LICENSES.has(lt))payload.license_template=lt;
+      }
       const created=await gh(s.token,"/user/repos",{method:"POST",body:JSON.stringify(payload)});
       if(plan!=="pro"){
         const totalAfterCreate=Number((await gh(s.token,"/user/repos?per_page=100")).length||0);
@@ -735,6 +743,14 @@ async function handler(req,res){
         await saveRepoSnapshot(s.id,{repos:nextLimit==null?allAfter:allAfter.slice(0,nextLimit),total:allAfter.length,limit:nextLimit,plan});
       }catch{}
       return json(res,201,created);
+    }
+    const lkm=p.match(/^\/github\/licenses\/([^/]+)$/);
+    if(lkm&&req.method==="GET"){
+      const plan=await entitlement(s);
+      if(plan!=="pro")return json(res,402,{error:"Adding a license to an existing repository is a WyteLab Pro feature. Upgrade to unlock it.",code:"PRO_REQUIRED"});
+      const key=decodeURIComponent(lkm[1]);
+      const lic=await gh(s.token,`/licenses/${encodeURIComponent(key)}`);
+      return json(res,200,{key:lic.key,name:lic.name,body:lic.body});
     }
     const drm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)$/);
     if(drm&&req.method==="DELETE"){
