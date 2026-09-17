@@ -371,3 +371,39 @@ select:focus{border-color:var(--accent)}
 .projectTools button.danger{border-color:var(--danger);color:var(--danger)}
 .projectTools button.danger:hover:not(:disabled){background:color-mix(in srgb,var(--danger) 12%,transparent)}
 .projectTools button.danger:disabled{opacity:.55}
+
+/* ---------- custom upload picker ---------- */
+.uploadPickerOverlay{position:fixed;inset:0;z-index:210;display:flex;align-items:flex-end;justify-content:center;padding:12px;background:#000b;backdrop-filter:blur(5px)}
+.uploadPickerSheet{width:min(620px,100%);max-height:min(88vh,720px);overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 24px 70px #000d;animation:pickerIn .16s ease-out}
+@keyframes pickerIn{from{transform:translateY(14px);opacity:.7}to{transform:none;opacity:1}}
+.uploadPickerHead{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+.uploadPickerHead h3{margin:3px 0 0;font-size:18px}
+.iconButton{width:38px;height:38px;display:grid;place-items:center;border:1px solid var(--line);border-radius:9px;background:var(--panel2)}
+.iconButton:hover{background:var(--panel3)}
+.uploadDropZone{border:1px dashed #59636f;border-radius:13px;padding:28px 16px;display:flex;flex-direction:column;align-items:center;text-align:center;gap:7px;background:#10151b;transition:.15s}
+.uploadDropZone.dragging{border-color:var(--accent);background:#151d27;transform:scale(1.01)}
+.uploadDropZone strong{font-size:15px}
+.uploadDropZone>span{font-size:12px;color:var(--muted)}
+.uploadDropZone small{color:var(--muted);font-size:11px;max-width:360px;line-height:1.4}
+.uploadIcon{width:52px;height:52px;border-radius:14px;display:grid;place-items:center;background:var(--panel2);border:1px solid var(--line);color:var(--accent);margin-bottom:3px}
+.uploadChoose{margin:8px 0 2px}
+.uploadSelection{margin-top:12px;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.uploadSelectionHead{display:flex;align-items:center;justify-content:space-between;padding:9px 11px;background:var(--panel2);font-size:12px}
+.uploadSelectionHead button{color:var(--accent);font-size:12px}
+.uploadFileList{padding:5px 10px;max-height:190px;overflow:auto}
+.uploadFile{display:flex;align-items:center;gap:9px;padding:8px 2px;border-bottom:1px solid #ffffff08;font-size:12px}
+.uploadFile:last-child{border-bottom:0}
+.uploadFile span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.uploadFile svg:last-child{color:var(--success)}
+.uploadFileList>small{display:block;padding:8px 2px;color:var(--muted)}
+.srFileInput{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.uploadPickerActions{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+.uploadPickerActions button{min-height:42px}
+.modalSelect{margin:0}
+.modalSelect .wySelectMenu{position:fixed;left:12px;right:12px;top:auto;bottom:calc(12px + var(--safe-bottom));max-height:45vh;z-index:230}
+.modalSelect .wySelectTrigger{min-height:44px}
+@media (min-width:700px){
+  .uploadPickerOverlay{align-items:center}
+  .uploadPickerSheet{border-radius:16px}
+  .modalSelect .wySelectMenu{left:auto;right:auto;position:absolute;top:calc(100% + 5px);bottom:auto}
+}

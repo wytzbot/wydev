@@ -37,6 +37,11 @@ export default function App() {
     [loading, setLoading] = useState(true);
   const reposRequestRef = useRef(null);
   const reposUserRef = useRef(null);
+  // Always holds the most recently rendered loadRepos, so listeners that are
+  // only re-attached when `user` changes (below) never call back into a
+  // stale closure that still thinks `repos`/`user` look like they did the
+  // moment the listener was installed.
+  const loadReposRef = useRef(null);
 
   const loadRepos = async ({ silent = false } = {}) => {
     if (!user?.id) return [];
@@ -130,6 +135,36 @@ export default function App() {
     };
   }, []);
 
+  loadReposRef.current = loadRepos;
+
+  // The Android APK shell is a bare WebView. After it's been backgrounded
+  // for a while, Chromium's compositor frequently stops repainting the
+  // page — the DOM/React state underneath is already correct (the effect
+  // below re-fetches repos on foreground just fine), but the last frame
+  // that was drawn stays on screen until *something* forces a new one.
+  // A tap anywhere does this as an unrelated side effect of handling the
+  // touch event, which is exactly why "click any bottom tab icon" makes
+  // the list "reappear" even when that icon has nothing to do with
+  // repositories. Force that redraw ourselves on foreground instead of
+  // waiting on an incidental tap.
+  useEffect(() => {
+    const root = document.getElementById("root");
+    if (!root) return;
+    const forceRepaint = () => {
+      root.style.transform = "translateZ(0)";
+      requestAnimationFrame(() => requestAnimationFrame(() => { root.style.transform = ""; }));
+    };
+    const onVisible = () => { if (document.visibilityState === "visible") forceRepaint(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("pageshow", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("pageshow", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  }, []);
+
   // The initial repos fetch on mount can lose a race with the session cookie
   // still being written right after a hard refresh (or simply hit a network
   // blip on cold start) and fail silently, leaving the Repositories/Home
@@ -140,7 +175,7 @@ export default function App() {
   // happens to trigger a re-render.
   useEffect(() => {
     if (!user) return;
-    const refresh = () => { if (document.visibilityState === "visible") loadRepos({ silent: true }); };
+    const refresh = () => { if (document.visibilityState === "visible") loadReposRef.current?.({ silent: true }); };
     document.addEventListener("visibilitychange", refresh);
     window.addEventListener("pageshow", refresh);
     window.addEventListener("online", refresh);

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { setDialogHandler } from "../dialog";
+import Select from "./Select";
 
 export default function DialogHost() {
   const [cfg, setCfg] = useState(null);
@@ -115,20 +116,15 @@ export default function DialogHost() {
               </div>
             </details>
           ) : f.type === "select" ? (
-            <label className="modalField" key={f.key}>
-              {f.label}
-              <select
-                ref={i === 0 ? firstFieldRef : undefined}
+            <div className="modalField" key={f.key}>
+              <Select
                 value={values[f.key] || ""}
-                onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
-              >
-                {(f.options || []).map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+                onChange={(v) => setValues((state) => ({ ...state, [f.key]: v }))}
+                options={f.options || []}
+                label={f.label}
+                className="modalSelect"
+              />
+            </div>
           ) : f.type === "textarea" ? (
             <label className="modalField" key={f.key}>
               {f.label}

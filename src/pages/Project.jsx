@@ -14,6 +14,7 @@ import { promptDialog, confirmDialog } from "../dialog";
 import { LICENSES, fillLicensePlaceholders } from "../licenses";
 import { toastSuccess, toastError, toastInfo } from "../toast";
 import Select from "../components/Select";
+import UploadPicker from "../components/UploadPicker";
 
 // Vercel slugifies the imported repo name into the default project domain
 // (lowercase, non-alphanumerics collapsed to single hyphens, trimmed) unless
@@ -49,6 +50,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
     [prBusy, setPrBusy] = useState(false),
     [remoteConflict, setRemoteConflict] = useState(null),
     [historyOpen, setHistoryOpen] = useState(false),
+    [uploadPickerOpen, setUploadPickerOpen] = useState(false),
     [commitHistory, setCommitHistory] = useState([]),
     [historyBusy, setHistoryBusy] = useState(false),
     [revertBusy, setRevertBusy] = useState(false),
@@ -449,15 +451,15 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
     setRenamePreview(null);
     toastSuccess(`Folder renamed to ${renamePreview.to}`);
   };
-  const uploadFiles = async (e) => {
-    const input = e.target;
-    if (!input.files?.length) return;
+  const uploadFiles = async (eOrFiles) => {
+    const picked = eOrFiles?.target?.files || eOrFiles;
+    if (!picked?.length) return;
     setBusy(true);
     try {
       const next = { ...files };
       let added = 0,
         skippedBinary = 0;
-      for (const f of input.files) {
+      for (const f of picked) {
         if (isZipFile(f)) {
           const { files: entries } = await extractZipEntries(f);
           for (const entry of stripCommonRoot(entries)) {
@@ -497,7 +499,6 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
       toastError(err.message);
     } finally {
       setBusy(false);
-      input.value = "";
     }
   };
   const selectAll = () => {
@@ -814,11 +815,10 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
           <FolderPlus size={16} />
           Rename folder
         </button>
-        <label className="toolButton">
+        <button className="toolButton" onClick={() => setUploadPickerOpen(true)}>
           <Upload size={16} />
-          Upload file
-          <input hidden type="file" multiple onChange={uploadFiles} />
-        </label>
+          Upload files
+        </button>
         <button disabled={!selected || selectedBinary} onClick={() => copy(String(files[selected] || ""))}>
           <Copy size={16} />
           Copy all
@@ -986,6 +986,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
           </div>
         </div>
       )}
+      <UploadPicker open={uploadPickerOpen} onClose={() => setUploadPickerOpen(false)} onFiles={async (files) => { setUploadPickerOpen(false); await uploadFiles(files); }} />
     </div>
   );
 }

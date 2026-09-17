@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { getLocalPreferences, loadState, saveState, syncPreferences, loadSyncedPreferences } from "../storage";
 import { confirmDialog } from "../dialog";
 import Select from "../components/Select";
-import { enableNotifications, disableNotifications, getNotificationPermission, isNotificationsEnabled } from "../notifications";
+import { enableNotifications, disableNotifications, getNotificationPermission, isNotificationsEnabled, refreshNotificationPermission, isMedianApp } from "../notifications";
 
 export default function Settings() {
   const [font, setFont] = useState(loadState("fontSize", 16));
@@ -27,6 +27,16 @@ export default function Settings() {
     let alive = true;
     loadSyncedPreferences().then((remote) => { if (alive && Object.keys(remote).length) apply(remote); }).catch(() => {});
     return () => { alive = false; if (syncTimer.current) clearTimeout(syncTimer.current); };
+  }, []);
+
+  // In a Median.co-wrapped build, permission is checked over the native
+  // bridge asynchronously — the initial useState value above is just the
+  // last cached result, so refresh it once the bridge has had a chance to
+  // load. A no-op (resolves immediately to the same value) everywhere else.
+  useEffect(() => {
+    let alive = true;
+    refreshNotificationPermission().then((p) => { if (alive) setNotificationPermission(p); }).catch(() => {});
+    return () => { alive = false; };
   }, []);
 
   const queueSync = () => {
@@ -107,7 +117,13 @@ export default function Settings() {
             Disable notifications
           </button>
         )}
-        {notificationPermission === "denied" && <p className="muted">Notifications are blocked by the browser. Allow them in your browser site settings.</p>}
+        {notificationPermission === "denied" && (
+          <p className="muted">
+            {isMedianApp()
+              ? "Notifications are blocked. Allow them for this app in your device's Settings."
+              : "Notifications are blocked by the browser. Allow them in your browser site settings."}
+          </p>
+        )}
       </section>
       <section className="panel">
         <h3>LOCAL DATA</h3>
