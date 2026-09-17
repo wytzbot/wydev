@@ -3,7 +3,6 @@ import { getLocalPreferences, loadState, saveState, syncPreferences, loadSyncedP
 import { confirmDialog } from "../dialog";
 import Select from "../components/Select";
 import { enableNotifications, disableNotifications, getNotificationPermission, isNotificationsEnabled, refreshNotificationPermission, isMedianApp } from "../notifications";
-import { nativeHaptic } from "../mobileBridge";
 
 export default function Settings() {
   const [font, setFont] = useState(loadState("fontSize", 16));
@@ -126,12 +125,6 @@ export default function Settings() {
           </p>
         )}
       </section>
-      {isMedianApp() && <section className="panel">
-        <h3>ANDROID APP FEATURES</h3>
-        <p className="muted">WyteLab is connected to native Android features for push notifications, sharing, file workflows and tactile feedback.</p>
-        <button onClick={() => nativeHaptic("notificationSuccess")}>Test haptic feedback</button>
-        <p className="muted">Native features are optional enhancements; your GitHub workspace remains available through the same secure account session.</p>
-      </section>}
       <section className="panel">
         <h3>LOCAL DATA</h3>
         <button onClick={() => { localStorage.removeItem("wydev:recentProjects"); location.reload(); }}>Clear recent projects</button>

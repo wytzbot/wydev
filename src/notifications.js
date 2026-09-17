@@ -2,7 +2,6 @@ import { API_BASE_URL } from "./config";
 import { FIREBASE_CONFIG } from "./firebase-config";
 import { loadState, saveState } from "./storage";
 import { fetchTimeout } from "./net";
-import { isNativeApp } from "./mobileBridge";
 
 // Browser Notification permission is a one-way ratchet: once the user grants
 // it, JS can never programmatically revoke it (only the user can, via their
@@ -43,7 +42,7 @@ const MEDIAN_TOKEN_KEY = "medianFcmToken";
 const MEDIAN_PERMISSION_KEY = "medianFcmPermission"; // cached "granted" | "denied" | "default"
 
 export function isMedianApp(){
-  return isNativeApp();
+  return typeof navigator!=="undefined" && /median|gonative/i.test(navigator.userAgent||"");
 }
 
 // The bridge library is injected asynchronously; `median_library_ready()` is
