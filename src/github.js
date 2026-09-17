@@ -1,10 +1,10 @@
 import {API_BASE_URL} from "./config";
 import {fetchTimeout} from "./net";
-const api=async(path,opts={})=>{let r;try{r=await fetchTimeout(`${API_BASE_URL}${path}`,{credentials:"include",headers:{"Content-Type":"application/json",...(opts.headers||{})},...opts})}catch(e){throw new Error(`Network error: ${e?.message||"Unable to reach WyteLab server"}`)}let e=null;try{e=await r.json()}catch{}if(!r.ok){const err=new Error(e?.error||`Request failed (${r.status})`);err.status=r.status;err.code=e?.code;err.details=e;throw err}return e};
+const api=async(path,opts={})=>{let r;const {timeoutMs,...requestOpts}=opts;try{r=await fetchTimeout(`${API_BASE_URL}${path}`,{credentials:"include",headers:{"Content-Type":"application/json",...(requestOpts.headers||{})},...requestOpts},timeoutMs||30000)}catch(e){throw new Error(`Network error: ${e?.message||"Unable to reach WyteLab server"}`)}let e=null;try{e=await r.json()}catch{}if(!r.ok){const err=new Error(e?.error||`Request failed (${r.status})`);err.status=r.status;err.code=e?.code;err.details=e;throw err}return e};
 export const github={
  session:()=>api("/auth/me"),login:()=>location.href=`${API_BASE_URL}/auth/github`,logout:()=>api("/auth/logout",{method:"POST"}),
  repos:()=>api("/github/repos"),
- createRepo:(p)=>api("/github/repos",{method:"POST",body:JSON.stringify(p)}),
+ createRepo:(p)=>api("/github/repos",{method:"POST",timeoutMs:75000,body:JSON.stringify(p)}),
  deleteRepo:(o,r)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}`,{method:"DELETE"}),
  tree:(o,r,b)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/tree?branch=${encodeURIComponent(b)}`),
  file:(o,r,p,b)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/file?path=${encodeURIComponent(p)}&branch=${encodeURIComponent(b)}`),

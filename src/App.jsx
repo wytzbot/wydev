@@ -57,13 +57,6 @@ export default function App() {
       setRepoLimit(cached?.repoLimit || null);
     }
 
-    if (!navigator.onLine) {
-      setRepos(cachedRepos);
-      setRepoLimit(cached?.repoLimit || null);
-      setReposLoading(false);
-      return cachedRepos;
-    }
-
     setReposLoading(true);
     const accountId = String(user.id);
     const request = (async () => {
@@ -242,7 +235,6 @@ export default function App() {
     }
   }, [repo]);
 
-  if (offline) return <Offline />;
   if (loading) return <div className="loading">Loading WyteLab…</div>;
   if (!user) return <Login />;
 
@@ -254,7 +246,8 @@ export default function App() {
     } else navigate("repos");
   };
   const createRepo = async (payload) => {
-    const r = await github.createRepo(payload);
+    const requestId = (globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const r = await github.createRepo({ ...payload, requestId });
     setRepos((rs) => {
       const next=[r,...rs.filter(x=>x.id!==r.id)];
       saveState(`reposCache:${String(user.id)}`, { repos: next, repoLimit, savedAt: Date.now() });
