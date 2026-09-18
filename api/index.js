@@ -663,7 +663,52 @@ async function verifyCharge(s,id,reference){
   }
   return {active:false,status:x.status||"pending"};
 }
-function validWebhook(req,raw){const sig=req.headers["flutterwave-signature"];if(!sig||!process.env.FLW_WEBHOOK_SECRET_HASH)return false;const h=crypto.createHmac("sha256",process.env.FLW_WEBHOOK_SECRET_HASH).update(raw).digest("base64");const a=Buffer.from(h),b=Buffer.from(String(sig));return a.length===b.length&&crypto.timingSafeEqual(a,b);}
+let wyblogDb=null;
+function getWyBlogDb(){
+  if(wyblogDb)return wyblogDb;
+  try{
+    const admin=require("firebase-admin");
+    let app;
+    try{app=admin.app("wyblog")}catch{
+      const jsonCred=String(process.env.WYBLOG_FIREBASE_SERVICE_ACCOUNT_JSON||"").trim();
+      let cred=null;
+      if(jsonCred)cred=admin.credential.cert(JSON.parse(jsonCred));
+      else if(process.env.WYBLOG_FIREBASE_PROJECT_ID&&process.env.WYBLOG_FIREBASE_CLIENT_EMAIL&&process.env.WYBLOG_FIREBASE_PRIVATE_KEY){
+        cred=admin.credential.cert({projectId:process.env.WYBLOG_FIREBASE_PROJECT_ID,clientEmail:process.env.WYBLOG_FIREBASE_CLIENT_EMAIL,privateKey:String(process.env.WYBLOG_FIREBASE_PRIVATE_KEY).replace(/\\n/g,"\n")});
+      }
+      if(!cred)return null;
+      app=admin.initializeApp({credential:cred},"wyblog");
+    }
+    wyblogDb=app.firestore(); return wyblogDb;
+  }catch(e){console.error("WyBlog Firebase Admin initialization failed:",e?.message||e);return null}
+}
+async function handleWyBlogWebhookCharge(tx){
+  const ref=String(tx.reference||"").trim();
+  if(!ref.startsWith("WYBLOG-"))return false;
+  const bdb=getWyBlogDb(); if(!bdb)return true;
+  const uid=String(tx?.meta?.userId||"").trim(); if(!uid)return true;
+  const txRef=bdb.doc(`users/${uid}/billingTransactions/${ref}`);
+  const snap=await txRef.get();
+  const record=snap.exists?(snap.data()||{}):{};
+  const renewal=ref.startsWith("WYBLOG-RENEW-")||Boolean(record.renewal);
+  const d=await flw(`/charges/${encodeURIComponent(String(tx.id))}`),x=d.data||{};
+  const amount=Number(record.amount||0),currency=String(record.currency||"");
+  const customerId=String(record.customerId||"");
+  const valid=x.status==="succeeded"&&String(x.reference||"")===ref&&amount>0&&Number(x.amount)===amount&&String(x.currency||"")===currency&&(!customerId||String(x.customer?.id||x.customer_id||"")===customerId);
+  if(record.status==="succeeded")return true;
+  await txRef.set({reference:ref,userId:uid,status:x.status||"pending",chargeId:String(tx.id),updatedAt:new Date()},{merge:true});
+  if(valid){
+    const userRef=bdb.doc(`users/${uid}`),userSnap=await userRef.get(),billing=userSnap.data()?.billing||{};
+    const activeUntil=billing.activeUntil?.toDate?.()?.getTime?.()||new Date(billing.activeUntil||0).getTime()||0;
+    const base=renewal?Math.max(Date.now(),activeUntil):Date.now();
+    const until=base+31*24*60*60*1000;
+    await userRef.set({billing:{status:"active",plan:"pro",currency,amount,transactionId:String(x.id),activeUntil:new Date(until),updatedAt:new Date()}},{merge:true});
+    await txRef.set({status:"succeeded",completedAt:new Date()},{merge:true});
+    await bdb.doc(`users/${uid}/notifications/pro-${ref}`).set({title:renewal?"WyBlog Pro renewed 🎉":"WyBlog Pro activated 🎉",body:renewal?"Your WyBlog Pro subscription was renewed successfully.":"Your WyBlog Pro subscription is now active.",type:renewal?"payment-renewal":"payment",createdAt:new Date(),read:false},{merge:true});
+  }
+  return true;
+}
+function validWebhook(req,raw){const sig=req.headers["verif-hash"]||req.headers["verifi-hash"];const secret=String(process.env.FLW_WEBHOOK_SECRET_HASH||"");return Boolean(sig&&secret&&String(sig)===secret);}
 
 async function handler(req,res){
   try{
@@ -694,21 +739,19 @@ async function handler(req,res){
       const tx=data.data||{};
       if(tx.id){
         try{
+          const shared=await handleWyBlogWebhookCharge(tx);
+          if(shared&&String(tx.reference||"").startsWith("WYBLOG-"))return json(res,200,{received:true,product:"wyblog"});
           const d=await flw(`/charges/${encodeURIComponent(tx.id)}`),x=d.data||{};
           const ref=String(x.reference||tx.reference||"").trim();
           const rec=ref?await getTransaction(ref):null;
           if(rec&&String(rec.chargeId||tx.id)===String(tx.id)&&ref===String(rec.reference||ref)){
-            if(String(rec.status||"").toLowerCase()==="succeeded") return json(res,200,{received:true,duplicate:true});
+            if(String(rec.status||"").toLowerCase()==="succeeded")return json(res,200,{received:true,duplicate:true});
             await setTransaction(ref,{status:x.status||"pending",chargeId:tx.id,updatedAt:Date.now()});
-            if(x.status==="succeeded"&&String(x.reference||"")===ref&&Number(x.amount)===Number(rec.amount)&&String(x.currency)===String(rec.currency)){
-              const existing=await getEntitlement(rec.userId);
-              const base=rec.renewal?Math.max(Date.now(),Number(existing?.expiresAt)||0):Date.now();
-              const expiresAt=addOneMonth(base);
+            if(x.status==="succeeded"&&String(x.reference||"")===ref&&Number(x.amount)===Number(rec.amount)&&String(x.currency||"")===String(rec.currency)){
+              const existing=await getEntitlement(rec.userId);const base=rec.renewal?Math.max(Date.now(),Number(existing?.expiresAt)||0):Date.now();const expiresAt=addOneMonth(base);
               await setEntitlement(rec.userId,{status:"active",expiresAt,renewAt:expiresAt,reference:ref,customerId:rec.customerId,paymentMethodId:rec.paymentMethodId,currency:rec.currency,updatedAt:Date.now(),renewalPending:false});
               try{await sendPushOnce(rec.userId,`pro-unlocked:${ref}`,rec.renewal?"WyteLab Pro renewed 🎉":"WyteLab Pro unlocked 🎉",rec.renewal?"Your Pro subscription was renewed successfully.":"Your Pro subscription is active.",{type:rec.renewal?"pro_renewed":"pro_unlocked"})}catch{}
-            } else if(rec.renewal&&["failed","cancelled","canceled","voided"].includes(String(x.status||"").toLowerCase())){
-              await setEntitlement(rec.userId,{status:"past_due",renewalPending:false,lastRenewalReference:ref,updatedAt:Date.now()});
-            }
+            }else if(rec.renewal&&["failed","cancelled","canceled","voided"].includes(String(x.status||"").toLowerCase()))await setEntitlement(rec.userId,{status:"past_due",renewalPending:false,lastRenewalReference:ref,updatedAt:Date.now()});
           }
         }catch{}
       }

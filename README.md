@@ -61,7 +61,7 @@ Use v4 sandbox credentials first. Configure the webhook URL as:
 
 `https://wyte.name.ng/api/billing/webhook`
 
-The backend verifies webhook signatures and then re-queries the charge before activating Pro.
+The shared webhook verifies Flutterwave's `verif-hash`, re-queries the charge, validates reference/amount/currency/customer ownership, and routes `WYDEV-*` transactions to WyteLab and `WYBLOG-*` transactions to the separate WyBlog Firebase project. Duplicate events are idempotent.
 
 The current Flutterwave v4 docs use OAuth 2.0 and v4 endpoints rather than the older v3 secret-key checkout flow.
 
@@ -120,3 +120,11 @@ The initial card payment creates a tokenized Flutterwave payment method. Later m
 
 ### GitHub Actions Control Center
 WyteLab includes a mobile-friendly Actions view for recent workflow runs, failed-job retries and job inspection. Free includes manual workflow dispatch and cancellation. Pro adds failed-job reruns and debug-enabled failed-job reruns. These operations use the signed-in developer's GitHub permissions through the WyteLab server.
+
+
+# Shared Flutterwave webhook: WyBlog Firebase Admin credentials
+WYBLOG_FIREBASE_SERVICE_ACCOUNT_JSON=
+# Or use the three variables below instead of the JSON credential:
+WYBLOG_FIREBASE_PROJECT_ID=
+WYBLOG_FIREBASE_CLIENT_EMAIL=
+WYBLOG_FIREBASE_PRIVATE_KEY=
