@@ -1,0 +1,17 @@
+# WyteLab
+
+WyteLab is a mobile-friendly GitHub developer workspace for repository browsing, file editing, code search, changes, commits, pull requests, diagnostics, and deployment handoffs.
+
+## Public pages
+- /
+- /legal/about.html
+- /legal/privacy.html
+- /legal/terms.html
+- /legal/contact.html
+
+## Product limits
+- Free: up to 10 repositories and 3 AI diagnoses per day.
+- Pro: $7 USD or ₦7,500 NGN per month, recurring, with higher limits and Pro-only capabilities.
+
+## Contact
+- wytetechcompany@gmail.com

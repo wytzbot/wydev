@@ -1,0 +1,215 @@
+package com.wydev.wrapper;
+
+import android.app.Activity;
+import android.content.*;
+import android.net.Uri;
+import android.os.Bundle;
+import android.view.*;
+import android.webkit.*;
+import java.util.*;
+
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
+
+public class MainActivity extends Activity {
+  private WebView web;
+  // Bare android.webkit.WebView never shows a file picker for <input type="file">
+  // unless the hosting Activity's WebChromeClient implements onShowFileChooser.
+  // Without this, "Upload file"/"Upload folder" in the project explorer silently
+  // does nothing in the APK, with no JS-visible error. See onShowFileChooser()
+  // and onActivityResult() below, which together implement that contract.
+  private ValueCallback<Uri[]> filePathCallback;
+  private static final int FILE_CHOOSER_REQUEST_CODE = 51426;
+  private final boolean CAMERA=__FEATURE_CAMERA__, LOCATION=__FEATURE_LOCATION__, DOWNLOADS=__FEATURE_DOWNLOADS__, EXTERNAL_LINKS=__FEATURE_EXTERNAL_LINKS__, FULLSCREEN=__FEATURE_FULLSCREEN__, SHARE=__FEATURE_SHARE__, VIBRATION=__FEATURE_VIBRATION__, ORIENTATION=__FEATURE_ORIENTATION__, BATTERY=__FEATURE_BATTERY__, NETWORK_STATUS=__FEATURE_NETWORK_STATUS__, DEVICE_INFO=__FEATURE_DEVICE_INFO__, LOCAL_NOTIFICATIONS=__FEATURE_LOCAL_NOTIFICATIONS__, BIOMETRIC=__FEATURE_BIOMETRIC__, SECURE_STORAGE=__FEATURE_SECURE_STORAGE__, SCREEN_CAPTURE=__FEATURE_SCREEN_CAPTURE__, PICTURE_IN_PICTURE=__FEATURE_PICTURE_IN_PICTURE__, DEEP_LINKS=__FEATURE_DEEP_LINKS__;
+
+  // Keep the APK's primary origin on the real WyteLab domain. This makes relative /api
+  // requests, OAuth callbacks and routing behave exactly as they do on the website.
+  private static final String APP_URL = "https://wyte.name.ng/";
+  private static final String APP_HOST = "wyte.name.ng";
+
+  // Real system-bar / cutout insets in CSS px, kept up to date by setupInsets()
+  // and pushed into the page so its safe-area CSS reflects the actual screen,
+  // not env(safe-area-inset-*) which old-style fullscreen flags never populate
+  // reliably (that's why content used to sit under the status bar / gesture bar).
+  private float safeTop = 0f, safeBottom = 0f, safeLeft = 0f, safeRight = 0f;
+
+  @Override public void onCreate(Bundle b) {
+    super.onCreate(b);
+
+    // Edge-to-edge: the app (not the OS) positions content around system bars.
+    // This is also what makes WindowInsets available at all in onCreate/insets
+    // listeners below - the old FLAG_FULLSCREEN-only approach never dispatched
+    // usable insets to the WebView.
+    WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+
+    web = new WebView(this);
+    WebSettings s = web.getSettings();
+    s.setJavaScriptEnabled(true);
+    s.setDomStorageEnabled(true);
+    s.setAllowFileAccess(true);
+    s.setAllowContentAccess(true);
+    s.setSupportMultipleWindows(false);
+    s.setBuiltInZoomControls(false);
+    s.setDisplayZoomControls(false);
+    web.addJavascriptInterface(new Bridge(), "WyBuild");
+
+    web.setWebViewClient(new WebViewClient() {
+      @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
+        return handleUrl(r.getUrl().toString());
+      }
+      @Override public boolean shouldOverrideUrlLoading(WebView v, String u) {
+        return handleUrl(u);
+      }
+      @Override public void onPageFinished(WebView v, String u) {
+        super.onPageFinished(v, u);
+        // Each navigation gets a fresh document - reapply the current insets to it.
+        injectSafeAreaVars();
+      }
+    });
+
+    if (DOWNLOADS) web.setDownloadListener((u, ua, c, m, l) -> {
+      try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(u))); } catch (Exception ignored) {}
+    });
+
+    web.setWebChromeClient(new WebChromeClient() {
+      @Override public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> callback, FileChooserParams params) {
+        if (filePathCallback != null) filePathCallback.onReceiveValue(null);
+        filePathCallback = callback;
+        Intent intent = params.createIntent();
+        try {
+          startActivityForResult(intent, FILE_CHOOSER_REQUEST_CODE);
+        } catch (Exception e) {
+          filePathCallback = null;
+          return false;
+        }
+        return true;
+      }
+    });
+
+    setContentView(web);
+    setupInsets();
+    configureFullscreen();
+    web.loadUrl(APP_URL);
+  }
+
+  private boolean handleUrl(String raw) {
+    if (raw == null || raw.isEmpty()) return false;
+    Uri u = Uri.parse(raw);
+    String scheme = u.getScheme();
+    if (scheme == null || "file".equalsIgnoreCase(scheme) || "about".equalsIgnoreCase(scheme)) return false;
+
+    // WyteLab remains inside the app. Only genuinely external destinations leave it.
+    if ("https".equalsIgnoreCase(scheme) && APP_HOST.equalsIgnoreCase(u.getHost())) return false;
+    if (!EXTERNAL_LINKS) return false;
+    try {
+      startActivity(new Intent(Intent.ACTION_VIEW, u));
+      return true;
+    } catch (Exception ignored) {
+      return false;
+    }
+  }
+
+  // Listens for the real window insets (status bar, gesture/nav bar, notch cutout)
+  // and mirrors them onto the page as CSS custom properties, in CSS px.
+  private void setupInsets() {
+    ViewCompat.setOnApplyWindowInsetsListener(web, (view, insets) -> {
+      Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
+      Insets cutout = insets.getInsets(WindowInsetsCompat.Type.displayCutout());
+      float density = getResources().getDisplayMetrics().density;
+      safeTop = Math.max(bars.top, cutout.top) / density;
+      safeBottom = Math.max(bars.bottom, cutout.bottom) / density;
+      safeLeft = Math.max(bars.left, cutout.left) / density;
+      safeRight = Math.max(bars.right, cutout.right) / density;
+      injectSafeAreaVars();
+      return insets;
+    });
+  }
+
+  private void injectSafeAreaVars() {
+    if (web == null) return;
+    String js = "document.documentElement.style.setProperty('--native-safe-top','" + safeTop + "px');"
+      + "document.documentElement.style.setProperty('--native-safe-bottom','" + safeBottom + "px');"
+      + "document.documentElement.style.setProperty('--native-safe-left','" + safeLeft + "px');"
+      + "document.documentElement.style.setProperty('--native-safe-right','" + safeRight + "px');";
+    web.evaluateJavascript(js, null);
+  }
+
+  private void configureFullscreen() {
+    // The app shell must not expose browser/system chrome during normal use.
+    // Modern replacement for the deprecated View.SYSTEM_UI_FLAG_* immersive flags,
+    // which on Android 11+ (especially gesture-nav devices) frequently failed to
+    // hide the bars and/or failed to report insets, leaving content clipped under
+    // the status bar and the tab bar pinned to the true edge under the gesture pill.
+    WindowInsetsControllerCompat controller = WindowCompat.getInsetsController(getWindow(), web);
+    if (controller == null) return;
+    controller.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+    controller.hide(WindowInsetsCompat.Type.systemBars());
+  }
+
+  @Override public void onWindowFocusChanged(boolean hasFocus) {
+    super.onWindowFocusChanged(hasFocus);
+    if (hasFocus) configureFullscreen();
+  }
+
+  @Override public void onResume() {
+    super.onResume();
+    if (web != null) web.onResume();
+    configureFullscreen();
+  }
+
+  @Override public void onPause() {
+    if (web != null) web.onPause();
+    super.onPause();
+  }
+
+  @Override public void onBackPressed() {
+    if (web != null && web.canGoBack()) web.goBack(); else super.onBackPressed();
+  }
+
+  @Override public void onActivityResult(int requestCode, int resultCode, Intent data) {
+    if (requestCode != FILE_CHOOSER_REQUEST_CODE) {
+      super.onActivityResult(requestCode, resultCode, data);
+      return;
+    }
+    if (filePathCallback == null) return;
+    Uri[] results = null;
+    if (resultCode == Activity.RESULT_OK && data != null) {
+      if (data.getClipData() != null) {
+        int count = data.getClipData().getItemCount();
+        results = new Uri[count];
+        for (int i = 0; i < count; i++) results[i] = data.getClipData().getItemAt(i).getUri();
+      } else if (data.getData() != null) {
+        results = new Uri[]{data.getData()};
+      }
+    }
+    filePathCallback.onReceiveValue(results);
+    filePathCallback = null;
+  }
+
+  public class Bridge {
+    @android.webkit.JavascriptInterface public void share(String t) {
+      if (!SHARE) return;
+      Intent i=new Intent(Intent.ACTION_SEND); i.setType("text/plain"); i.putExtra(Intent.EXTRA_TEXT,t);
+      startActivity(Intent.createChooser(i,"Share"));
+    }
+    @android.webkit.JavascriptInterface public void vibrate(int ms) {
+      if (!VIBRATION) return;
+      ((android.os.Vibrator)getSystemService(VIBRATOR_SERVICE)).vibrate(Math.max(1,Math.min(ms,2000)));
+    }
+    @android.webkit.JavascriptInterface public boolean hasFeature(String f) {
+      String x=f==null?"":f.toUpperCase(Locale.ROOT);
+      switch(x){
+        case "CAMERA_MIC":return CAMERA; case "LOCATION":return LOCATION; case "DOWNLOADS":return DOWNLOADS;
+        case "EXTERNAL_LINKS":return EXTERNAL_LINKS; case "FULLSCREEN":return true; case "SHARE":return SHARE;
+        case "VIBRATION":return VIBRATION; case "ORIENTATION":return ORIENTATION; case "BATTERY":return BATTERY;
+        case "NETWORK_STATUS":return NETWORK_STATUS; case "DEVICE_INFO":return DEVICE_INFO;
+        case "LOCAL_NOTIFICATIONS":return LOCAL_NOTIFICATIONS; case "BIOMETRIC":return BIOMETRIC;
+        case "SECURE_STORAGE":return SECURE_STORAGE; case "SCREEN_CAPTURE":return SCREEN_CAPTURE;
+        case "PICTURE_IN_PICTURE":return PICTURE_IN_PICTURE; case "DEEP_LINKS":return DEEP_LINKS; default:return false;
+      }
+    }
+  }
+}
