@@ -50,6 +50,49 @@ execFileSync(process.execPath,["--check","api/index.js"],{stdio:"inherit"});
   }
 }
 
+// esbuild only validates syntax — it happily transforms `import {Issue} from
+// "lucide-react"` even though lucide-react has never exported an icon named
+// "Issue". That exact typo (GitHubHub.jsx meant the "CircleDot" icon) passed
+// this script and every prior check clean, then broke the real Vercel/Rollup
+// build with "'Issue' is not exported by lucide-react". Cross-check every
+// `import {...} from "lucide-react"` in src/ against the actual named exports
+// of the installed package so a nonexistent icon name fails here instead of
+// failing production deploys.
+{
+  let lucideEntry;
+  try{ lucideEntry=require.resolve("lucide-react",{paths:[root]}); }catch{}
+  if(!lucideEntry){
+    console.warn("lucide-react not found (run npm install first) — skipping icon-export check. This does NOT mean every icon import is valid.");
+  } else {
+    const { pathToFileURL } = await import("url");
+    const lucideModule = await import(pathToFileURL(lucideEntry).href);
+    const exported = new Set(Object.keys(lucideModule));
+    const srcFiles=[];
+    (function walkSrc(dir){
+      for(const name of fs.readdirSync(dir)){
+        if(["node_modules","dist",".git"].includes(name)) continue;
+        const p=path.join(dir,name), st=fs.statSync(p);
+        if(st.isDirectory()) walkSrc(p);
+        else if(/\.(js|jsx)$/.test(name)) srcFiles.push(p);
+      }
+    })(path.join(root,"src"));
+    const missing=[];
+    const importRe=/import\s*\{([^}]*)\}\s*from\s*["']lucide-react["']/g;
+    for(const f of srcFiles){
+      const s=fs.readFileSync(f,"utf8");
+      let m;
+      while((m=importRe.exec(s))){
+        for(const raw of m[1].split(",")){
+          const name=raw.trim().split(/\s+as\s+/)[0].trim();
+          if(name && !exported.has(name)) missing.push(`${path.relative(root,f)}: "${name}" is not exported by lucide-react`);
+        }
+      }
+    }
+    if(missing.length){ console.error("lucide-react icon check FAILED:\n"+missing.join("\n")); process.exit(1); }
+    console.log(`lucide-react icon check: PASS (checked against installed package)`);
+  }
+}
+
 const api=fs.readFileSync(path.join(root,"api/index.js"),"utf8");
 const forbidden=[
   /console\.log\([^)]*(token|secret|password|cvv|card)/i,
