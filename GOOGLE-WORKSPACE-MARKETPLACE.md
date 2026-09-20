@@ -4,6 +4,8 @@
 WyteLab is submitted as a **Web app** with a focused Google Workspace integration through Google Drive. Users can optionally connect Drive and save a repository ZIP snapshot to their Drive. GitHub remains the source of truth for repositories.
 
 ### Google OAuth scope
+- `openid` — identifies the Google account used for the optional Drive connection.
+- `email` — identifies the connected Google account.
 - `https://www.googleapis.com/auth/drive.file` — only for files WyteLab creates/opens through the Drive integration.
 
 No Gmail, Calendar, Docs, Sheets, or full-Drive permissions are requested.
@@ -31,7 +33,7 @@ The Marketplace listing should identify WyteLab as the seller and display the to
 - App name, logo, support email and developer contact match what's shown in the app.
 - Application home page = the production URL of `index.html` (the pre-login screen now links Privacy Policy / Terms / About / Contact in its footer, which Google's review checks for).
 - Authorized domain = the production domain; `GOOGLE_REDIRECT_URI` must be an exact HTTPS match under it.
-- Privacy Policy URL = `/legal/privacy.html` (now discloses the `drive.file` scope, Limited Use compliance, and how to revoke access) and Terms of Service URL = `/legal/terms.html`.
+- Privacy Policy URL = the public production privacy-policy page (it must disclose `openid`, `email`, and `drive.file`, Limited Use compliance, and how to revoke access) and Terms of Service URL = the public production terms page.
 - Scopes requested must exactly match what's registered on the consent screen: `openid`, `email`, `https://www.googleapis.com/auth/drive.file`. `drive.file` is a **sensitive** (not restricted) scope — Google's standard OAuth verification is required before removing the "unverified app" warning; no CASA security assessment is required for this scope alone.
 - Workspace Marketplace SDK → Store Listing needs: 128x128+ app icon, at least one 1280x800 screenshot, short/long description, support link, category, and the same Privacy Policy/Terms URLs as above. These listing assets are submitted directly in Cloud Console and aren't part of this codebase.
 - Submit for verification once the above is filled in; expect it to take days, and don't change the requested scopes afterward without re-submitting.

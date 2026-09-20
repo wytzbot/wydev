@@ -341,8 +341,9 @@ async function googleDriveStart(req,res){
   res.setHeader("Set-Cookie",`wydev_google_state=${state}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=600`);return redirect(res,u.toString());
 }
 async function googleDriveCallback(req,res){
-  const q=new URL(req.url,origin(req)).searchParams,state=q.get("state"),code=q.get("code");if(!state)return json(res,400,{error:"Invalid Google OAuth state"});
+  const q=new URL(req.url,origin(req)).searchParams,state=q.get("state"),code=q.get("code"),oauthError=q.get("error");if(!state)return json(res,400,{error:"Invalid Google OAuth state"});
   const record=await consumeOAuthState(state);if(!record||record.provider!=="google-drive")return json(res,400,{error:"Invalid or expired Google OAuth state"});
+  if(oauthError)return redirect(res,`/?google=error&reason=${encodeURIComponent(oauthError)}#github`);
   if(!code)return json(res,400,{error:"Google did not return an authorization code"});
   const clientId=String(process.env.GOOGLE_CLIENT_ID||"").trim(),secret=String(process.env.GOOGLE_CLIENT_SECRET||"").trim(),redirectUri=process.env.GOOGLE_REDIRECT_URI||`${origin(req)}/api/auth/google/callback`;
   const tokenResp=await fetch("https://oauth2.googleapis.com/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({code,client_id:clientId,client_secret:secret,redirect_uri:redirectUri,grant_type:"authorization_code"})});
@@ -377,7 +378,17 @@ async function googleDriveDisconnect(req,res){
       const t=openCookie((snap.data()||{}).encrypted||"");
       const revokeToken=t?.refresh_token||t?.access_token;
       if(revokeToken){
-        try{await fetch("https://oauth2.googleapis.com/revoke",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({token:revokeToken})});}catch{}
+        let revokeResponse;
+        try{
+          revokeResponse=await fetch("https://oauth2.googleapis.com/revoke",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({token:revokeToken})});
+        }catch(err){
+          return json(res,502,{error:"Google could not be reached to revoke access. Your WyteLab connection was kept active; please try Disconnect again."});
+        }
+        // Google returns 200 for a successful revoke. A 400 can also mean the token
+        // is already invalid/revoked, so it is safe to remove our local credential.
+        if(!revokeResponse.ok && revokeResponse.status!==400){
+          return json(res,502,{error:`Google could not confirm access revocation (${revokeResponse.status}). Your WyteLab connection was kept active; please try again.`});
+        }
       }
       await db.collection("wydev_google_tokens").doc(String(s.id)).delete();
     }
