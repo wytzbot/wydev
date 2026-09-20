@@ -987,10 +987,34 @@ async function handler(req,res){
     const bm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/branches$/);
     if(bm&&req.method==="POST"){const owner=decodeURIComponent(bm[1]),repo=decodeURIComponent(bm[2]),b=await body(req);const name=String(b.name||"").trim();const from=String(b.from||"").trim();if(!/^[A-Za-z0-9._\/-]{1,120}$/.test(name)||name.startsWith("-")||name.endsWith("/"))return json(res,400,{error:"Invalid branch name"});const ref=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(from)}`);const created=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/refs`,{method:"POST",body:JSON.stringify({ref:`refs/heads/${name}`,sha:ref.object.sha})});return json(res,201,{name,sha:created.object.sha});}
     // Pull requests are free: the user's own GitHub token performs the operation.
+    // Merging an existing pull request has its own path (…/pulls/:number/merge)
+    // so it can never collide with the create/list route below, which used to
+    // sit at the exact same "/pulls" path as the GitHub Hub's merge action and
+    // silently swallowed it (see fix notes at this block).
+    const prMerge=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)\/merge$/);
+    if(prMerge&&req.method==="POST"){
+      const owner=decodeURIComponent(prMerge[1]),repo=decodeURIComponent(prMerge[2]),number=Number(prMerge[3]);
+      const b=await body(req),method=String(b.method||"merge");
+      const d=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${number}/merge`,{method:"PUT",body:JSON.stringify({merge_method:["merge","squash","rebase"].includes(method)?method:"merge",commit_title:b.commit_title?String(b.commit_title).slice(0,200):undefined,commit_message:b.commit_message?String(b.commit_message).slice(0,5000):undefined})});
+      return json(res,200,d);
+    }
     const prm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/pulls$/);
     if(prm){
       const owner=decodeURIComponent(prm[1]),repo=decodeURIComponent(prm[2]);
-      if(req.method==="GET")return json(res,200,await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?state=all&per_page=30`));
+      if(req.method==="GET"){
+        // Two different callers share this route: Project.jsx wants every PR
+        // (open+closed) as a raw array with no ?state, while the GitHub Hub
+        // screen passes ?state=open|closed|all and expects {pulls:[...]}.
+        // FIXED: this used to always ignore ?state and return the raw array,
+        // which — combined with the merge collision above — left the Hub's
+        // PR list permanently empty (reading a .pulls property off an array).
+        const stateParam=url.searchParams.get("state");
+        if(stateParam){
+          const data=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?state=${encodeURIComponent(stateParam)}&per_page=50`);
+          return json(res,200,{pulls:Array.isArray(data)?data:[]});
+        }
+        return json(res,200,await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?state=all&per_page=30`));
+      }
       if(req.method==="POST"){
         const b=await body(req);
         const title=String(b.title||"").trim(),head=String(b.head||"").trim(),base=String(b.base||"").trim();
@@ -1050,7 +1074,7 @@ async function handler(req,res){
     }
     // Mobile-friendly GitHub Hub: common issues/releases/PR/compare/star/fork
     // actions that otherwise require bouncing between multiple GitHub screens.
-    const ghHub=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/(issues|releases|compare|pulls|star|fork)$/);
+    const ghHub=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/(issues|releases|compare|star|fork)$/);
     if(ghHub){
       const owner=decodeURIComponent(ghHub[1]),repo=decodeURIComponent(ghHub[2]),kind=ghHub[3],base=`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
       if(kind==="issues"&&req.method==="GET"){
@@ -1074,14 +1098,6 @@ async function handler(req,res){
         if(!baseRef||!headRef)return json(res,400,{error:"Base and head refs are required"});
         const data=await gh(s.token,`${base}/compare/${encodeURIComponent(baseRef)}...${encodeURIComponent(headRef)}`);
         return json(res,200,{status:data.status,ahead_by:data.ahead_by,behind_by:data.behind_by,total_commits:data.total_commits,files:(data.files||[]).slice(0,100).map(f=>({filename:f.filename,status:f.status,additions:f.additions,deletions:f.deletions,changes:f.changes})),html_url:data.html_url});
-      }
-      if(kind==="pulls"&&req.method==="GET"){
-        const state=url.searchParams.get("state")||"open",data=await gh(s.token,`${base}/pulls?state=${encodeURIComponent(state)}&per_page=50`); return json(res,200,{pulls:Array.isArray(data)?data:[]});
-      }
-      if(kind==="pulls"&&req.method==="POST"){
-        const b=await body(req),number=Number(b.number),method=String(b.method||"merge"); if(!number)return json(res,400,{error:"Pull request number is required"});
-        const d=await gh(s.token,`${base}/pulls/${number}/merge`,{method:"PUT",body:JSON.stringify({merge_method:["merge","squash","rebase"].includes(method)?method:"merge",commit_title:b.commit_title?String(b.commit_title).slice(0,200):undefined,commit_message:b.commit_message?String(b.commit_message).slice(0,5000):undefined})});
-        return json(res,200,d);
       }
       if(kind==="star"&&req.method==="GET"){
         try{await gh(s.token,`${base}/subscription`,{timeoutMs:10000});}catch{}
