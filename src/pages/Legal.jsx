@@ -11,6 +11,7 @@ const CONTENT = {
       ["Payments", "Payments are processed through our payment provider. WyteLab does not intentionally store your full card number, CVV, or card PIN. Payment authorization data is handled through the payment flow provided by the payment processor."],
       ["Data use", "We use account and service data to operate WyteLab, prevent abuse, troubleshoot failures, maintain security, and provide requested features. We do not sell your private repository content."],
       ["Your responsibility", "Keep your GitHub account and devices secure. Review the permissions shown during GitHub authorization and revoke access from GitHub when you no longer want WyteLab connected."],
+      ["Google Drive (optional)", "If you connect Google Drive, WyteLab only requests the drive.file scope, which lets it access solely the files it creates for you (exported repository ZIPs) — never your existing Drive files, Gmail, Calendar, Docs, or Sheets. This data is handled under the Google API Services User Data Policy, including its Limited Use requirements, and you can disconnect it any time from Developer Hub or from myaccount.google.com/permissions."],
     ]
   },
   terms: {

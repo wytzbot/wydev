@@ -34,7 +34,9 @@ export const github={
  star:(o,r)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/star`,{method:"PUT"}),
  unstar:(o,r)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/star`,{method:"DELETE"}),
  fork:(o,r,name)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/fork`,{method:"POST",body:JSON.stringify({name})}),
- driveExport:(o,r,b)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/drive-export`,{method:"POST",body:JSON.stringify({branch:b})})
+ driveExport:(o,r,b)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/drive-export`,{method:"POST",body:JSON.stringify({branch:b})}),
+ googleDriveStatus:()=>api("/auth/google/status"),
+ googleDriveDisconnect:()=>api("/auth/google/disconnect",{method:"POST"})
 };
 export function githubErrorMessage(status,body=""){
   if(status===401) return "GitHub authentication expired. Sign in again.";

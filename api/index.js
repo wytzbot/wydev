@@ -360,6 +360,31 @@ async function getGoogleDriveToken(userId){
   const d=await r.json();if(!r.ok||!d.access_token)throw Object.assign(new Error("Google Drive authorization expired. Reconnect Google Drive."),{status:401,code:"GOOGLE_DRIVE_RECONNECT"});
   const next={...t,access_token:d.access_token,expires_at:Date.now()+Number(d.expires_in||3600)*1000};await db.collection("wydev_google_tokens").doc(String(userId)).set({encrypted:seal(next),updatedAt:Date.now()},{merge:true});return next.access_token;
 }
+async function googleDriveStatus(req,res){
+  const s=requireSession(req,res);if(!s)return;
+  if(!db)return json(res,200,{connected:false});
+  const snap=await db.collection("wydev_google_tokens").doc(String(s.id)).get();
+  return json(res,200,{connected:snap.exists&&!!(snap.data()||{}).encrypted});
+}
+// Lets a user revoke WyteLab's Google Drive access from inside the app itself,
+// not only from myaccount.google.com — required so people have a real control
+// over the connected-app grant, and expected by Marketplace/OAuth reviewers.
+async function googleDriveDisconnect(req,res){
+  const s=requireSession(req,res);if(!s)return;
+  if(db){
+    const snap=await db.collection("wydev_google_tokens").doc(String(s.id)).get();
+    if(snap.exists){
+      const t=openCookie((snap.data()||{}).encrypted||"");
+      const revokeToken=t?.refresh_token||t?.access_token;
+      if(revokeToken){
+        try{await fetch("https://oauth2.googleapis.com/revoke",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({token:revokeToken})});}catch{}
+      }
+      await db.collection("wydev_google_tokens").doc(String(s.id)).delete();
+    }
+  }
+  return json(res,200,{connected:false});
+}
+
 async function exportRepoToDrive(s,owner,repo,branch){
   const token=await getGoogleDriveToken(s.id),ref=String(branch||"").trim()||"HEAD";
   const r=await fetch(`${GH}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/zipball/${encodeURIComponent(ref)}`,{headers:ghHeaders(s.token),redirect:"follow"});
@@ -727,6 +752,8 @@ async function handler(req,res){
     if(p==="/auth/github/callback"&&req.method==="GET")return oauthCallback(req,res);
     if(p==="/auth/google"&&req.method==="GET")return googleDriveStart(req,res);
     if(p==="/auth/google/callback"&&req.method==="GET")return googleDriveCallback(req,res);
+    if(p==="/auth/google/status"&&req.method==="GET")return googleDriveStatus(req,res);
+    if(p==="/auth/google/disconnect"&&req.method==="POST")return googleDriveDisconnect(req,res);
     if(p==="/auth/me"&&req.method==="GET"){const s=session(req);return json(res,200,s?{user:{id:s.id,login:s.login,name:s.name,avatar:s.avatar}}:{user:null});}
     if(p==="/auth/logout"&&req.method==="POST"){clearSession(res);return json(res,200,{ok:true});}
 
