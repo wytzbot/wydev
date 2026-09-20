@@ -58,11 +58,3 @@ npm run build:source
 ## Product boundary
 
 WyteLab does not host repositories, deploy projects, replace GitHub, or let AI modify code. GitHub remains the source of truth; Firebase stores only required application state; AI diagnoses problems; Flutterwave controls Pro billing.
-
-## Shared Flutterwave webhook update
-
-The `/api/billing/webhook` endpoint now supports both products on the same merchant webhook:
-- `WYDEV-*` → existing WyteLab entitlement flow.
-- `WYBLOG-*` → WyBlog Firebase project, using separate `WYBLOG_FIREBASE_*` Admin credentials.
-
-The webhook validates Flutterwave's current `verif-hash` secret header, re-fetches the charge from the v4 API, checks reference/amount/currency/customer, and is idempotent.

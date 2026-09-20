@@ -22,7 +22,19 @@ export const github={
  cancelRun:(o,r,id,force=false)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/actions/runs/${encodeURIComponent(id)}/${force?"force-cancel":"cancel"}`,{method:"POST"}),
  workflows:(o,r)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/actions/workflows`),
  dispatchWorkflow:(o,r,id,p)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/actions/workflows/${encodeURIComponent(id)}/dispatch`,{method:"POST",body:JSON.stringify(p)}),
- licenseTemplate:(key)=>api(`/github/licenses/${encodeURIComponent(key)}`)
+ licenseTemplate:(key)=>api(`/github/licenses/${encodeURIComponent(key)}`),
+ issues:(o,r,state="open")=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/issues?state=${encodeURIComponent(state)}`),
+ createIssue:(o,r,p)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/issues`,{method:"POST",body:JSON.stringify(p)}),
+ releases:(o,r)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/releases`),
+ createRelease:(o,r,p)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/releases`,{method:"POST",body:JSON.stringify(p)}),
+ compare:(o,r,b,h)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/compare?base=${encodeURIComponent(b)}&head=${encodeURIComponent(h)}`),
+ pullList:(o,r,state="open")=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/pulls?state=${encodeURIComponent(state)}`),
+ mergePull:(o,r,n,p)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/pulls`,{method:"POST",body:JSON.stringify({number:n,...p})}),
+ starStatus:(o,r)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/star`),
+ star:(o,r)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/star`,{method:"PUT"}),
+ unstar:(o,r)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/star`,{method:"DELETE"}),
+ fork:(o,r,name)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/fork`,{method:"POST",body:JSON.stringify({name})}),
+ driveExport:(o,r,b)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/drive-export`,{method:"POST",body:JSON.stringify({branch:b})})
 };
 export function githubErrorMessage(status,body=""){
   if(status===401) return "GitHub authentication expired. Sign in again.";

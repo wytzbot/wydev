@@ -61,6 +61,8 @@ const webhookHandler=api.slice(api.indexOf('"/billing/webhook"'), api.indexOf('"
 if(/memory\.transactions\.get/.test(webhookHandler)) throw new Error("Webhook handler reads the in-memory transaction map directly instead of the durable getTransaction() helper — this breaks across serverless cold starts/instances even when Firestore is configured.");
 if(!/await getTransaction\(/.test(webhookHandler)) throw new Error("Webhook handler must look up the transaction via the durable getTransaction() helper");
 
+if(/tree:\s*EMPTY_TREE_SHA|:\s*"4b825dc642cb6eb9a060e54bf8d69288fbee4904"/.test(api)) throw new Error("Commit endpoint references Git's well-known empty-tree SHA directly instead of creating it via POST /git/trees first — GitHub 404s on objects that were never actually created in this specific repo, even ones with a universal content hash.");
+
 const app=fs.readFileSync(path.join(root,"src/App.jsx"),"utf8");
 const billing=fs.readFileSync(path.join(root,"src/pages/Billing.jsx"),"utf8");
 if(!/github\s*\.\s*session\s*\(\)/.test(app)) throw new Error("Auth session check missing");

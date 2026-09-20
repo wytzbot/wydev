@@ -17,6 +17,7 @@ import SearchPage from "./pages/Search";
 import LegalPage from "./pages/Legal";
 import Offline from "./pages/Offline";
 import Actions from "./pages/Actions";
+import GitHubHub from "./pages/GitHubHub";
 import Logs from "./pages/Logs";
 import { github } from "./github";
 import { loadState, saveState } from "./storage";
@@ -42,6 +43,7 @@ export default function App() {
   // stale closure that still thinks `repos`/`user` look like they did the
   // moment the listener was installed.
   const loadReposRef = useRef(null);
+  const lastForegroundRefreshRef = useRef(0);
 
   const loadRepos = async ({ silent = false } = {}) => {
     if (!user?.id) return [];
@@ -71,19 +73,16 @@ export default function App() {
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const d = await github.repos();
-          // A successful response containing zero repositories is only allowed
-          // to replace an empty cache. If we already know repositories, keep
-          // them when the server marks the response as a protected snapshot.
+          // An explicit non-stale empty response is authoritative: the user may
+          // genuinely have deleted every repository. Only keep the local snapshot
+          // when the server explicitly marks its response stale (for example when
+          // GitHub temporarily failed and the server fell back to its cache).
           const nextRepos = Array.isArray(d.repos) ? d.repos : [];
           const nextLimit = { total: d.total, limit: d.limit, plan: d.plan };
-          if (!nextRepos.length && cachedRepos.length && !d.stale) {
-            if (attempt < 2) {
-              await new Promise(r => setTimeout(r, 800 * (attempt + 1)));
-              continue;
-            }
+          if (d.stale && cachedRepos.length) {
             setRepos(cachedRepos);
-            setRepoLimit(nextLimit);
-            if (!silent) toastInfo("GitHub returned no repositories. Your last known repositories are still available.");
+            setRepoLimit(cached?.repoLimit || nextLimit);
+            if (!silent) toastInfo("GitHub could not refresh right now. Your last known repositories are still available.");
             return cachedRepos;
           }
           setRepos(nextRepos);
@@ -150,18 +149,43 @@ export default function App() {
   useEffect(() => {
     const root = document.getElementById("root");
     if (!root) return;
+    let repaintTimer = null;
     const forceRepaint = () => {
-      root.style.transform = "translateZ(0)";
-      requestAnimationFrame(() => requestAnimationFrame(() => { root.style.transform = ""; }));
+      if (document.visibilityState !== "visible") return;
+      // Force a real layout + compositor update. Some Android WebViews resume
+      // with a stale bitmap even though React state/DOM is already correct.
+      // Toggling a compositor layer and reading offsetHeight prevents the
+      // repaint from depending on the next user tap.
+      root.style.willChange = "transform";
+      root.style.transform = "translate3d(0,0,0)";
+      void root.offsetHeight;
+      requestAnimationFrame(() => {
+        root.style.transform = "translate3d(0,0,0) scale(1.00001)";
+        void root.offsetHeight;
+        requestAnimationFrame(() => {
+          root.style.transform = "";
+          root.style.willChange = "";
+        });
+      });
     };
-    const onVisible = () => { if (document.visibilityState === "visible") forceRepaint(); };
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      forceRepaint();
+      window.clearTimeout(repaintTimer);
+      repaintTimer = window.setTimeout(forceRepaint, 180);
+    };
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("pageshow", onVisible);
     window.addEventListener("focus", onVisible);
+    // Hybrid Android shells do not always emit visibilitychange when their
+    // activity resumes, so also listen for the common WebView resume event.
+    window.addEventListener("resume", onVisible);
     return () => {
+      window.clearTimeout(repaintTimer);
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("pageshow", onVisible);
       window.removeEventListener("focus", onVisible);
+      window.removeEventListener("resume", onVisible);
     };
   }, []);
 
@@ -175,14 +199,30 @@ export default function App() {
   // happens to trigger a re-render.
   useEffect(() => {
     if (!user) return;
-    const refresh = () => { if (document.visibilityState === "visible") loadReposRef.current?.({ silent: true }); };
+    let retryTimer = null;
+    const refresh = () => {
+      if (document.visibilityState !== "visible") return;
+      const now = Date.now();
+      if (now - lastForegroundRefreshRef.current < 2500) return;
+      lastForegroundRefreshRef.current = now;
+      loadReposRef.current?.({ silent: true });
+      // GitHub session/network state can take a moment to wake after an
+      // Android WebView resume; retry once shortly after foregrounding.
+      window.clearTimeout(retryTimer);
+      retryTimer = window.setTimeout(() => loadReposRef.current?.({ silent: true }), 1200);
+    };
     document.addEventListener("visibilitychange", refresh);
     window.addEventListener("pageshow", refresh);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("resume", refresh);
     window.addEventListener("online", refresh);
-    const timer = window.setInterval(refresh, 60000);
+    const timer = window.setInterval(refresh, 120000);
     return () => {
+      window.clearTimeout(retryTimer);
       document.removeEventListener("visibilitychange", refresh);
       window.removeEventListener("pageshow", refresh);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("resume", refresh);
       window.removeEventListener("online", refresh);
       window.clearInterval(timer);
     };
@@ -307,6 +347,7 @@ export default function App() {
         {page === "repos" && <Repositories repos={repos} repoLimit={repoLimit} loading={reposLoading} onOpen={open} onCreate={createRepo} onRefresh={loadRepos} />}
         {page === "changes" && <Changes changes={workingChanges} onSelect={openFile} onDiscard={working?.discard} />}
         {page === "actions" && <Actions repos={repos} />}
+        {page === "github" && <GitHubHub repos={repos} />}
         {page === "logs" && <Logs />}
         {page === "settings" && <Settings />}
         {page === "billing" && <Billing />}

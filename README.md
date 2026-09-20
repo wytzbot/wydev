@@ -267,9 +267,9 @@ For production, use Firestore so state survives Vercel instance changes.
 The current application uses records such as:
 
 ```text
-wydev_entitlements/{githubUserId}
-wydev_transactions/{reference}
-wydev_ai_usage/{githubUserId_YYYY-MM-DD}
+wytelab_entitlements/{githubUserId}
+wytelab_transactions/{reference}
+wytelab_ai_usage/{githubUserId_YYYY-MM-DD}
 ```
 
 Recommended Firestore access pattern:
@@ -350,7 +350,7 @@ WyteLab is built as a mobile-first web application and includes:
 The repository also contains an Android WebView shell under:
 
 ```text
-.wydev/android-shell/
+.wytelab/android-shell/
 ```
 
 If distributing an Android build, test the generated APK on physical devices before release. WebView, Android lifecycle, notification permissions, OAuth redirects, file selection, and payment redirects should all be tested independently from desktop-browser testing.
@@ -376,7 +376,7 @@ If distributing an Android build, test the generated APK on physical devices bef
 │   ├── notifications.js      # FCM/browser notification support
 │   ├── storage.js            # Local persistence
 │   └── ...
-├── .wydev/
+├── .wytelab/
 │   └── android-shell/        # Android WebView shell
 ├── package.json
 └── vite.config.js

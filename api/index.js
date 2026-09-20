@@ -229,6 +229,16 @@ async function gh(token,path,opts={}){
     if(callerSignal)callerSignal.removeEventListener("abort",abortCaller);
   }
 }
+// GitHub can 404 when reading the tree of a commit whose tree is genuinely
+// empty (e.g. a commit that deleted every file), even though the commit and
+// branch are both real — a documented GitHub API quirk (confirmed by
+// GitHub's own community forum), not a sign that anything is actually
+// missing. Treat that specific case as a real, empty tree instead of
+// surfacing a confusing "Not Found" for what is a legitimate repo state.
+async function readTreeOrEmpty(token,path){
+  try{ return await gh(token,path); }
+  catch(e){ if(e.status===404) return {tree:[]}; throw e; }
+}
 async function getGitHubRepo(token,owner,name){
   try{return await gh(token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`,{timeoutMs:25000});}
   catch(e){if(Number(e?.status)===404)return null;throw e;}
@@ -313,6 +323,51 @@ async function oauthCallback(req,res){
   setSession(res,{token:token.access_token,refresh_token:token.refresh_token||null,login:me.login,id:me.id,name:me.name,avatar:me.avatar_url,scope:token.scope});
   clearOAuthCookie(res);
   redirect(res,"/");
+}
+
+
+async function rememberGoogleState(state,userId,redirectUri){
+  const key=oauthStateKey(state),record={createdAt:Date.now(),redirectUri:String(redirectUri||""),userId:String(userId),provider:"google-drive"};
+  memory.oauthStates.set(key,record); if(db)await db.collection("wydev_oauth_states").doc(key).set(record);
+}
+async function googleDriveStart(req,res){
+  const s=requireSession(req,res);if(!s)return;
+  const clientId=String(process.env.GOOGLE_CLIENT_ID||"").trim(),secret=String(process.env.GOOGLE_CLIENT_SECRET||"").trim();
+  if(!clientId||!secret)return json(res,503,{error:"Google Drive integration is not configured yet. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in Vercel."});
+  const state=b64(crypto.randomBytes(32)),redirectUri=process.env.GOOGLE_REDIRECT_URI||`${origin(req)}/api/auth/google/callback`;
+  await rememberGoogleState(state,s.id,redirectUri);
+  const u=new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  u.searchParams.set("client_id",clientId);u.searchParams.set("redirect_uri",redirectUri);u.searchParams.set("response_type","code");u.searchParams.set("access_type","offline");u.searchParams.set("prompt","consent");u.searchParams.set("scope","openid email https://www.googleapis.com/auth/drive.file");u.searchParams.set("state",state);
+  res.setHeader("Set-Cookie",`wydev_google_state=${state}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=600`);return redirect(res,u.toString());
+}
+async function googleDriveCallback(req,res){
+  const q=new URL(req.url,origin(req)).searchParams,state=q.get("state"),code=q.get("code");if(!state)return json(res,400,{error:"Invalid Google OAuth state"});
+  const record=await consumeOAuthState(state);if(!record||record.provider!=="google-drive")return json(res,400,{error:"Invalid or expired Google OAuth state"});
+  if(!code)return json(res,400,{error:"Google did not return an authorization code"});
+  const clientId=String(process.env.GOOGLE_CLIENT_ID||"").trim(),secret=String(process.env.GOOGLE_CLIENT_SECRET||"").trim(),redirectUri=process.env.GOOGLE_REDIRECT_URI||`${origin(req)}/api/auth/google/callback`;
+  const tokenResp=await fetch("https://oauth2.googleapis.com/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({code,client_id:clientId,client_secret:secret,redirect_uri:redirectUri,grant_type:"authorization_code"})});
+  const token=await tokenResp.json();if(!tokenResp.ok||!token.access_token)return json(res,502,{error:"Google token exchange failed"});
+  if(db){await db.collection("wydev_google_tokens").doc(String(record.userId)).set({encrypted:seal({access_token:token.access_token,refresh_token:token.refresh_token||null,expires_at:Date.now()+Number(token.expires_in||3600)*1000,scope:token.scope||"https://www.googleapis.com/auth/drive.file"}),updatedAt:Date.now()},{merge:true});}
+  res.setHeader("Set-Cookie","wydev_google_state=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0");return redirect(res,"/?google=connected#github");
+}
+async function getGoogleDriveToken(userId){
+  if(!db)throw Object.assign(new Error("Google Drive requires Firebase persistence."),{status:503,code:"GOOGLE_DRIVE_NOT_CONFIGURED"});
+  const snap=await db.collection("wydev_google_tokens").doc(String(userId)).get();if(!snap.exists)throw Object.assign(new Error("Connect Google Drive first."),{status:401,code:"GOOGLE_DRIVE_NOT_CONNECTED"});
+  const row=snap.data()||{},t=openCookie(row.encrypted||"");if(!t)throw Object.assign(new Error("Google Drive connection expired. Reconnect Google Drive."),{status:401,code:"GOOGLE_DRIVE_RECONNECT"});
+  if(Number(t.expires_at||0)>Date.now()+60000)return t.access_token;
+  if(!t.refresh_token)throw Object.assign(new Error("Google Drive authorization expired. Reconnect Google Drive."),{status:401,code:"GOOGLE_DRIVE_RECONNECT"});
+  const r=await fetch("https://oauth2.googleapis.com/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({client_id:String(process.env.GOOGLE_CLIENT_ID||""),client_secret:String(process.env.GOOGLE_CLIENT_SECRET||""),refresh_token:t.refresh_token,grant_type:"refresh_token"})});
+  const d=await r.json();if(!r.ok||!d.access_token)throw Object.assign(new Error("Google Drive authorization expired. Reconnect Google Drive."),{status:401,code:"GOOGLE_DRIVE_RECONNECT"});
+  const next={...t,access_token:d.access_token,expires_at:Date.now()+Number(d.expires_in||3600)*1000};await db.collection("wydev_google_tokens").doc(String(userId)).set({encrypted:seal(next),updatedAt:Date.now()},{merge:true});return next.access_token;
+}
+async function exportRepoToDrive(s,owner,repo,branch){
+  const token=await getGoogleDriveToken(s.id),ref=String(branch||"").trim()||"HEAD";
+  const r=await fetch(`${GH}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/zipball/${encodeURIComponent(ref)}`,{headers:ghHeaders(s.token),redirect:"follow"});
+  if(!r.ok)throw Object.assign(new Error(`GitHub could not create the repository archive (${r.status}).`),{status:r.status});
+  const bytes=Buffer.from(await r.arrayBuffer());if(bytes.length>25*1024*1024)throw Object.assign(new Error("Repository archive is larger than 25 MB. Open GitHub to download the full archive."),{status:413,code:"DRIVE_EXPORT_TOO_LARGE"});const boundary=`----WyteLab${crypto.randomBytes(8).toString("hex")}`,meta=JSON.stringify({name:`${repo}-${ref.replace(/[^a-zA-Z0-9._-]/g,"_")}.zip`,mimeType:"application/zip"});
+  const pre=Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: application/zip\r\n\r\n`),post=Buffer.from(`\r\n--${boundary}--\r\n`);
+  const up=await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink",{method:"POST",headers:{Authorization:`Bearer ${token}`,"Content-Type":`multipart/related; boundary=${boundary}`},body:Buffer.concat([pre,bytes,post])});
+  const d=await up.json();if(!up.ok)throw Object.assign(new Error(d?.error?.message||`Google Drive upload failed (${up.status})`),{status:up.status});return d;
 }
 
 function limitKey(s){return `${s.id||s.login}:${new Date().toISOString().slice(0,10)}`;}
@@ -594,7 +649,7 @@ async function renewDue(){
         await setEntitlement(e.id,{status:"past_due",renewalPending:false,renewalStartedAt:null,renewalReference:null,updatedAt:Date.now(),lastRenewalReference:reference});
       }
       processed++;
-    }catch{await setEntitlement(e.id,{status:"past_due",updatedAt:Date.now()});}
+    }catch{await setEntitlement(e.id,{status:"past_due",renewalPending:false,renewalStartedAt:null,renewalReference:null,updatedAt:Date.now()});}
   }
   return processed;
 }
@@ -663,58 +718,15 @@ async function verifyCharge(s,id,reference){
   }
   return {active:false,status:x.status||"pending"};
 }
-let wyblogDb=null;
-function getWyBlogDb(){
-  if(wyblogDb)return wyblogDb;
-  try{
-    const admin=require("firebase-admin");
-    let app;
-    try{app=admin.app("wyblog")}catch{
-      const jsonCred=String(process.env.WYBLOG_FIREBASE_SERVICE_ACCOUNT_JSON||"").trim();
-      let cred=null;
-      if(jsonCred)cred=admin.credential.cert(JSON.parse(jsonCred));
-      else if(process.env.WYBLOG_FIREBASE_PROJECT_ID&&process.env.WYBLOG_FIREBASE_CLIENT_EMAIL&&process.env.WYBLOG_FIREBASE_PRIVATE_KEY){
-        cred=admin.credential.cert({projectId:process.env.WYBLOG_FIREBASE_PROJECT_ID,clientEmail:process.env.WYBLOG_FIREBASE_CLIENT_EMAIL,privateKey:String(process.env.WYBLOG_FIREBASE_PRIVATE_KEY).replace(/\\n/g,"\n")});
-      }
-      if(!cred)return null;
-      app=admin.initializeApp({credential:cred},"wyblog");
-    }
-    wyblogDb=app.firestore(); return wyblogDb;
-  }catch(e){console.error("WyBlog Firebase Admin initialization failed:",e?.message||e);return null}
-}
-async function handleWyBlogWebhookCharge(tx){
-  const ref=String(tx.reference||"").trim();
-  if(!ref.startsWith("WYBLOG-"))return false;
-  const bdb=getWyBlogDb(); if(!bdb)return true;
-  const uid=String(tx?.meta?.userId||"").trim(); if(!uid)return true;
-  const txRef=bdb.doc(`users/${uid}/billingTransactions/${ref}`);
-  const snap=await txRef.get();
-  const record=snap.exists?(snap.data()||{}):{};
-  const renewal=ref.startsWith("WYBLOG-RENEW-")||Boolean(record.renewal);
-  const d=await flw(`/charges/${encodeURIComponent(String(tx.id))}`),x=d.data||{};
-  const amount=Number(record.amount||0),currency=String(record.currency||"");
-  const customerId=String(record.customerId||"");
-  const valid=x.status==="succeeded"&&String(x.reference||"")===ref&&amount>0&&Number(x.amount)===amount&&String(x.currency||"")===currency&&(!customerId||String(x.customer?.id||x.customer_id||"")===customerId);
-  if(record.status==="succeeded")return true;
-  await txRef.set({reference:ref,userId:uid,status:x.status||"pending",chargeId:String(tx.id),updatedAt:new Date()},{merge:true});
-  if(valid){
-    const userRef=bdb.doc(`users/${uid}`),userSnap=await userRef.get(),billing=userSnap.data()?.billing||{};
-    const activeUntil=billing.activeUntil?.toDate?.()?.getTime?.()||new Date(billing.activeUntil||0).getTime()||0;
-    const base=renewal?Math.max(Date.now(),activeUntil):Date.now();
-    const until=base+31*24*60*60*1000;
-    await userRef.set({billing:{status:"active",plan:"pro",currency,amount,transactionId:String(x.id),activeUntil:new Date(until),updatedAt:new Date()}},{merge:true});
-    await txRef.set({status:"succeeded",completedAt:new Date()},{merge:true});
-    await bdb.doc(`users/${uid}/notifications/pro-${ref}`).set({title:renewal?"WyBlog Pro renewed 🎉":"WyBlog Pro activated 🎉",body:renewal?"Your WyBlog Pro subscription was renewed successfully.":"Your WyBlog Pro subscription is now active.",type:renewal?"payment-renewal":"payment",createdAt:new Date(),read:false},{merge:true});
-  }
-  return true;
-}
-function validWebhook(req,raw){const sig=req.headers["verif-hash"]||req.headers["verifi-hash"];const secret=String(process.env.FLW_WEBHOOK_SECRET_HASH||"");return Boolean(sig&&secret&&String(sig)===secret);}
+function validWebhook(req,raw){const sig=req.headers["flutterwave-signature"];if(!sig||!process.env.FLW_WEBHOOK_SECRET_HASH)return false;const h=crypto.createHmac("sha256",process.env.FLW_WEBHOOK_SECRET_HASH).update(raw).digest("base64");const a=Buffer.from(h),b=Buffer.from(String(sig));return a.length===b.length&&crypto.timingSafeEqual(a,b);}
 
 async function handler(req,res){
   try{
     const rawUrl=String(req.url||"/"), original=String(req.headers?.["x-original-url"]||req.headers?.["x-vercel-original-url"]||req.headers?.["x-forwarded-uri"]||rawUrl), url=new URL(original,origin(req)); let p=url.pathname.replace(/^\/api(?:\/index\.js)?/,"")||"/"; p=p.replace(/\/+$/,"")||"/";
     if(p==="/auth/github"&&req.method==="GET")return oauthStart(req,res);
     if(p==="/auth/github/callback"&&req.method==="GET")return oauthCallback(req,res);
+    if(p==="/auth/google"&&req.method==="GET")return googleDriveStart(req,res);
+    if(p==="/auth/google/callback"&&req.method==="GET")return googleDriveCallback(req,res);
     if(p==="/auth/me"&&req.method==="GET"){const s=session(req);return json(res,200,s?{user:{id:s.id,login:s.login,name:s.name,avatar:s.avatar}}:{user:null});}
     if(p==="/auth/logout"&&req.method==="POST"){clearSession(res);return json(res,200,{ok:true});}
 
@@ -739,19 +751,21 @@ async function handler(req,res){
       const tx=data.data||{};
       if(tx.id){
         try{
-          const shared=await handleWyBlogWebhookCharge(tx);
-          if(shared&&String(tx.reference||"").startsWith("WYBLOG-"))return json(res,200,{received:true,product:"wyblog"});
           const d=await flw(`/charges/${encodeURIComponent(tx.id)}`),x=d.data||{};
           const ref=String(x.reference||tx.reference||"").trim();
           const rec=ref?await getTransaction(ref):null;
           if(rec&&String(rec.chargeId||tx.id)===String(tx.id)&&ref===String(rec.reference||ref)){
-            if(String(rec.status||"").toLowerCase()==="succeeded")return json(res,200,{received:true,duplicate:true});
+            if(String(rec.status||"").toLowerCase()==="succeeded") return json(res,200,{received:true,duplicate:true});
             await setTransaction(ref,{status:x.status||"pending",chargeId:tx.id,updatedAt:Date.now()});
-            if(x.status==="succeeded"&&String(x.reference||"")===ref&&Number(x.amount)===Number(rec.amount)&&String(x.currency||"")===String(rec.currency)){
-              const existing=await getEntitlement(rec.userId);const base=rec.renewal?Math.max(Date.now(),Number(existing?.expiresAt)||0):Date.now();const expiresAt=addOneMonth(base);
+            if(x.status==="succeeded"&&String(x.reference||"")===ref&&Number(x.amount)===Number(rec.amount)&&String(x.currency)===String(rec.currency)){
+              const existing=await getEntitlement(rec.userId);
+              const base=rec.renewal?Math.max(Date.now(),Number(existing?.expiresAt)||0):Date.now();
+              const expiresAt=addOneMonth(base);
               await setEntitlement(rec.userId,{status:"active",expiresAt,renewAt:expiresAt,reference:ref,customerId:rec.customerId,paymentMethodId:rec.paymentMethodId,currency:rec.currency,updatedAt:Date.now(),renewalPending:false});
               try{await sendPushOnce(rec.userId,`pro-unlocked:${ref}`,rec.renewal?"WyteLab Pro renewed 🎉":"WyteLab Pro unlocked 🎉",rec.renewal?"Your Pro subscription was renewed successfully.":"Your Pro subscription is active.",{type:rec.renewal?"pro_renewed":"pro_unlocked"})}catch{}
-            }else if(rec.renewal&&["failed","cancelled","canceled","voided"].includes(String(x.status||"").toLowerCase()))await setEntitlement(rec.userId,{status:"past_due",renewalPending:false,lastRenewalReference:ref,updatedAt:Date.now()});
+            } else if(rec.renewal&&["failed","cancelled","canceled","voided"].includes(String(x.status||"").toLowerCase())){
+              await setEntitlement(rec.userId,{status:"past_due",renewalPending:false,lastRenewalReference:ref,updatedAt:Date.now()});
+            }
           }
         }catch{}
       }
@@ -996,6 +1010,60 @@ async function handler(req,res){
       await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/workflows/${encodeURIComponent(workflowId)}/dispatches`,{method:"POST",body:JSON.stringify({ref,inputs})});
       return json(res,200,{ok:true});
     }
+    // Mobile-friendly GitHub Hub: common issues/releases/PR/compare/star/fork
+    // actions that otherwise require bouncing between multiple GitHub screens.
+    const ghHub=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/(issues|releases|compare|pulls|star|fork)$/);
+    if(ghHub){
+      const owner=decodeURIComponent(ghHub[1]),repo=decodeURIComponent(ghHub[2]),kind=ghHub[3],base=`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+      if(kind==="issues"&&req.method==="GET"){
+        const state=url.searchParams.get("state")||"open",data=await gh(s.token,`${base}/issues?state=${encodeURIComponent(state)}&per_page=50`);
+        return json(res,200,{issues:(Array.isArray(data)?data:[]).filter(x=>!x.pull_request)});
+      }
+      if(kind==="issues"&&req.method==="POST"){
+        const b=await body(req),title=String(b.title||"").trim(); if(!title)return json(res,400,{error:"Issue title is required"});
+        const payload={title}; if(b.body)payload.body=String(b.body).slice(0,10000); if(Array.isArray(b.labels))payload.labels=b.labels.slice(0,20).map(String);
+        return json(res,201,await gh(s.token,`${base}/issues`,{method:"POST",body:JSON.stringify(payload)}));
+      }
+      if(kind==="releases"&&req.method==="GET"){
+        const data=await gh(s.token,`${base}/releases?per_page=30`); return json(res,200,{releases:Array.isArray(data)?data:[]});
+      }
+      if(kind==="releases"&&req.method==="POST"){
+        const b=await body(req),tag=String(b.tag_name||"").trim(),name=String(b.name||tag).trim(); if(!tag)return json(res,400,{error:"Release tag is required"});
+        return json(res,201,await gh(s.token,`${base}/releases`,{method:"POST",body:JSON.stringify({tag_name:tag,name,body:String(b.body||"").slice(0,10000),draft:!!b.draft,prerelease:!!b.prerelease,target_commitish:String(b.target_commitish||"").trim()||undefined})}));
+      }
+      if(kind==="compare"&&req.method==="GET"){
+        const baseRef=String(url.searchParams.get("base")||"").trim(),headRef=String(url.searchParams.get("head")||"").trim();
+        if(!baseRef||!headRef)return json(res,400,{error:"Base and head refs are required"});
+        const data=await gh(s.token,`${base}/compare/${encodeURIComponent(baseRef)}...${encodeURIComponent(headRef)}`);
+        return json(res,200,{status:data.status,ahead_by:data.ahead_by,behind_by:data.behind_by,total_commits:data.total_commits,files:(data.files||[]).slice(0,100).map(f=>({filename:f.filename,status:f.status,additions:f.additions,deletions:f.deletions,changes:f.changes})),html_url:data.html_url});
+      }
+      if(kind==="pulls"&&req.method==="GET"){
+        const state=url.searchParams.get("state")||"open",data=await gh(s.token,`${base}/pulls?state=${encodeURIComponent(state)}&per_page=50`); return json(res,200,{pulls:Array.isArray(data)?data:[]});
+      }
+      if(kind==="pulls"&&req.method==="POST"){
+        const b=await body(req),number=Number(b.number),method=String(b.method||"merge"); if(!number)return json(res,400,{error:"Pull request number is required"});
+        const d=await gh(s.token,`${base}/pulls/${number}/merge`,{method:"PUT",body:JSON.stringify({merge_method:["merge","squash","rebase"].includes(method)?method:"merge",commit_title:b.commit_title?String(b.commit_title).slice(0,200):undefined,commit_message:b.commit_message?String(b.commit_message).slice(0,5000):undefined})});
+        return json(res,200,d);
+      }
+      if(kind==="star"&&req.method==="GET"){
+        try{await gh(s.token,`${base}/subscription`,{timeoutMs:10000});}catch{}
+        const d=await fetch(`https://api.github.com/user/starred/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,{headers:ghHeaders(s.token)}); return json(res,200,{starred:d.status===204});
+      }
+      if(kind==="star"&&(req.method==="PUT"||req.method==="DELETE")){
+        const r=await fetch(`https://api.github.com/user/starred/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,{method:req.method,headers:ghHeaders(s.token)});
+        if(!r.ok)throw Object.assign(new Error(`GitHub star action failed (${r.status})`),{status:r.status});
+        return json(res,200,{starred:req.method==="PUT"});
+      }
+      if(kind==="fork"&&req.method==="POST"){
+        const d=await gh(s.token,`${base}/forks`,{method:"POST",body:JSON.stringify({name:String((await body(req)).name||"").trim()||undefined})});
+        return json(res,202,{fork:d});
+      }
+    }
+    const driveExport=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/drive-export$/);
+    if(driveExport&&req.method==="POST"){
+      const owner=decodeURIComponent(driveExport[1]),repo=decodeURIComponent(driveExport[2]),b=await body(req);
+      const d=await exportRepoToDrive(s,owner,repo,String(b.branch||""));return json(res,200,{ok:true,file:d});
+    }
     const safePath=(value)=>{const x=String(value||"").replaceAll("\\","/").replace(/^\/+/,"");const parts=x.split("/").filter(Boolean);if(!x||parts.some(v=>v===".."||v==="."))throw Object.assign(new Error("Invalid repository path."),{status:400});return parts.join("/")};
      const hasOAuthScope=(session,scope)=>String(session?.scope||"").split(/[ ,]+/).filter(Boolean).includes(scope);
      const isWorkflowPath=(path)=>String(path||"").replaceAll("\\","/").toLowerCase().startsWith(".github/workflows/");
@@ -1092,8 +1160,8 @@ async function handler(req,res){
       // same elevated OAuth scope the normal commit path requires.
       const currentCommit=await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/commits/${currentSha}`);
       const [targetTree,currentTree]=await Promise.all([
-        gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/trees/${targetCommit.tree.sha}?recursive=1`),
-        gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/trees/${currentCommit.tree.sha}?recursive=1`)
+        readTreeOrEmpty(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/trees/${targetCommit.tree.sha}?recursive=1`),
+        readTreeOrEmpty(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/trees/${currentCommit.tree.sha}?recursive=1`)
       ]);
       const touchesWorkflow=[...(targetTree.tree||[]),...(currentTree.tree||[])].some(x=>x.type==="blob"&&isWorkflowPath(x.path));
       if(touchesWorkflow&&!hasOAuthScope(s,"workflow")) return json(res,403,{error:"GitHub requires the workflow permission to revert changes touching .github/workflows/. Sign out and sign in again so WyteLab can request the GitHub Actions workflow permission.",code:"GITHUB_WORKFLOW_SCOPE_REQUIRED"});
@@ -1213,7 +1281,7 @@ async function handler(req,res){
       if(!emptyRepo&&expectedSha&&initialSha!==expectedSha){
         const baseByPath=new Map(baseFiles.map(x=>[String(x?.path||""),String(x?.sha||"")]));
         const latestCommit=await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/commits/${initialSha}`);
-        const latestTree=await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/trees/${latestCommit.tree.sha}?recursive=1`);
+        const latestTree=await readTreeOrEmpty(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/trees/${latestCommit.tree.sha}?recursive=1`);
         const remoteByPath=new Map((latestTree.tree||[]).filter(x=>x.type==="blob").map(x=>[String(x.path),String(x.sha||"")]));
         const conflicts=[];
         for(const c of changes){
@@ -1266,19 +1334,32 @@ async function handler(req,res){
       // — it doesn't need to be created — and GitHub's Trees API has rejected
       // both ways of asking it to build one explicitly here (an empty `tree`
       // array with no base_tree, and a base_tree diffed down to nothing).
-      // Skip tree creation entirely for this case and use the constant
-      // directly when creating the commit below.
-      const EMPTY_TREE_SHA="4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-      // Only use Git's canonical empty tree when the local deletion set covers
-      // every file that was actually loaded as the base. A single-file delete
-      // must be applied on top of the existing tree; otherwise one deletion
-      // would accidentally erase the whole repository.
+      //
+      // FIXED: that "both ways rejected it" note turned out to describe the
+      // base_tree-diffed-to-nothing attempt only. The actual bug was
+      // elsewhere: this used to skip tree creation and reference Git's
+      // well-known empty-tree SHA (4b825dc642cb6eb9a060e54bf8d69288fbee4904)
+      // directly, assuming that because the SHA is a universal constant it
+      // must already "exist" in every repository. It doesn't — GitHub's Git
+      // Data API scopes objects per repository, so a SHA that content-hashes
+      // to the same value elsewhere still has to actually be created here
+      // before anything can reference it. Referencing it unrequested is
+      // exactly what produced "Not Found" when committing a delete-everything
+      // change. GitHub's own docs confirm the fix: POST /git/trees with an
+      // empty `tree` array and no `base_tree` creates a real empty-tree
+      // object in this repo (returning that same well-known SHA), which can
+      // then be safely used as a commit's tree.
+      //
+      // Only take this path when the local deletion set covers every file
+      // that was actually loaded as the base. A single-file delete must be
+      // applied on top of the existing tree; otherwise one deletion would
+      // accidentally erase the whole repository.
       const basePaths=new Set(baseFiles.map(x=>String(x?.path||"")).filter(Boolean));
       const deletedPaths=new Set(changes.filter(c=>c.status==="D").map(c=>String(c.path||"")).filter(Boolean));
       const allLoadedFilesDeleted=!emptyRepo&&basePaths.size>0&&[...basePaths].every(path=>deletedPaths.has(path));
       const allDeletions=allLoadedFilesDeleted&&changes.every((c)=>c.status==="D");
       const treeSha=allDeletions
-        ? EMPTY_TREE_SHA
+        ? (await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/trees`,{method:"POST",body:JSON.stringify({tree:[]})})).sha
         : (await gh(s.token,`/repos/${encodedOwner}/${encodedRepo}/git/trees`,{method:"POST",body:JSON.stringify(emptyRepo?{tree:entries}:{base_tree:head.tree.sha,tree:entries})})).sha;
       // Re-check the branch after blob creation and immediately before making
       // the tree/commit. ZIP uploads can take long enough for another GitHub

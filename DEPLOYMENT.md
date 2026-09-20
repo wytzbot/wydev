@@ -76,11 +76,3 @@ Keep the Gemini model configurable through `GEMINI_MODEL`. The application uses 
 10. Test on a physical Android phone.
 11. Rotate sandbox secrets before production.
 12. Add the production OAuth callback before switching GitHub/Flutterwave to production.
-
-
-# Shared Flutterwave webhook: WyBlog Firebase Admin credentials
-WYBLOG_FIREBASE_SERVICE_ACCOUNT_JSON=
-# Or use the three variables below instead of the JSON credential:
-WYBLOG_FIREBASE_PROJECT_ID=
-WYBLOG_FIREBASE_CLIENT_EMAIL=
-WYBLOG_FIREBASE_PRIVATE_KEY=

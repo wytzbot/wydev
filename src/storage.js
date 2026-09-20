@@ -2,7 +2,7 @@ import {API_BASE_URL} from "./config";
 import {fetchTimeout} from "./net";
 const PREFIX="wydev:";
 export const loadState=(key,fallback)=>{try{return JSON.parse(localStorage.getItem(PREFIX+key)) ?? fallback}catch{return fallback}};
-export const saveState=(key,value)=>localStorage.setItem(PREFIX+key,JSON.stringify(value));
+export const saveState=(key,value)=>{try{localStorage.setItem(PREFIX+key,JSON.stringify(value));return true}catch{return false}};
 
 const preferenceKeys=["fontSize","wordWrap","reducedMotion","density"];
 export const getLocalPreferences=()=>Object.fromEntries(preferenceKeys.map(k=>[k,loadState(k,undefined)]).filter(([,v])=>v!==undefined));

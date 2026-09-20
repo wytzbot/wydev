@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Copy, FilePlus, FolderPlus, ExternalLink, Upload, Trash2, Move, GitBranch, RefreshCw, ChevronDown, Loader2, Undo2, History, Download, FileText } from "lucide-react";
+import { Copy, FilePlus, FolderPlus, ExternalLink, Upload, Trash2, Move, GitBranch, RefreshCw, ChevronDown, Loader2, Undo2, History, Download, FileText, Share2 } from "lucide-react";
 import CodeEditor from "../components/CodeEditor";
 import FileExplorer from "../components/FileExplorer";
 import CommitPanel from "../components/CommitPanel";
@@ -8,6 +8,7 @@ import { github } from "../github";
 import { billing } from "../billing";
 import { buildChangeSet, renameFolder } from "../git";
 import { copy, saveFile, openExternal } from "../utils";
+import { nativeShareText } from "../wybuildBridge";
 import { loadState, saveState } from "../storage";
 import { shouldSkipUpload, readUploadedFile, isZipFile, extractZipEntries, stripCommonRoot, safeRepoPath } from "../files";
 import { promptDialog, confirmDialog } from "../dialog";
@@ -767,6 +768,14 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
     }
   };
 
+  const shareRepo = async () => {
+    const ok = await nativeShareText(`${repo.full_name} on GitHub — ${repo.html_url}`);
+    if (!ok) {
+      await copy(repo.html_url);
+      toastSuccess("Repository link copied");
+    }
+  };
+
   return (
     <div className="project">
       <header className="projectHeader">
@@ -796,6 +805,9 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
         <a href={repo.html_url} onClick={(e) => { e.preventDefault(); openExternal(repo.html_url); }} rel="noreferrer" title="Open on GitHub">
           <ExternalLink size={17} /> GitHub
         </a>
+        <button onClick={shareRepo} title="Share this repository">
+          <Share2 size={16} />
+        </button>
       </header>
       <div className="projectTools">
         <AIDiagnostics repo={repo} branch={branch} fileIndex={fileIndex} files={files} fetchFileContent={fetchFileContent} />
