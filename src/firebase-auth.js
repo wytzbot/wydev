@@ -1,7 +1,6 @@
 import {getApp, getApps, initializeApp} from "firebase/app";
 import {getAuth, GoogleAuthProvider, getRedirectResult, onAuthStateChanged, signInWithPopup, signInWithRedirect, signOut} from "firebase/auth";
 import {FIREBASE_CONFIG} from "./firebase-config";
-import {isNativeApp} from "./mobileBridge";
 
 let authInstance = null;
 
@@ -29,20 +28,30 @@ function googleProvider(){
 // turn a Google email address into a GitHub credential.
 export async function signInWithGoogle(){
   const auth=firebaseAuth();
-  // Android/iOS wrappers (including Median) are WebViews. Google popup
-  // windows are not reliable there: the popup can open outside the WebView
-  // and Firebase reports auth/popup-closed-by-user even when the user did
-  // not intentionally cancel. Use the redirect flow directly in native apps.
-  if(isNativeApp()) return signInWithRedirect(auth, googleProvider());
 
+  // Web-only authentication: use the Firebase Web SDK in a normal browser.
+  // Popup is preferred because it keeps the user on the current page. If the
+  // browser blocks popups or does not support the popup environment, use
+  // Firebase's browser redirect flow as the web fallback. No Median/native
+  // authentication bridge is used here.
   try{
     return await signInWithPopup(auth, googleProvider());
   }catch(e){
     const code=String(e?.code||"");
+    // These errors mean the popup could not complete in the current
+    // browser environment. Switch to the full-page Firebase redirect flow
+    // instead of making the user retry the same incompatible popup.
+    //
+    // popup-closed-by-user is included deliberately: some browsers/WebViews
+    // report a popup that they cannot keep open with this code. A real
+    // cancellation is still harmless—the redirect flow simply asks the user
+    // to continue with Google on the next page.
     if([
       "auth/popup-blocked",
+      "auth/popup-closed-by-user",
       "auth/operation-not-supported-in-this-environment",
-      "auth/cancelled-popup-request"
+      "auth/web-storage-unsupported",
+      "auth/internal-error"
     ].includes(code)){
       return signInWithRedirect(auth, googleProvider());
     }

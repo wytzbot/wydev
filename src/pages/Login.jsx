@@ -7,10 +7,10 @@ import {consumeGoogleRedirect, currentFirebaseUser, signInWithGoogle} from "../f
 
 const googleMessages={
   "auth/unauthorized-domain":"Google sign-in is not enabled for this website domain yet. Add the WyteLab domain under Firebase Authentication → Settings → Authorized domains.",
-  "auth/operation-not-supported-in-this-environment":"Google sign-in is not available in this browser environment. Open WyteLab in a normal browser and try again.",
+  "auth/operation-not-supported-in-this-environment":"Google popup sign-in is not supported here. WyteLab will use the secure redirect sign-in instead.",
   "auth/network-request-failed":"Google sign-in could not reach Firebase. Check your connection and try again.",
-  "auth/popup-blocked":"The browser blocked Google sign-in. Please try again.",
-  "auth/popup-closed-by-user":"Google sign-in was closed before authentication completed. Please try again.",
+  "auth/popup-blocked":"The browser blocked the Google popup. WyteLab will use the secure redirect sign-in instead.",
+  "auth/popup-closed-by-user":"The Google popup could not complete. WyteLab will use the secure redirect sign-in instead.",
   "auth/cancelled-popup-request":"Google sign-in was cancelled. Please try again.",
   "auth/redirect-cancelled-by-user":"Google sign-in was cancelled. Please try again.",
   "FIREBASE_AUTH_NOT_CONFIGURED":"Google sign-in is not configured on the WyteLab server yet.",
@@ -81,7 +81,7 @@ export default function Login({githubRequired=false}){
   return <main className="login"><div className="loginBox">
     <div className="brand">WyteLab</div>
     <h1>{githubRequired?"Connect GitHub to continue.":"Code on the move."}</h1>
-    <p>{githubRequired?"Your Google account is signed in. Connect GitHub so WyteLab can access the repositories you choose.":"Edit, organize, diagnose and push GitHub projects from your phone."}</p>
+    <p>{githubRequired?"Your Google account is signed in. Connect GitHub so WyteLab can access the repositories you choose.":"Edit, organize, diagnose and push GitHub projects from your browser."}</p>
     {githubRequired ? (
       <button className="primary wide" disabled={busy} onClick={connectGitHub}><Github size={19}/>{busy?"Opening GitHub…":"Connect GitHub"}</button>
     ) : <>
