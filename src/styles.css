@@ -129,6 +129,9 @@ body.menu-open,body.modal-open{overflow:hidden}
 .loginBox h1{font-size:26px;margin:12px 0 8px}
 .loginBox p,.loginBox small{color:var(--muted)}
 .loginLegal{display:flex;flex-wrap:wrap;gap:10px 14px;margin-top:18px;padding-top:14px;border-top:1px solid var(--line)}
+.loginBox .wide{width:100%;display:flex;align-items:center;justify-content:center;gap:9px;margin-top:9px}
+.loginBox .secondary{background:var(--panel2);border:1px solid var(--line);color:var(--text);padding:10px 14px;border-radius:7px}
+.loginSignout{margin-top:8px!important}
 .loginLegal a{color:var(--muted);font-size:12.5px;text-decoration:none}
 .loginLegal a:hover{color:var(--text);text-decoration:underline}
 .wide{width:100%;display:flex;align-items:center;justify-content:center;gap:9px;margin:24px 0;min-height:46px}

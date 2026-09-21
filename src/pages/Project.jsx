@@ -78,12 +78,22 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
   // "Last modified" times are tracked here too, in one place, so every action
   // that goes through applyFiles gets a timestamp for free: unchanged content
   // keeps its existing time, anything new or changed gets "now".
-  const applyFiles = (next, label) => {
+  const sameContent = (a, b) => {
+    if (a === b) return true;
+    const aBin = a && typeof a === "object" && a.__wydevBinary === true;
+    const bBin = b && typeof b === "object" && b.__wydevBinary === true;
+    return Boolean(aBin && bBin && a.base64 === b.base64);
+  };
+  const applyFiles = (next, label, forcedChanged = null) => {
     setHistory((h) => [...(plan === "pro" ? h : h.slice(-19)), { label, snapshot: files, selectedBefore: selected, timesSnapshot: times }]);
     setTimes((t) => {
       const now = Date.now();
       const nt = {};
-      for (const p of Object.keys(next)) nt[p] = files[p] !== undefined && files[p] === next[p] && t[p] ? t[p] : now;
+      for (const p of Object.keys(next)) {
+        const unchanged = files[p] !== undefined && sameContent(files[p], next[p]);
+        const explicitlyChanged = forcedChanged?.has(p) === true;
+        nt[p] = !explicitlyChanged && unchanged && t[p] ? t[p] : now;
+      }
       return nt;
     });
     setFiles(next);
@@ -154,8 +164,30 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
       setBaseSha(t.baseSha);
       setSelected("");
       setHistory([]);
-      setTimes({});
-      setLoadedAt(Date.now());
+      const fallbackLoadedAt = Date.now();
+      setTimes(Object.fromEntries(index.map((x) => [x.path, fallbackLoadedAt])));
+      setLoadedAt(fallbackLoadedAt);
+      // GitHub's tree API exposes blob SHAs but not per-file modification dates.
+      // Fetch the latest commit touching each path so the explorer shows the
+      // real remote modification time, including after a fresh reload. Keep the
+      // content load independent from this metadata lookup so a rate limit or
+      // transient history error never prevents the repository from opening.
+      try {
+        const batches = [];
+        for (let i = 0; i < index.length; i += 200) batches.push(index.slice(i, i + 200).map((x) => x.path));
+        for (const paths of batches) {
+          try {
+            const meta = await github.fileTimes(repo.owner.login, repo.name, branch, paths);
+            if (generation !== loadGeneration.current) return t;
+            if (meta?.times && Object.keys(meta.times).length) {
+              setTimes((prev) => ({ ...prev, ...meta.times }));
+            }
+          } catch (_) {
+            // Remote timestamp metadata is supplemental; preserve the fallback
+            // or cached values rather than making the repository unusable.
+          }
+        }
+      } catch (_) {}
       if(!silent) toastSuccess(`Repository loaded · ${index.length} files ready`);
       return t;
     } catch (e) {
@@ -452,50 +484,100 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
     setRenamePreview(null);
     toastSuccess(`Folder renamed to ${renamePreview.to}`);
   };
+  // GitHub's file index contains the Git blob SHA even when a file has not
+  // been opened yet. Comparing an uploaded file against that SHA lets us tell
+  // the difference between "re-uploaded the same ZIP" and "this file actually
+  // changed" without downloading every remote file first.
+  const gitBlobSha = async (value) => {
+    let bytes;
+    if (value && typeof value === "object" && value.__wydevBinary) {
+      const raw = atob(value.base64 || "");
+      bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    } else {
+      bytes = new TextEncoder().encode(String(value ?? ""));
+    }
+    const header = new TextEncoder().encode(`blob ${bytes.byteLength}\0`);
+    const all = new Uint8Array(header.byteLength + bytes.byteLength);
+    all.set(header);
+    all.set(bytes, header.byteLength);
+    const digest = await crypto.subtle.digest("SHA-1", all);
+    return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, "0")).join("");
+  };
+
   const uploadFiles = async (eOrFiles) => {
     const picked = eOrFiles?.target?.files || eOrFiles;
     if (!picked?.length) return;
     setBusy(true);
     try {
       const next = { ...files };
-      let added = 0,
-        skippedBinary = 0;
+      const uploadedPaths = new Set();
+      const changedPaths = new Set();
+      let added = 0, changed = 0, unchanged = 0;
       for (const f of picked) {
         if (isZipFile(f)) {
           const { files: entries } = await extractZipEntries(f);
           for (const entry of stripCommonRoot(entries)) {
             if (!entry.path || shouldSkipUpload(entry.path)) continue;
-            next[entry.path] = entry.content;
-            added++;
+            const path = entry.path;
+            const previous = next[path];
+            const previousIndex = fileIndex.find(x => x.path === path);
+            const contentSameLocally = previous !== undefined && sameContent(previous, entry.content);
+            const remoteSha = previousIndex?.sha || "";
+            const uploadedSha = remoteSha && !contentSameLocally ? await gitBlobSha(entry.content) : "";
+            const contentSameRemotely = Boolean(remoteSha && uploadedSha === remoteSha);
+            next[path] = entry.content;
+            uploadedPaths.add(path);
+            if (contentSameLocally || contentSameRemotely) {
+              unchanged++;
+            } else if (previous === undefined && !previousIndex) {
+              added++;
+              changedPaths.add(path);
+            } else {
+              changed++;
+              changedPaths.add(path);
+            }
           }
         } else {
           if (shouldSkipUpload(f.name)) continue;
           const base = f.name.split("/").pop();
           // A same-named file already living in a folder should be updated in
-          // place, not dropped as a new copy at the root — this is what makes
-          // "upload a newer version" actually replace the old one when the
-          // browser only gives us the bare filename (no folder path) for a
-          // plain, non-zip file selection.
+          // place, not dropped as a new copy at the root. Use a ZIP when exact
+          // folder placement matters.
           const matches = Object.keys(next).filter((p) => p.split("/").pop() === base);
           const targetPath = matches.length === 1 ? matches[0] : safeRepoPath(f.name);
           if (matches.length > 1)
             toastInfo(`Multiple files named "${base}" exist — updated ${targetPath}. Use a ZIP for exact placement if that's the wrong one.`);
-          next[targetPath] = await readUploadedFile(f, targetPath);
-          added++;
+          const content = await readUploadedFile(f, targetPath);
+          const previous = next[targetPath];
+          const previousIndex = fileIndex.find(x => x.path === targetPath);
+          const contentSameLocally = previous !== undefined && sameContent(previous, content);
+          const remoteSha = previousIndex?.sha || "";
+          const uploadedSha = remoteSha && !contentSameLocally ? await gitBlobSha(content) : "";
+          const contentSameRemotely = Boolean(remoteSha && uploadedSha === remoteSha);
+          next[targetPath] = content;
+          uploadedPaths.add(targetPath);
+          if (contentSameLocally || contentSameRemotely) unchanged++;
+          else if (previous === undefined && !previousIndex) { added++; changedPaths.add(targetPath); }
+          else { changed++; changedPaths.add(targetPath); }
         }
       }
-      applyFiles(next, `Uploaded ${added} file${added === 1 ? "" : "s"}`);
+      applyFiles(next, `Uploaded ${added + changed} file${added + changed === 1 ? "" : "s"}`, changedPaths);
       // Add newly uploaded paths to the visible index immediately. This keeps
       // local ZIP imports visible even while the remote repository is still
-      // being refreshed.
+      // being refreshed. Existing GitHub SHAs are deliberately retained so
+      // another identical ZIP can be recognized as unchanged.
       setFileIndex(prev => {
-        const byPath=new Map(prev.map(x=>[x.path,x]));
-        for(const path of Object.keys(next)){
-          if(!byPath.has(path)) byPath.set(path,{path,sha:null,size:typeof next[path]==="string"?next[path].length:(next[path]?.size||0),local:true});
+        const byPath = new Map(prev.map(x => [x.path, x]));
+        for (const path of uploadedPaths) {
+          if (!byPath.has(path)) byPath.set(path, { path, sha: null, size: typeof next[path] === "string" ? next[path].length : (next[path]?.size || 0), local: true });
+          else byPath.set(path, { ...byPath.get(path), size: typeof next[path] === "string" ? next[path].length : (next[path]?.size || 0) });
         }
         return [...byPath.values()];
       });
-      toastSuccess(`${added} file${added === 1 ? "" : "s"} staged locally`);
+      if (changed) toastSuccess(`${changed} changed file${changed === 1 ? "" : "s"} staged${added ? ` · ${added} new` : ""}${unchanged ? ` · ${unchanged} unchanged` : ""}`);
+      else if (added) toastSuccess(`${added} new file${added === 1 ? "" : "s"} staged${unchanged ? ` · ${unchanged} unchanged` : ""}`);
+      else toastInfo(`No file content changed · ${unchanged} file${unchanged === 1 ? " was" : "s were"} unchanged`);
     } catch (err) {
       toastError(err.message);
     } finally {

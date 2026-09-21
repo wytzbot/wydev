@@ -285,6 +285,7 @@ export default function App() {
   if (offline) return <Offline />;
   if (loading) return <div className="loading">Loading WyteLab…</div>;
   if (!user) return <Login />;
+  if (!user.githubConnected) return <Login githubRequired />;
 
   const open = (r) => {
     if (r) {

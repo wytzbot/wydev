@@ -20,10 +20,11 @@ Configure the production project:
 - Data Access: register exactly these scopes:
   - `openid`
   - `email`
+  - `profile`
   - `https://www.googleapis.com/auth/drive.file`
-- OAuth client: create a Web application client and add the exact production callback URL.
+- OAuth client: create a Web application client and add the exact production callback URL. Google SSO and Drive use the same `/api/auth/google/callback` callback and distinguish their one-time OAuth state server-side.
 - Authorized domain: add the production domain used by the app and public legal pages.
-- Verification: submit the OAuth app for verification as required. Provide the requested scope justifications and demo video/materials if Google asks for them.
+- Verification: because `drive.file` is currently a non-sensitive scope, do not claim sensitive-scope verification is required solely because of `drive.file`. Complete any brand/basic OAuth verification or other verification Google actually requests for the project.
 
 ## 4. Google Workspace Marketplace SDK
 In the same Cloud project:
@@ -31,7 +32,7 @@ In the same Cloud project:
 - App Configuration: choose **Public** visibility if the goal is a public Marketplace listing. This visibility choice cannot simply be changed later, so verify it before saving.
 - App integration: select **Web app** because WyteLab is a production web application.
 - Universal navigation URL: use the real production WyteLab web-app URL, not a staging page.
-- OAuth scopes: enter the same three scopes listed above.
+- OAuth scopes: enter the same four scopes listed above.
 - Developer information: use the real solo-developer/developer-business name, website, support contact, and EEA trader/non-trader status.
 
 ## 5. Store listing
@@ -49,14 +50,19 @@ Prepare:
 
 ## 6. Reviewer access
 Because Pro functionality exists:
-- Create a dedicated reviewer/test account or another review-safe access mechanism.
-- Give the reviewer the minimum access needed to test paid features without requiring them to pay.
-- Put the credentials/instructions only in the official review/test-access field, never in this repository or ZIP.
-- Include exact steps for: GitHub sign-in, repository selection, Google Drive connection, ZIP export, Drive disconnect, and Pro feature testing.
+- The app now supports a server-side review-only Pro allowlist. Set `REVIEWER_PRO_ACCESS=true` in production only while arranging/submitting review, then set it back to `false` after review if desired.
+- Put the reviewer's Google email in `REVIEWER_EMAILS` and/or their GitHub username in `REVIEWER_GITHUB_LOGINS`. These values stay server-side and are never shipped to the browser.
+- The allowlist does not create a fake payment or alter normal billing records; it only exposes Pro entitlements to the explicitly configured reviewer identity.
+- Do not hard-code reviewer credentials into the ZIP or source repository.
+- In the Marketplace review-access field, give the reviewer the exact sign-in path and the configured test identity/instructions.
+- Include exact steps for: Google SSO, Connect GitHub, repository selection, Google Drive connection, ZIP export, Drive disconnect, and Pro feature testing.
 
 ## 7. Final production test
 Before submitting:
-- Sign in with GitHub.
+- Sign in with Google SSO.
+- Connect GitHub and confirm repository access.
+- Sign out and verify the session ends.
+- Sign in with GitHub directly and confirm the normal GitHub-first path still works.
 - Open a private repository you are authorized to use.
 - Edit and commit a harmless test change.
 - Test repository actions and error states.
@@ -78,3 +84,7 @@ Before submitting:
 6. Test the draft listing.
 7. Submit the public listing for Marketplace review.
 8. Do not change OAuth scopes after submission unless you are prepared to repeat the relevant verification/review steps.
+
+## 9. Important Drive-policy note
+- Keep the Drive feature as a user-requested export/copy workflow, not automatic backup or background synchronization. Google Workspace user-data policy restricts using Drive scopes for backup of app/project content. The listing and UI should describe the action as an explicit user-initiated export of a repository ZIP.
+- Do not describe WyteLab as a Drive backup/sync service.

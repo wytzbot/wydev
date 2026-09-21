@@ -1,7 +1,7 @@
 {
   "name": "WyteLab",
-  "release": "production-hardened-final",
-  "date": "2026-08-26",
+  "release": "marketplace-ready-sso-reviewer",
+  "date": "2026-09-21",
   "vercel_serverless_functions": 1,
   "github_source_of_truth": true,
   "firebase_persistence": true,
@@ -11,12 +11,15 @@
   "source_checks": "PASS",
   "vite_build": "NOT_VERIFIABLE_IN_SANDBOX",
   "notes": [
-    "Vite executable in this sandbox returns Permission denied.",
-    "Run npm ci && npm run build:source in Vercel/CI to validate the production bundle."
+    "Google SSO uses openid, email and profile; GitHub remains required for repository access.",
+    "Reviewer Pro access is controlled by server-only REVIEWER_PRO_ACCESS/REVIEWER_EMAILS/REVIEWER_GITHUB_LOGINS environment variables.",
+    "Full Vite build could not be verified here because npm install timed out; run the production build in Vercel/CI."
   ],
   "pro_pricing": {
     "NGN": 7500,
     "USD": 7
   },
-  "nigerian_default_currency": "NGN"
+  "nigerian_default_currency": "NGN",
+  "google_sso": true,
+  "reviewer_pro_allowlist": true
 }

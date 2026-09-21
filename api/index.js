@@ -189,7 +189,14 @@ function openCookie(v){try{const [iv,enc,tag]=v.split(".");const d=crypto.create
 function setSession(res,user){const value=seal(user);res.setHeader("Set-Cookie",`wydev_session=${encodeURIComponent(value)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800`);}
 function clearSession(res){res.setHeader("Set-Cookie","wydev_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0");}
 function session(req){const c=parseCookies(req).wydev_session;return c?openCookie(c):null;}
-function requireSession(req,res){const s=session(req);if(!s?.token||!s?.login){json(res,401,{error:"GitHub authentication required"});return null}return s;}
+function requireSession(req,res){const s=session(req);if(!s?.token||!s?.login){json(res,401,{error:"GitHub authentication required",code:"GITHUB_REQUIRED"});return null}return s;}
+function reviewerList(name){return String(process.env[name]||"").split(",").map(x=>x.trim().toLowerCase()).filter(Boolean);}
+function hasReviewerProAccess(s){
+  if(String(process.env.REVIEWER_PRO_ACCESS||"").toLowerCase()!=="true")return false;
+  const emails=reviewerList("REVIEWER_EMAILS"),logins=reviewerList("REVIEWER_GITHUB_LOGINS");
+  const email=String(s?.email||"").trim().toLowerCase(),login=String(s?.login||"").trim().toLowerCase();
+  return (email&&s?.emailVerified!==false&&emails.includes(email))||(login&&logins.includes(login));
+}
 function ghHeaders(token){return{"Authorization":`Bearer ${token}`,"Accept":"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28","User-Agent":"WyteLab-Mobile-Editor"};}
 async function gh(token,path,opts={}){
   const controller=new AbortController();
@@ -256,8 +263,8 @@ async function recoverCreatedRepo(token,owner,name){
 
 function origin(req){const proto=(req.headers["x-forwarded-proto"]||"https").split(",")[0];const host=req.headers["x-forwarded-host"]||req.headers.host;return `${proto}://${host}`;}
 function oauthStateKey(state){return crypto.createHash("sha256").update(String(state)).digest("hex");}
-async function rememberOAuthState(state,redirectUri){
-  const key=oauthStateKey(state),record={createdAt:Date.now(),redirectUri:String(redirectUri||"")};
+async function rememberOAuthState(state,redirectUri,extra={}){
+  const key=oauthStateKey(state),record={createdAt:Date.now(),redirectUri:String(redirectUri||""),...extra};
   memory.oauthStates.set(key,record);
   // Firestore makes the state available across Vercel serverless instances.
   // This is the cookie-loss fallback needed by Android WebViews/custom tabs.
@@ -286,7 +293,7 @@ function clearOAuthCookie(res){
 async function oauthStart(req,res){
   const state=b64(crypto.randomBytes(32));
   const redirectUri=process.env.GITHUB_REDIRECT_URI||`${origin(req)}/api/auth/github/callback`;
-  await rememberOAuthState(state,redirectUri);
+  await rememberOAuthState(state,redirectUri,{provider:"github"});
   const url=new URL("https://github.com/login/oauth/authorize");
   url.searchParams.set("client_id",process.env.GITHUB_CLIENT_ID||"");
   url.searchParams.set("redirect_uri",redirectUri);
@@ -313,6 +320,7 @@ async function oauthCallback(req,res){
     stateRecord=await consumeOAuthState(state);
   }
   if(!stateRecord&&!cookieMatches)return json(res,400,{error:"Invalid OAuth state",code:"OAUTH_STATE_MISSING"});
+  if(stateRecord&&!(["github","github-link"].includes(stateRecord.provider)))return json(res,400,{error:"Invalid OAuth provider state",code:"OAUTH_PROVIDER_MISMATCH"});
   if(!code){clearOAuthCookie(res);return json(res,400,{error:"GitHub did not return an authorization code"});}
   const redirectUri=process.env.GITHUB_REDIRECT_URI||`${origin(req)}/api/auth/github/callback`;
   if(stateRecord?.redirectUri&&String(stateRecord.redirectUri)!==String(redirectUri)){clearOAuthCookie(res);return json(res,400,{error:"Invalid OAuth redirect"});}
@@ -320,7 +328,23 @@ async function oauthCallback(req,res){
   const token=await r.json();
   if(!r.ok||!token.access_token){clearOAuthCookie(res);return json(res,502,{error:"GitHub token exchange failed"});}
   const me=await gh(token.access_token,"/user");
-  setSession(res,{token:token.access_token,refresh_token:token.refresh_token||null,login:me.login,id:me.id,name:me.name,avatar:me.avatar_url,scope:token.scope});
+  const linkMode=stateRecord?.provider==="github-link";
+  if(linkMode){
+    const current=session(req);
+    if(!current?.id)return json(res,401,{error:"Your sign-in session expired. Start again.",code:"SESSION_EXPIRED"});
+    if(stateRecord?.userId&&String(stateRecord.userId)!==String(current.id))return json(res,403,{error:"The GitHub connection request belongs to a different sign-in session.",code:"OAUTH_SESSION_MISMATCH"});
+    if(current.googleSub&&db){
+      const existing=await db.collection("wydev_auth_google").doc(String(current.googleSub)).get();
+      if(existing.exists&&String(existing.data()?.userId||"")!==String(me.id))return json(res,409,{error:"This Google account is already linked to another GitHub account.",code:"GOOGLE_ACCOUNT_LINKED"});
+    }
+    if(db&&current.googleSub){
+      await db.collection("wydev_auth_google").doc(String(current.googleSub)).set({userId:String(me.id),email:String(current.email||""),updatedAt:Date.now()},{merge:true});
+    }
+    setSession(res,{token:token.access_token,refresh_token:token.refresh_token||null,login:me.login,id:me.id,name:me.name||current.name,avatar:me.avatar_url||current.avatar,scope:token.scope,provider:"github",githubConnected:true,email:current.email||null,emailVerified:current.emailVerified!==false,googleSub:current.googleSub||null});
+    clearOAuthCookie(res);
+    return redirect(res,"/");
+  }
+  setSession(res,{token:token.access_token,refresh_token:token.refresh_token||null,login:me.login,id:me.id,name:me.name,avatar:me.avatar_url,scope:token.scope,provider:"github",githubConnected:true,email:me.email||null,emailVerified:!!me.email});
   clearOAuthCookie(res);
   redirect(res,"/");
 }
@@ -329,6 +353,32 @@ async function oauthCallback(req,res){
 async function rememberGoogleState(state,userId,redirectUri){
   const key=oauthStateKey(state),record={createdAt:Date.now(),redirectUri:String(redirectUri||""),userId:String(userId),provider:"google-drive"};
   memory.oauthStates.set(key,record); if(db)await db.collection("wydev_oauth_states").doc(key).set(record);
+}
+async function googleLoginStart(req,res){
+  const clientId=String(process.env.GOOGLE_CLIENT_ID||"").trim(),secret=String(process.env.GOOGLE_CLIENT_SECRET||"").trim();
+  if(!clientId||!secret)return json(res,503,{error:"Google sign-in is not configured yet. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in Vercel."});
+  const state=b64(crypto.randomBytes(32)),redirectUri=process.env.GOOGLE_REDIRECT_URI||`${origin(req)}/api/auth/google/callback`;
+  await rememberOAuthState(state,redirectUri,{provider:"google-login"});
+  const u=new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  u.searchParams.set("client_id",clientId);u.searchParams.set("redirect_uri",redirectUri);u.searchParams.set("response_type","code");u.searchParams.set("access_type","online");u.searchParams.set("prompt","select_account");u.searchParams.set("scope","openid email profile");u.searchParams.set("state",state);
+  res.setHeader("Set-Cookie",`wydev_google_state=${state}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=600`);
+  return redirect(res,u.toString());
+}
+async function googleLoginCallback(req,res,record,code){
+  const clientId=String(process.env.GOOGLE_CLIENT_ID||"").trim(),secret=String(process.env.GOOGLE_CLIENT_SECRET||"").trim(),redirectUri=process.env.GOOGLE_REDIRECT_URI||`${origin(req)}/api/auth/google/callback`;
+  const tokenResp=await fetch("https://oauth2.googleapis.com/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({code,client_id:clientId,client_secret:secret,redirect_uri:redirectUri,grant_type:"authorization_code"})});
+  const token=await tokenResp.json();
+  if(!tokenResp.ok||!token.access_token)return redirect(res,"/?google=error&reason=GOOGLE_LOGIN_TOKEN_FAILED");
+  const infoResp=await fetch("https://openidconnect.googleapis.com/v1/userinfo",{headers:{Authorization:`Bearer ${token.access_token}`}});
+  const info=await infoResp.json();
+  if(!infoResp.ok||!info.sub||!info.email)return redirect(res,"/?google=error&reason=GOOGLE_PROFILE_FAILED");
+  if(info.email_verified===false)return redirect(res,"/?google=error&reason=GOOGLE_EMAIL_NOT_VERIFIED");
+  const userId=`google:${String(info.sub)}`;
+  const githubConnected=false;
+  const githubLogin="";
+  setSession(res,{token:null,refresh_token:null,login:githubLogin,id:userId,name:info.name||info.email.split("@")[0],avatar:info.picture||"",scope:"openid email profile",provider:"google",githubConnected,email:String(info.email),emailVerified:true,googleSub:String(info.sub)});
+  res.setHeader("Set-Cookie","wydev_google_state=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0");
+  return redirect(res,"/");
 }
 async function googleDriveStart(req,res){
   const s=requireSession(req,res);if(!s)return;
@@ -342,7 +392,12 @@ async function googleDriveStart(req,res){
 }
 async function googleDriveCallback(req,res){
   const q=new URL(req.url,origin(req)).searchParams,state=q.get("state"),code=q.get("code"),oauthError=q.get("error");if(!state)return json(res,400,{error:"Invalid Google OAuth state"});
-  const record=await consumeOAuthState(state);if(!record||record.provider!=="google-drive")return json(res,400,{error:"Invalid or expired Google OAuth state"});
+  const record=await consumeOAuthState(state);if(!record||!(["google-drive","google-login"].includes(record.provider)))return json(res,400,{error:"Invalid or expired Google OAuth state"});
+  if(record.provider==="google-login"){
+    if(oauthError)return redirect(res,`/?google=error&reason=${encodeURIComponent(oauthError)}`);
+    if(!code)return json(res,400,{error:"Google did not return an authorization code"});
+    return googleLoginCallback(req,res,record,code);
+  }
   if(oauthError)return redirect(res,`/?google=error&reason=${encodeURIComponent(oauthError)}#github`);
   if(!code)return json(res,400,{error:"Google did not return an authorization code"});
   const clientId=String(process.env.GOOGLE_CLIENT_ID||"").trim(),secret=String(process.env.GOOGLE_CLIENT_SECRET||"").trim(),redirectUri=process.env.GOOGLE_REDIRECT_URI||`${origin(req)}/api/auth/google/callback`;
@@ -418,7 +473,7 @@ async function exportRepoToDrive(s,owner,repo,branch){
 }
 
 function limitKey(s){return `${s.id||s.login}:${new Date().toISOString().slice(0,10)}`;}
-async function entitlement(s){const e=await getEntitlement(s.id);return e?.status==="active"&&(!e.expiresAt||e.expiresAt>Date.now())?"pro":"free";}
+async function entitlement(s){if(hasReviewerProAccess(s))return "pro";const e=await getEntitlement(s.id);return e?.status==="active"&&(!e.expiresAt||e.expiresAt>Date.now())?"pro":"free";}
 async function checkAIQuota(s){const day=new Date().toISOString().slice(0,10),used=await getUsage(s.id,day),plan=await entitlement(s),limit=Math.max(1,plan==="pro"?Number(process.env.AI_PRO_DAILY_LIMIT||5):Number(process.env.AI_FREE_DAILY_LIMIT||3));if(used>=limit)throw Object.assign(new Error(`Daily AI diagnostic limit reached (${limit}). Try again tomorrow.`),{status:429,code:"AI_QUOTA_EXCEEDED",limit,used,plan});return {day,plan,limit,used};}
 // Redacts likely secrets before code is sent to the AI. This must NEVER
 // corrupt the surrounding code -- mangled output reads to the model (and to
@@ -771,12 +826,20 @@ async function handler(req,res){
   try{
     const rawUrl=String(req.url||"/"), original=String(req.headers?.["x-original-url"]||req.headers?.["x-vercel-original-url"]||req.headers?.["x-forwarded-uri"]||rawUrl), url=new URL(original,origin(req)); let p=url.pathname.replace(/^\/api(?:\/index\.js)?/,"")||"/"; p=p.replace(/\/+$/,"")||"/";
     if(p==="/auth/github"&&req.method==="GET")return oauthStart(req,res);
+    if(p==="/auth/github/connect"&&req.method==="GET"){
+      const s=session(req);if(!s)return redirect(res,"/");
+      const state=b64(crypto.randomBytes(32)),redirectUri=process.env.GITHUB_REDIRECT_URI||`${origin(req)}/api/auth/github/callback`;
+      await rememberOAuthState(state,redirectUri,{provider:"github-link",userId:String(s.id),googleSub:String(s.googleSub||""),email:String(s.email||""),emailVerified:s.emailVerified!==false});
+      const u=new URL("https://github.com/login/oauth/authorize");u.searchParams.set("client_id",process.env.GITHUB_CLIENT_ID||"");u.searchParams.set("redirect_uri",redirectUri);u.searchParams.set("scope","read:user repo workflow delete_repo");u.searchParams.set("state",state);
+      res.setHeader("Set-Cookie",`wydev_oauth_state=${state}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=600`);return redirect(res,u.toString());
+    }
     if(p==="/auth/github/callback"&&req.method==="GET")return oauthCallback(req,res);
+    if(p==="/auth/google/login"&&req.method==="GET")return googleLoginStart(req,res);
     if(p==="/auth/google"&&req.method==="GET")return googleDriveStart(req,res);
     if(p==="/auth/google/callback"&&req.method==="GET")return googleDriveCallback(req,res);
     if(p==="/auth/google/status"&&req.method==="GET")return googleDriveStatus(req,res);
     if(p==="/auth/google/disconnect"&&req.method==="POST")return googleDriveDisconnect(req,res);
-    if(p==="/auth/me"&&req.method==="GET"){const s=session(req);return json(res,200,s?{user:{id:s.id,login:s.login,name:s.name,avatar:s.avatar}}:{user:null});}
+    if(p==="/auth/me"&&req.method==="GET"){const s=session(req);return json(res,200,s?{user:{id:s.id,login:s.login||"",name:s.name,avatar:s.avatar,email:s.email||null,provider:s.provider||"github",githubConnected:!!s.token&&!!s.login,googleConnected:!!s.googleSub}}:{user:null});}
     if(p==="/auth/logout"&&req.method==="POST"){clearSession(res);return json(res,200,{ok:true});}
 
     if(p==="/notifications/config"&&req.method==="GET") return json(res,200,await publicFirebaseConfig());
@@ -1135,6 +1198,37 @@ async function handler(req,res){
     const binaryExt=new Set(["png","jpg","jpeg","gif","webp","ico","bmp","svgz","pdf","zip","gz","tar","7z","rar","woff","woff2","ttf","otf","eot","mp3","mp4","mov","avi","webm","wav","exe","dll","so","dylib","class","jar","psd","ai","sqlite","db"]);
     const isBinaryPath=(p)=>binaryExt.has(String(p).split(".").pop()?.toLowerCase()||"");
     const mimeForPath=(p)=>({png:"image/png",jpg:"image/jpeg",jpeg:"image/jpeg",gif:"image/gif",webp:"image/webp",ico:"image/x-icon",bmp:"image/bmp",svg:"image/svg+xml",pdf:"application/pdf",woff:"font/woff",woff2:"font/woff2",ttf:"font/ttf",otf:"font/otf",eot:"application/vnd.ms-fontobject",mp3:"audio/mpeg",mp4:"video/mp4",mov:"video/quicktime",webm:"video/webm",wav:"audio/wav"}[String(p).split(".").pop()?.toLowerCase()||""]||"application/octet-stream");
+    const tm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/file-times$/);
+    if(tm && req.method==="POST"){
+      const owner=decodeURIComponent(tm[1]),repo=decodeURIComponent(tm[2]),b=await body(req);
+      const branch=String(b.branch||"HEAD");
+      const paths=Array.isArray(b.paths)?[...new Set(b.paths.map(x=>String(x||"").replaceAll("\\","/").replace(/^\/+/,"")).filter(Boolean))]:[];
+      if(paths.length>2000)return json(res,413,{error:"Too many paths requested at once. Load timestamps in smaller batches."});
+      const times={};
+      let cursor=0;
+      const worker=async()=>{
+        while(cursor<paths.length){
+          const path=paths[cursor++];
+          try{
+            const q=new URLSearchParams({path,sha:branch,per_page:"1"});
+            const commits=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits?${q.toString()}`);
+            const c=Array.isArray(commits)?commits[0]:null;
+            const date=c?.commit?.author?.date||c?.commit?.committer?.date||null;
+            if(date)times[path]=new Date(date).getTime();
+          }catch(e){
+            if(e.status===404) continue;
+            if(e.status===409) continue;
+            if(e.status===403 || e.status===429) throw e;
+          }
+        }
+      };
+      try{
+        await Promise.all(Array.from({length:Math.min(8,Math.max(1,paths.length))},()=>worker()));
+      }catch(e){
+        return json(res,e.status||502,{error:e.status===403||e.status===429?"GitHub rate limit reached while loading file timestamps. File content remains available; timestamps will use the saved local values until the next refresh.":(e.message||"Unable to load file timestamps."),code:e.status===403||e.status===429?"TIMESTAMP_RATE_LIMIT":"TIMESTAMP_LOOKUP_FAILED",times});
+      }
+      return json(res,200,{times});
+    }
     const m=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/(tree|file|branches)$/);
     if(m){
       const owner=decodeURIComponent(m[1]),repo=decodeURIComponent(m[2]),kind=m[3];
