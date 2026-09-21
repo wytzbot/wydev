@@ -1,6 +1,7 @@
 import {getApp, getApps, initializeApp} from "firebase/app";
 import {getAuth, GoogleAuthProvider, getRedirectResult, onAuthStateChanged, signInWithPopup, signInWithRedirect, signOut} from "firebase/auth";
 import {FIREBASE_CONFIG} from "./firebase-config";
+import {isNativeApp} from "./mobileBridge";
 
 let authInstance = null;
 
@@ -27,12 +28,23 @@ function googleProvider(){
 // blocks popups, fall back to Firebase's redirect flow. WyteLab never tries to
 // turn a Google email address into a GitHub credential.
 export async function signInWithGoogle(){
+  const auth=firebaseAuth();
+  // Android/iOS wrappers (including Median) are WebViews. Google popup
+  // windows are not reliable there: the popup can open outside the WebView
+  // and Firebase reports auth/popup-closed-by-user even when the user did
+  // not intentionally cancel. Use the redirect flow directly in native apps.
+  if(isNativeApp()) return signInWithRedirect(auth, googleProvider());
+
   try{
-    return await signInWithPopup(firebaseAuth(), googleProvider());
+    return await signInWithPopup(auth, googleProvider());
   }catch(e){
     const code=String(e?.code||"");
-    if(["auth/popup-blocked","auth/operation-not-supported-in-this-environment","auth/cancelled-popup-request"].includes(code)){
-      return signInWithRedirect(firebaseAuth(), googleProvider());
+    if([
+      "auth/popup-blocked",
+      "auth/operation-not-supported-in-this-environment",
+      "auth/cancelled-popup-request"
+    ].includes(code)){
+      return signInWithRedirect(auth, googleProvider());
     }
     throw e;
   }

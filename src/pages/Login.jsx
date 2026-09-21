@@ -10,7 +10,9 @@ const googleMessages={
   "auth/operation-not-supported-in-this-environment":"Google sign-in is not available in this browser environment. Open WyteLab in a normal browser and try again.",
   "auth/network-request-failed":"Google sign-in could not reach Firebase. Check your connection and try again.",
   "auth/popup-blocked":"The browser blocked Google sign-in. Please try again.",
+  "auth/popup-closed-by-user":"Google sign-in was closed before authentication completed. Please try again.",
   "auth/cancelled-popup-request":"Google sign-in was cancelled. Please try again.",
+  "auth/redirect-cancelled-by-user":"Google sign-in was cancelled. Please try again.",
   "FIREBASE_AUTH_NOT_CONFIGURED":"Google sign-in is not configured on the WyteLab server yet.",
   "FIREBASE_TOKEN_INVALID":"Google sign-in could not be verified. Please try again.",
   "FIREBASE_TOKEN_AUDIENCE_INVALID":"This WyteLab Firebase project is not configured correctly for Google sign-in.",
@@ -51,8 +53,8 @@ export default function Login({githubRequired=false}){
       try{
         // Firebase stores the Google session separately from WyteLab's server
         // session. This also completes the return leg after signInWithRedirect.
-        await consumeGoogleRedirect();
-        const user=currentFirebaseUser();
+        const redirectResult=await consumeGoogleRedirect();
+        const user=redirectResult?.user || currentFirebaseUser();
         if(user && !githubRequired){
           setBusy(true);
           await exchangeFirebaseUser(user);
