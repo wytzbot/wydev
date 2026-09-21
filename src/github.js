@@ -1,9 +1,8 @@
 import {API_BASE_URL} from "./config";
 import {fetchTimeout} from "./net";
-import {isNativeApp,waitForNativeBridge} from "./mobileBridge";
 const api=async(path,opts={})=>{let r;try{r=await fetchTimeout(`${API_BASE_URL}${path}`,{credentials:"include",headers:{"Content-Type":"application/json",...(opts.headers||{})},...opts})}catch(e){throw new Error(`Network error: ${e?.message||"Unable to reach WyteLab server"}`)}let e=null;try{e=await r.json()}catch{}if(!r.ok){const err=new Error(e?.error||`Request failed (${r.status})`);err.status=r.status;err.code=e?.code;err.details=e;throw err}return e};
 export const github={
- session:()=>api("/auth/me"),login:()=>location.href=`${API_BASE_URL}/auth/github`,googleLogin:()=>location.href=`${API_BASE_URL}/auth/google/login`,connectGitHub:()=>location.href=`${API_BASE_URL}/auth/github/connect`,logout:()=>api("/auth/logout",{method:"POST"}),
+ session:()=>api("/auth/me"),login:()=>location.href=`${API_BASE_URL}/auth/github`,googleLogin:async()=>{ const {signInWithGoogle}=await import("./firebase-auth"); return signInWithGoogle(); },connectGitHub:()=>location.href=`${API_BASE_URL}/auth/github/connect`,logout:async()=>{ const result=await api("/auth/logout",{method:"POST"}); try{ const {signOutGoogle}=await import("./firebase-auth"); await signOutGoogle(); }catch{} return result; },
  repos:()=>api("/github/repos"),
  createRepo:(p)=>api("/github/repos",{method:"POST",body:JSON.stringify(p)}),
  deleteRepo:(o,r)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}`,{method:"DELETE"}),

@@ -1,41 +1,42 @@
 # WyteLab — Median / Uptodown build setup
 
-This release keeps the existing Vite/React web app and adds a deliberate Median native integration layer. It does **not** pretend to be a Flutter project and does not require changing the web architecture.
+This release keeps the existing Vite/React web app. Google account authentication is implemented with the **Firebase Web SDK** exactly like the normal web app; no Median Social Login or native Google authentication is required.
 
-## Google Sign-In in the Median APK
+## Google Sign-In
 
-Google blocks OAuth sign-in inside Android WebViews. For the APK, enable **Native Plugins → Social Login → Google** in Median App Studio and configure the Google client IDs required by Median. WyteLab now uses the Median native Google login bridge in the APK and keeps the normal server-side OAuth flow for ordinary browsers. After enabling the plugin, rebuild the APK. This is required for Google SSO inside the APK.
+WyteLab uses Firebase Authentication with the Google provider:
 
-The web app's server endpoint is `https://wyte.name.ng/api/auth/google/native`. If you use an Android/native client ID different from the web client ID, add it to `GOOGLE_NATIVE_CLIENT_IDS` as a comma-separated Vercel environment variable.
+`Continue with Google → Firebase Web Auth → Google → Firebase ID token → WyteLab server session`
 
-## Required Median App Studio configuration
+GitHub remains a separate authorization step:
 
-Enable the JavaScript Bridge and configure these native features in the Median project used to build the APK:
+`Google account → Connect GitHub → GitHub OAuth → repository access`
 
-1. **JavaScript Bridge** — enabled.
-2. **Firebase Cloud Messaging** — enabled; upload the correct `google-services.json` for Android.
-3. **Haptics** — enabled.
-4. **Share into App** — enabled if you want Android users to share a GitHub URL/text into WyteLab.
-5. **Download/File handling** — enabled/configured for the Android Downloads directory where appropriate.
-6. **Deep links / allowed URLs** — keep the Wytelab domain and required legal/API routes allowed. During testing, do not accidentally restrict the bridge away from `https://wyte.name.ng`.
-7. If using the injected Median bridge, leave bridge injection enabled. Do not also install the NPM bridge package unless the Median project is intentionally switched to the NPM-package approach.
+The Google email address is never treated as a GitHub credential.
 
-## What this web release adds
+## Required Firebase configuration
 
-- A native-aware mobile bridge with safe browser fallbacks.
-- Native Android/iOS share-sheet support for the Wytelab app.
-- Native haptic confirmation when supported.
-- Median Share into App callback (`median_share_to_app`) with a safe session handoff.
-- Service-worker registration is skipped inside the native Median shell so native FCM remains the notification path in the APK.
-- A visible **Android App Features** section in Settings when running inside Median.
-- A Share action in the Wytelab top bar.
-- Existing ZIP/file workflows continue to use Web Share as a fallback where a Blob must be handed to the device.
-- Existing FCM backend/token registration remains unchanged.
+In Firebase Console for project `wydev0`:
 
-## Important
+1. Open **Authentication → Sign-in method**.
+2. Enable **Google**.
+3. Under **Authentication → Settings → Authorized domains**, add the production WyteLab domain (`wyte.name.ng`) and any real preview/staging domain used for testing.
+4. Confirm the Google provider is using the intended Google Cloud project.
 
-This source ZIP alone cannot enable native plugins. The Median App Studio configuration and the rebuilt APK are required for the native APIs to exist on the device.
+The public Firebase Web SDK configuration is in `src/firebase-config.js`. Those values are safe for client-side Firebase use. Firebase Admin credentials, when used by the server, remain server-side.
 
-## Uptodown review goal
+## Median / APK
 
-The purpose of these changes is to make mobile-specific functionality part of the actual Wytelab experience rather than merely displaying the website. Final acceptance remains a decision made by Uptodown's review process.
+No Median Google Social Login plugin is required. The APK can load the same web application and Firebase Web Authentication flow. If a specific Median build blocks external OAuth redirects, configure the app to allow the Firebase auth domain and the production WyteLab domain rather than replacing Firebase Auth with a second login system.
+
+The existing Median integrations for Firebase Cloud Messaging, sharing and other app features are independent of Google authentication.
+
+## Google Drive
+
+Google Drive is a separate optional integration and still uses the server-side Google OAuth client configured with:
+
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+- `GOOGLE_REDIRECT_URI=https://YOUR-DOMAIN/api/auth/google/callback`
+
+Do not use those Drive OAuth credentials as a substitute for Firebase Google Sign-In.

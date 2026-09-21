@@ -190,6 +190,44 @@ function setSession(res,user){const value=seal(user);res.setHeader("Set-Cookie",
 function clearSession(res){res.setHeader("Set-Cookie","wydev_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0");}
 function session(req){const c=parseCookies(req).wydev_session;return c?openCookie(c):null;}
 function requireSession(req,res){const s=session(req);if(!s?.token||!s?.login){json(res,401,{error:"GitHub authentication required",code:"GITHUB_REQUIRED"});return null}return s;}
+
+async function firebaseGoogleLogin(req,res){
+  const b=await body(req),idToken=String(b?.idToken||"").trim();
+  if(!idToken)return json(res,400,{error:"Firebase ID token required",code:"FIREBASE_TOKEN_MISSING"});
+  try{
+    let profile=null;
+    if(db){
+      const admin=require("firebase-admin");
+      const decoded=await admin.auth().verifyIdToken(idToken,true);
+      profile={uid:decoded.uid,email:decoded.email,emailVerified:decoded.email_verified,name:decoded.name,picture:decoded.picture};
+    }else{
+      // Fallback for deployments that use Firebase Authentication but have not
+      // installed Firebase Admin credentials. The Identity Toolkit endpoint
+      // validates the Firebase ID token against this exact Firebase project.
+      const r=await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(FIREBASE_WEB_CONFIG.apiKey)}`,{
+        method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({idToken})
+      });
+      const data=await r.json().catch(()=>({}));
+      const u=Array.isArray(data.users)?data.users[0]:null;
+      if(!r.ok||!u)throw Object.assign(new Error("Firebase ID token validation failed"),{code:"FIREBASE_TOKEN_INVALID"});
+      profile={uid:u.localId,email:u.email,emailVerified:u.emailVerified,name:u.displayName,picture:u.photoUrl};
+    }
+    const uid=String(profile?.uid||"").trim(),email=String(profile?.email||"").trim().toLowerCase();
+    if(!uid||!email)throw Object.assign(new Error("Google account profile is incomplete"),{code:"FIREBASE_PROFILE_INVALID"});
+    if(profile.emailVerified===false)throw Object.assign(new Error("Your Google account email must be verified."),{code:"FIREBASE_EMAIL_NOT_VERIFIED"});
+    const name=String(profile.name||email.split("@")[0]||"Google user");
+    const avatar=String(profile.picture||"");
+    const googleSub=uid;
+    setSession(res,{token:null,refresh_token:null,login:"",id:`google:${googleSub}`,name,avatar,scope:"openid email profile",provider:"google",githubConnected:false,email,emailVerified:true,googleSub});
+    return json(res,200,{ok:true,user:{id:`google:${googleSub}`,login:"",name,avatar,email,provider:"google",githubConnected:false,googleConnected:true}});
+  }catch(e){
+    console.error("[firebase-google] ID token verification failed:",e?.message||e);
+    const code=String(e?.code||"");
+    if(code==="auth/id-token-expired"||code==="auth/id-token-revoked")return json(res,401,{error:"Google sign-in expired. Please sign in with Google again.",code:"FIREBASE_TOKEN_EXPIRED"});
+    if(code==="FIREBASE_EMAIL_NOT_VERIFIED")return json(res,403,{error:e.message,code});
+    return json(res,401,{error:"Google sign-in could not be verified. Please try again.",code:"FIREBASE_TOKEN_INVALID"});
+  }
+}
 function reviewerList(name){return String(process.env[name]||"").split(",").map(x=>x.trim().toLowerCase()).filter(Boolean);}
 function hasReviewerProAccess(s){
   if(String(process.env.REVIEWER_PRO_ACCESS||"").toLowerCase()!=="true")return false;
@@ -367,89 +405,6 @@ async function rememberGoogleState(state,userId,redirectUri){
   const key=oauthStateKey(state),record={createdAt:Date.now(),redirectUri:String(redirectUri||""),userId:String(userId),provider:"google-drive"};
   memory.oauthStates.set(key,record); if(db)await db.collection("wydev_oauth_states").doc(key).set(record);
 }
-async function googleLoginStart(req,res){
-  const clientId=String(process.env.GOOGLE_CLIENT_ID||"").trim(),secret=String(process.env.GOOGLE_CLIENT_SECRET||"").trim();
-  if(!clientId||!secret){
-    console.error(`[google-login] GOOGLE_CLIENT_ID and/or GOOGLE_CLIENT_SECRET are missing on this deployment (clientId set: ${!!clientId}, secret set: ${!!secret}). Check they exist for the Production environment in Vercel, not just Preview/Development.`);
-    return redirect(res,"/?google=error&reason=GOOGLE_NOT_CONFIGURED");
-  }
-  const state=b64(crypto.randomBytes(32)),redirectUri=process.env.GOOGLE_REDIRECT_URI||`${origin(req)}/api/auth/google/callback`;
-  await rememberOAuthState(state,redirectUri,{provider:"google-login"});
-  const u=new URL("https://accounts.google.com/o/oauth2/v2/auth");
-  u.searchParams.set("client_id",clientId);u.searchParams.set("redirect_uri",redirectUri);u.searchParams.set("response_type","code");u.searchParams.set("access_type","online");u.searchParams.set("prompt","select_account");u.searchParams.set("scope","openid email profile");u.searchParams.set("state",state);
-  res.setHeader("Set-Cookie",`wydev_google_state=${state}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`);
-  return redirect(res,u.toString());
-}
-
-async function googleNativeLoginStart(req,res){
-  const clientId=String(process.env.GOOGLE_CLIENT_ID||"").trim();
-  if(!clientId)return json(res,503,{error:"Google sign-in is not configured yet. Set GOOGLE_CLIENT_ID in Vercel."});
-  const state=b64(crypto.randomBytes(32));
-  // Median's native Google plugin returns the ID token to this endpoint. The
-  // state is kept in a SameSite cookie so the WebView callback is still CSRF
-  // protected without relying on the browser's OAuth redirect cookie.
-  res.setHeader("Set-Cookie",`wydev_google_native_state=${state}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`);
-  return json(res,200,{state,redirectUri:`${origin(req)}/api/auth/google/native`});
-}
-
-async function googleNativeLoginCallback(req,res){
-  const q=new URL(req.url,origin(req)).searchParams;
-  const state=String(q.get("state")||""),code=String(q.get("idToken")||"");
-  const cookieState=String(parseCookies(req).wydev_google_native_state||"");
-  const clear=()=>res.setHeader("Set-Cookie","wydev_google_native_state=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0");
-  if(!state||!cookieState||state!==cookieState){clear();return redirect(res,"/?google=error&reason=GOOGLE_NATIVE_STATE_INVALID");}
-  if(q.get("error")){clear();return redirect(res,`/?google=error&reason=${encodeURIComponent(String(q.get("error")))}`);}
-  if(!code){clear();return redirect(res,"/?google=error&reason=GOOGLE_NATIVE_TOKEN_MISSING");}
-  try{
-    // Google tokeninfo validates the signed ID token server-side. Never trust
-    // decoded client-side JWT claims for authentication.
-    const r=await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(code)}`);
-    const info=await r.json().catch(()=>({}));
-    if(!r.ok||!info.sub||!info.email)throw Object.assign(new Error("Google ID token validation failed"),{code:"GOOGLE_NATIVE_TOKEN_INVALID"});
-    const allowed=new Set([String(process.env.GOOGLE_CLIENT_ID||"").trim(),...String(process.env.GOOGLE_NATIVE_CLIENT_IDS||"").split(",").map(x=>x.trim()).filter(Boolean)]);
-    if(!allowed.has(String(info.aud||"")))throw Object.assign(new Error("Google ID token audience is not configured for WyteLab"),{code:"GOOGLE_NATIVE_AUDIENCE_INVALID"});
-    if(String(info.email_verified).toLowerCase()!=="true")throw Object.assign(new Error("Google account email is not verified"),{code:"GOOGLE_EMAIL_NOT_VERIFIED"});
-    const email=String(info.email).trim().toLowerCase(),sub=String(info.sub);
-    setSession(res,{token:null,refresh_token:null,login:"",id:`google:${sub}`,name:info.name||email.split("@")[0],avatar:info.picture||"",scope:"openid email profile",provider:"google",githubConnected:false,email,emailVerified:true,googleSub:sub});
-    clear();
-    return redirect(res,"/");
-  }catch(e){
-    clear();
-    return redirect(res,`/?google=error&reason=${encodeURIComponent(e.code||"GOOGLE_NATIVE_LOGIN_FAILED")}`);
-  }
-}
-async function googleLoginCallback(req,res,record,code){
-  const clientId=String(process.env.GOOGLE_CLIENT_ID||"").trim(),secret=String(process.env.GOOGLE_CLIENT_SECRET||"").trim(),redirectUri=process.env.GOOGLE_REDIRECT_URI||`${origin(req)}/api/auth/google/callback`;
-  try{
-    const tokenResp=await fetch("https://oauth2.googleapis.com/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({code,client_id:clientId,client_secret:secret,redirect_uri:redirectUri,grant_type:"authorization_code"})});
-    const token=await tokenResp.json().catch(()=>({}));
-    if(!tokenResp.ok||!token.access_token){
-      // Log Google's real error (invalid_grant, redirect_uri_mismatch, etc.)
-      // redirect_uri_mismatch here means GOOGLE_REDIRECT_URI does not exactly
-      // match an "Authorized redirect URI" in the Google Cloud Console
-      // credential — the single most common cause of Google sign-in failing
-      // only in production.
-      console.error(`[google-login] token exchange failed (status ${tokenResp.status}): ${token.error||"unknown"} — ${token.error_description||"no description"}. redirect_uri used: ${redirectUri}`);
-      return redirect(res,`/?google=error&reason=GOOGLE_LOGIN_TOKEN_FAILED&detail=${encodeURIComponent(token.error||"")}`);
-    }
-    const infoResp=await fetch("https://openidconnect.googleapis.com/v1/userinfo",{headers:{Authorization:`Bearer ${token.access_token}`}});
-    const info=await infoResp.json().catch(()=>({}));
-    if(!infoResp.ok||!info.sub||!info.email){
-      console.error(`[google-login] userinfo fetch failed (status ${infoResp.status}):`,JSON.stringify(info).slice(0,500));
-      return redirect(res,"/?google=error&reason=GOOGLE_PROFILE_FAILED");
-    }
-    if(info.email_verified===false)return redirect(res,"/?google=error&reason=GOOGLE_EMAIL_NOT_VERIFIED");
-    const userId=`google:${String(info.sub)}`;
-    const githubConnected=false;
-    const githubLogin="";
-    setSession(res,{token:null,refresh_token:null,login:githubLogin,id:userId,name:info.name||info.email.split("@")[0],avatar:info.picture||"",scope:"openid email profile",provider:"google",githubConnected,email:String(info.email),emailVerified:true,googleSub:String(info.sub)});
-    res.setHeader("Set-Cookie","wydev_google_state=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0");
-    return redirect(res,"/");
-  }catch(e){
-    console.error("[google-login] unexpected error during token/profile exchange:",e.message,e.stack);
-    return redirect(res,"/?google=error&reason=GOOGLE_LOGIN_UNEXPECTED_ERROR");
-  }
-}
 async function googleDriveStart(req,res){
   const s=requireSession(req,res);if(!s)return;
   const clientId=String(process.env.GOOGLE_CLIENT_ID||"").trim(),secret=String(process.env.GOOGLE_CLIENT_SECRET||"").trim();
@@ -471,11 +426,6 @@ async function googleDriveCallback(req,res){
   if(!state)return redirect(res,"/?google=error&reason=GOOGLE_STATE_MISSING#github");
   const record=await consumeOAuthState(state);
   if(!record||!(["google-drive","google-login"].includes(record.provider)))return redirect(res,"/?google=error&reason=GOOGLE_STATE_EXPIRED#github");
-  if(record.provider==="google-login"){
-    if(oauthError)return redirect(res,`/?google=error&reason=${encodeURIComponent(oauthError)}`);
-    if(!code)return redirect(res,"/?google=error&reason=GOOGLE_LOGIN_CODE_MISSING");
-    return googleLoginCallback(req,res,record,code);
-  }
   if(oauthError)return redirect(res,`/?google=error&reason=${encodeURIComponent(oauthError)}#github`);
   if(!code)return redirect(res,"/?google=error&reason=GOOGLE_DRIVE_CODE_MISSING#github");
   if(!db)return redirect(res,"/?google=error&reason=GOOGLE_DRIVE_STORAGE_NOT_CONFIGURED#github");
@@ -925,9 +875,7 @@ async function handler(req,res){
       res.setHeader("Set-Cookie",`wydev_oauth_state=${state}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=600`);return redirect(res,u.toString());
     }
     if(p==="/auth/github/callback"&&req.method==="GET")return oauthCallback(req,res);
-    if(p==="/auth/google/login"&&req.method==="GET")return googleLoginStart(req,res);
-    if(p==="/auth/google/native/start"&&req.method==="GET")return googleNativeLoginStart(req,res);
-    if(p==="/auth/google/native"&&req.method==="GET")return googleNativeLoginCallback(req,res);
+    if(p==="/auth/firebase"&&req.method==="POST")return firebaseGoogleLogin(req,res);
     if(p==="/auth/google"&&req.method==="GET")return googleDriveStart(req,res);
     if(p==="/auth/google/callback"&&req.method==="GET")return googleDriveCallback(req,res);
     if(p==="/auth/google/status"&&req.method==="GET")return googleDriveStatus(req,res);

@@ -1,7 +1,7 @@
-// Public Firebase Web SDK configuration for WyteLab notifications.
-// These values are safe to ship to the browser. They are used only for FCM
-// client initialization and are intentionally separate from Firebase Admin
-// service-account credentials, which must remain server-side.
+// Public Firebase Web SDK configuration for WyteLab authentication and notifications.
+// These values are safe to ship to the browser. Firebase Authentication and
+// FCM both use the public Web SDK config; Firebase Admin credentials remain
+// server-side only.
 export const FIREBASE_CONFIG = Object.freeze({
   apiKey: "AIzaSyCqN_fapK0cvhrtQfJp6YIAefR2bfUwXeU",
   authDomain: "wydev0.firebaseapp.com",
