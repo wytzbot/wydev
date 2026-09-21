@@ -268,22 +268,35 @@ async function rememberOAuthState(state,redirectUri,extra={}){
   memory.oauthStates.set(key,record);
   // Firestore makes the state available across Vercel serverless instances.
   // This is the cookie-loss fallback needed by Android WebViews/custom tabs.
-  if(db){await db.collection("wydev_oauth_states").doc(key).set(record);}
+  // Without it, a login-start and its callback landing on two different
+  // lambda instances will always look like "invalid/expired state" even
+  // though nothing is actually wrong with the OAuth flow itself.
+  if(db){
+    try{await db.collection("wydev_oauth_states").doc(key).set(record);}
+    catch(e){console.error(`[oauth-state] Firestore write failed for provider=${extra?.provider||"unknown"}:`,e.message);}
+  }else{
+    console.warn(`[oauth-state] Firebase Admin is not configured (db is null) — state for provider=${extra?.provider||"unknown"} only survives on this one serverless instance. If the callback lands on a different instance it WILL fail as "expired/invalid state". Set FIREBASE_SERVICE_ACCOUNT_JSON (or the three FIREBASE_* fields) in Vercel to fix this permanently.`);
+  }
 }
 async function consumeOAuthState(state){
   const key=oauthStateKey(state),local=memory.oauthStates.get(key);
   memory.oauthStates.delete(key);
   if(local){
-    if(Date.now()-Number(local.createdAt)>10*60*1000)return null;
+    if(Date.now()-Number(local.createdAt)>10*60*1000){console.warn(`[oauth-state] found in local memory but TTL expired (>10min) for provider=${local.provider}`);return null;}
     return local;
   }
-  if(!db)return null;
-  const ref=db.collection("wydev_oauth_states").doc(key),snap=await ref.get();
-  if(!snap.exists)return null;
-  const record=snap.data()||{};
-  await ref.delete();
-  if(Date.now()-Number(record.createdAt)>10*60*1000)return null;
-  return record;
+  if(!db){console.warn("[oauth-state] not found in local memory and Firebase Admin is not configured — cannot check Firestore. This is almost certainly a missing-env-var problem, not a real expired/reused link.");return null;}
+  try{
+    const ref=db.collection("wydev_oauth_states").doc(key),snap=await ref.get();
+    if(!snap.exists){console.warn("[oauth-state] not found in local memory or Firestore. Either it was already consumed (double callback / user hit back+retry), or it genuinely expired.");return null;}
+    const record=snap.data()||{};
+    await ref.delete();
+    if(Date.now()-Number(record.createdAt)>10*60*1000){console.warn(`[oauth-state] found in Firestore but TTL expired (>10min) for provider=${record.provider}`);return null;}
+    return record;
+  }catch(e){
+    console.error("[oauth-state] Firestore read failed — check Firebase Admin credentials/permissions:",e.message);
+    return null;
+  }
 }
 function clearOAuthCookie(res){
   const current=res.getHeader("Set-Cookie");
@@ -404,19 +417,35 @@ async function googleNativeLoginCallback(req,res){
 }
 async function googleLoginCallback(req,res,record,code){
   const clientId=String(process.env.GOOGLE_CLIENT_ID||"").trim(),secret=String(process.env.GOOGLE_CLIENT_SECRET||"").trim(),redirectUri=process.env.GOOGLE_REDIRECT_URI||`${origin(req)}/api/auth/google/callback`;
-  const tokenResp=await fetch("https://oauth2.googleapis.com/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({code,client_id:clientId,client_secret:secret,redirect_uri:redirectUri,grant_type:"authorization_code"})});
-  const token=await tokenResp.json();
-  if(!tokenResp.ok||!token.access_token)return redirect(res,"/?google=error&reason=GOOGLE_LOGIN_TOKEN_FAILED");
-  const infoResp=await fetch("https://openidconnect.googleapis.com/v1/userinfo",{headers:{Authorization:`Bearer ${token.access_token}`}});
-  const info=await infoResp.json();
-  if(!infoResp.ok||!info.sub||!info.email)return redirect(res,"/?google=error&reason=GOOGLE_PROFILE_FAILED");
-  if(info.email_verified===false)return redirect(res,"/?google=error&reason=GOOGLE_EMAIL_NOT_VERIFIED");
-  const userId=`google:${String(info.sub)}`;
-  const githubConnected=false;
-  const githubLogin="";
-  setSession(res,{token:null,refresh_token:null,login:githubLogin,id:userId,name:info.name||info.email.split("@")[0],avatar:info.picture||"",scope:"openid email profile",provider:"google",githubConnected,email:String(info.email),emailVerified:true,googleSub:String(info.sub)});
-  res.setHeader("Set-Cookie","wydev_google_state=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0");
-  return redirect(res,"/");
+  try{
+    const tokenResp=await fetch("https://oauth2.googleapis.com/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({code,client_id:clientId,client_secret:secret,redirect_uri:redirectUri,grant_type:"authorization_code"})});
+    const token=await tokenResp.json().catch(()=>({}));
+    if(!tokenResp.ok||!token.access_token){
+      // Log Google's real error (invalid_grant, redirect_uri_mismatch, etc.)
+      // redirect_uri_mismatch here means GOOGLE_REDIRECT_URI does not exactly
+      // match an "Authorized redirect URI" in the Google Cloud Console
+      // credential — the single most common cause of Google sign-in failing
+      // only in production.
+      console.error(`[google-login] token exchange failed (status ${tokenResp.status}): ${token.error||"unknown"} — ${token.error_description||"no description"}. redirect_uri used: ${redirectUri}`);
+      return redirect(res,`/?google=error&reason=GOOGLE_LOGIN_TOKEN_FAILED&detail=${encodeURIComponent(token.error||"")}`);
+    }
+    const infoResp=await fetch("https://openidconnect.googleapis.com/v1/userinfo",{headers:{Authorization:`Bearer ${token.access_token}`}});
+    const info=await infoResp.json().catch(()=>({}));
+    if(!infoResp.ok||!info.sub||!info.email){
+      console.error(`[google-login] userinfo fetch failed (status ${infoResp.status}):`,JSON.stringify(info).slice(0,500));
+      return redirect(res,"/?google=error&reason=GOOGLE_PROFILE_FAILED");
+    }
+    if(info.email_verified===false)return redirect(res,"/?google=error&reason=GOOGLE_EMAIL_NOT_VERIFIED");
+    const userId=`google:${String(info.sub)}`;
+    const githubConnected=false;
+    const githubLogin="";
+    setSession(res,{token:null,refresh_token:null,login:githubLogin,id:userId,name:info.name||info.email.split("@")[0],avatar:info.picture||"",scope:"openid email profile",provider:"google",githubConnected,email:String(info.email),emailVerified:true,googleSub:String(info.sub)});
+    res.setHeader("Set-Cookie","wydev_google_state=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0");
+    return redirect(res,"/");
+  }catch(e){
+    console.error("[google-login] unexpected error during token/profile exchange:",e.message,e.stack);
+    return redirect(res,"/?google=error&reason=GOOGLE_LOGIN_UNEXPECTED_ERROR");
+  }
 }
 async function googleDriveStart(req,res){
   const s=requireSession(req,res);if(!s)return;
@@ -443,15 +472,24 @@ async function googleDriveCallback(req,res){
   }
   if(oauthError)return redirect(res,`/?google=error&reason=${encodeURIComponent(oauthError)}#github`);
   if(!code)return redirect(res,"/?google=error&reason=GOOGLE_DRIVE_CODE_MISSING#github");
-  const clientId=String(process.env.GOOGLE_CLIENT_ID||"").trim(),secret=String(process.env.GOOGLE_CLIENT_SECRET||"").trim(),redirectUri=process.env.GOOGLE_REDIRECT_URI||`${origin(req)}/api/auth/google/callback`;
-  const tokenResp=await fetch("https://oauth2.googleapis.com/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({code,client_id:clientId,client_secret:secret,redirect_uri:redirectUri,grant_type:"authorization_code"})});
   if(!db)return redirect(res,"/?google=error&reason=GOOGLE_DRIVE_STORAGE_NOT_CONFIGURED#github");
-  const token=await tokenResp.json();if(!tokenResp.ok||!token.access_token)return redirect(res,"/?google=error&reason=TOKEN_EXCHANGE_FAILED#github");
-  const grantedScopes=String(token.scope||"").split(/[\s,]+/).filter(Boolean);
-  if(!grantedScopes.includes("https://www.googleapis.com/auth/drive.file"))return redirect(res,"/?google=error&reason=DRIVE_FILE_SCOPE_NOT_GRANTED#github");
-  if(!token.refresh_token)return redirect(res,"/?google=error&reason=NO_REFRESH_TOKEN#github");
-  await db.collection("wydev_google_tokens").doc(String(record.userId)).set({encrypted:seal({access_token:token.access_token,refresh_token:token.refresh_token,expires_at:Date.now()+Number(token.expires_in||3600)*1000,scope:grantedScopes.join(" ")}),updatedAt:Date.now()},{merge:true});
-  res.setHeader("Set-Cookie","wydev_google_state=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0");return redirect(res,"/?google=connected#github");
+  try{
+    const clientId=String(process.env.GOOGLE_CLIENT_ID||"").trim(),secret=String(process.env.GOOGLE_CLIENT_SECRET||"").trim(),redirectUri=process.env.GOOGLE_REDIRECT_URI||`${origin(req)}/api/auth/google/callback`;
+    const tokenResp=await fetch("https://oauth2.googleapis.com/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({code,client_id:clientId,client_secret:secret,redirect_uri:redirectUri,grant_type:"authorization_code"})});
+    const token=await tokenResp.json().catch(()=>({}));
+    if(!tokenResp.ok||!token.access_token){
+      console.error(`[google-drive] token exchange failed (status ${tokenResp.status}): ${token.error||"unknown"} — ${token.error_description||"no description"}. redirect_uri used: ${redirectUri}`);
+      return redirect(res,"/?google=error&reason=TOKEN_EXCHANGE_FAILED#github");
+    }
+    const grantedScopes=String(token.scope||"").split(/[\s,]+/).filter(Boolean);
+    if(!grantedScopes.includes("https://www.googleapis.com/auth/drive.file"))return redirect(res,"/?google=error&reason=DRIVE_FILE_SCOPE_NOT_GRANTED#github");
+    if(!token.refresh_token)return redirect(res,"/?google=error&reason=NO_REFRESH_TOKEN#github");
+    await db.collection("wydev_google_tokens").doc(String(record.userId)).set({encrypted:seal({access_token:token.access_token,refresh_token:token.refresh_token,expires_at:Date.now()+Number(token.expires_in||3600)*1000,scope:grantedScopes.join(" ")}),updatedAt:Date.now()},{merge:true});
+    res.setHeader("Set-Cookie","wydev_google_state=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0");return redirect(res,"/?google=connected#github");
+  }catch(e){
+    console.error("[google-drive] unexpected error during token exchange/storage:",e.message,e.stack);
+    return redirect(res,"/?google=error&reason=GOOGLE_DRIVE_UNEXPECTED_ERROR#github");
+  }
 }
 async function getGoogleDriveToken(userId){
   if(!db)throw Object.assign(new Error("Google Drive requires Firebase persistence."),{status:503,code:"GOOGLE_DRIVE_NOT_CONFIGURED"});
@@ -866,8 +904,12 @@ async function verifyCharge(s,id,reference){
 function validWebhook(req,raw){const sig=req.headers["flutterwave-signature"];if(!sig||!process.env.FLW_WEBHOOK_SECRET_HASH)return false;const h=crypto.createHmac("sha256",process.env.FLW_WEBHOOK_SECRET_HASH).update(raw).digest("base64");const a=Buffer.from(h),b=Buffer.from(String(sig));return a.length===b.length&&crypto.timingSafeEqual(a,b);}
 
 async function handler(req,res){
+  // Computed outside the try block so the catch-all below can still see which
+  // route was being served even if something throws before reaching it.
+  let p="/";
   try{
-    const rawUrl=String(req.url||"/"), original=String(req.headers?.["x-original-url"]||req.headers?.["x-vercel-original-url"]||req.headers?.["x-forwarded-uri"]||rawUrl), url=new URL(original,origin(req)); let p=url.pathname.replace(/^\/api(?:\/index\.js)?/,"")||"/"; p=p.replace(/\/+$/,"")||"/";
+    const rawUrl=String(req.url||"/"), original=String(req.headers?.["x-original-url"]||req.headers?.["x-vercel-original-url"]||req.headers?.["x-forwarded-uri"]||rawUrl), url=new URL(original,origin(req));
+    p=url.pathname.replace(/^\/api(?:\/index\.js)?/,"")||"/"; p=p.replace(/\/+$/,"")||"/";
     if(p==="/auth/github"&&req.method==="GET")return oauthStart(req,res);
     if(p==="/auth/github/connect"&&req.method==="GET"){
       const s=session(req);if(!s)return redirect(res,"/");
@@ -1699,6 +1741,16 @@ async function handler(req,res){
     }
     if(p==="/billing/checkout"&&req.method==="POST"){const b=await body(req);b.req=req;const d=await createBillingCheckout(s,b);return json(res,200,d);}
     return json(res,404,{error:"Route not found"});
-  }catch(e){return json(res,e.status||500,{error:e.message||"Server error",code:e.code,limit:e.limit,used:e.used,remaining:e.remaining,plan:e.plan});}
+  }catch(e){
+    console.error(`[handler] unhandled error on ${p}:`,e.message,e.stack);
+    // GET routes under /auth/* are followed by full-page browser navigation
+    // (Google/GitHub redirecting the user back), never by fetch()/XHR. A raw
+    // JSON error body there has no viewport meta tag, so it renders zoomed
+    // out on mobile — looking like the app "switched to desktop view" — and
+    // gives the user no way back into the app. Always redirect those instead.
+    if(req.method==="GET"&&p.startsWith("/auth/google"))return redirect(res,`/?google=error&reason=SERVER_ERROR#github`);
+    if(req.method==="GET"&&p.startsWith("/auth/github"))return redirect(res,`/?github=error&reason=SERVER_ERROR`);
+    return json(res,e.status||500,{error:e.message||"Server error",code:e.code,limit:e.limit,used:e.used,remaining:e.remaining,plan:e.plan});
+  }
 }
 export default handler;
