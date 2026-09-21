@@ -369,7 +369,10 @@ async function rememberGoogleState(state,userId,redirectUri){
 }
 async function googleLoginStart(req,res){
   const clientId=String(process.env.GOOGLE_CLIENT_ID||"").trim(),secret=String(process.env.GOOGLE_CLIENT_SECRET||"").trim();
-  if(!clientId||!secret)return json(res,503,{error:"Google sign-in is not configured yet. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in Vercel."});
+  if(!clientId||!secret){
+    console.error(`[google-login] GOOGLE_CLIENT_ID and/or GOOGLE_CLIENT_SECRET are missing on this deployment (clientId set: ${!!clientId}, secret set: ${!!secret}). Check they exist for the Production environment in Vercel, not just Preview/Development.`);
+    return redirect(res,"/?google=error&reason=GOOGLE_NOT_CONFIGURED");
+  }
   const state=b64(crypto.randomBytes(32)),redirectUri=process.env.GOOGLE_REDIRECT_URI||`${origin(req)}/api/auth/google/callback`;
   await rememberOAuthState(state,redirectUri,{provider:"google-login"});
   const u=new URL("https://accounts.google.com/o/oauth2/v2/auth");
@@ -450,7 +453,10 @@ async function googleLoginCallback(req,res,record,code){
 async function googleDriveStart(req,res){
   const s=requireSession(req,res);if(!s)return;
   const clientId=String(process.env.GOOGLE_CLIENT_ID||"").trim(),secret=String(process.env.GOOGLE_CLIENT_SECRET||"").trim();
-  if(!clientId||!secret)return json(res,503,{error:"Google Drive integration is not configured yet. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in Vercel."});
+  if(!clientId||!secret){
+    console.error(`[google-drive] GOOGLE_CLIENT_ID and/or GOOGLE_CLIENT_SECRET are missing on this deployment (clientId set: ${!!clientId}, secret set: ${!!secret}).`);
+    return redirect(res,"/?google=error&reason=GOOGLE_NOT_CONFIGURED#github");
+  }
   const state=b64(crypto.randomBytes(32)),redirectUri=process.env.GOOGLE_REDIRECT_URI||`${origin(req)}/api/auth/google/callback`;
   await rememberGoogleState(state,s.id,redirectUri);
   const u=new URL("https://accounts.google.com/o/oauth2/v2/auth");
