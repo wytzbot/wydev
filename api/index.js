@@ -348,13 +348,19 @@ async function googleDriveCallback(req,res){
   const clientId=String(process.env.GOOGLE_CLIENT_ID||"").trim(),secret=String(process.env.GOOGLE_CLIENT_SECRET||"").trim(),redirectUri=process.env.GOOGLE_REDIRECT_URI||`${origin(req)}/api/auth/google/callback`;
   const tokenResp=await fetch("https://oauth2.googleapis.com/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({code,client_id:clientId,client_secret:secret,redirect_uri:redirectUri,grant_type:"authorization_code"})});
   const token=await tokenResp.json();if(!tokenResp.ok||!token.access_token)return json(res,502,{error:"Google token exchange failed"});
-  if(db){await db.collection("wydev_google_tokens").doc(String(record.userId)).set({encrypted:seal({access_token:token.access_token,refresh_token:token.refresh_token||null,expires_at:Date.now()+Number(token.expires_in||3600)*1000,scope:token.scope||"https://www.googleapis.com/auth/drive.file"}),updatedAt:Date.now()},{merge:true});}
+  const grantedScopes=String(token.scope||"").split(/\\s+/).filter(Boolean);
+  if(!grantedScopes.includes("https://www.googleapis.com/auth/drive.file")){
+    return redirect(res,`/?google=error&reason=drive_scope_required#github`);
+  }
+  if(db){await db.collection("wydev_google_tokens").doc(String(record.userId)).set({encrypted:seal({access_token:token.access_token,refresh_token:token.refresh_token||null,expires_at:Date.now()+Number(token.expires_in||3600)*1000,scope:grantedScopes.join(" ")}),updatedAt:Date.now()},{merge:true});}
   res.setHeader("Set-Cookie","wydev_google_state=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0");return redirect(res,"/?google=connected#github");
 }
 async function getGoogleDriveToken(userId){
   if(!db)throw Object.assign(new Error("Google Drive requires Firebase persistence."),{status:503,code:"GOOGLE_DRIVE_NOT_CONFIGURED"});
   const snap=await db.collection("wydev_google_tokens").doc(String(userId)).get();if(!snap.exists)throw Object.assign(new Error("Connect Google Drive first."),{status:401,code:"GOOGLE_DRIVE_NOT_CONNECTED"});
   const row=snap.data()||{},t=openCookie(row.encrypted||"");if(!t)throw Object.assign(new Error("Google Drive connection expired. Reconnect Google Drive."),{status:401,code:"GOOGLE_DRIVE_RECONNECT"});
+  const storedScopes=String(t.scope||"").split(/\\s+/).filter(Boolean);
+  if(!storedScopes.includes("https://www.googleapis.com/auth/drive.file"))throw Object.assign(new Error("Google Drive permission is missing. Reconnect Google Drive and approve the Drive file permission."),{status:401,code:"GOOGLE_DRIVE_SCOPE_REQUIRED"});
   if(Number(t.expires_at||0)>Date.now()+60000)return t.access_token;
   if(!t.refresh_token)throw Object.assign(new Error("Google Drive authorization expired. Reconnect Google Drive."),{status:401,code:"GOOGLE_DRIVE_RECONNECT"});
   const r=await fetch("https://oauth2.googleapis.com/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({client_id:String(process.env.GOOGLE_CLIENT_ID||""),client_secret:String(process.env.GOOGLE_CLIENT_SECRET||""),refresh_token:t.refresh_token,grant_type:"refresh_token"})});
@@ -365,7 +371,9 @@ async function googleDriveStatus(req,res){
   const s=requireSession(req,res);if(!s)return;
   if(!db)return json(res,200,{connected:false});
   const snap=await db.collection("wydev_google_tokens").doc(String(s.id)).get();
-  return json(res,200,{connected:snap.exists&&!!(snap.data()||{}).encrypted});
+  const t=snap.exists?openCookie((snap.data()||{}).encrypted||""):null;
+  const scopes=String(t?.scope||"").split(/\\s+/).filter(Boolean);
+  return json(res,200,{connected:!!t&&scopes.includes("https://www.googleapis.com/auth/drive.file"),scopeReady:scopes.includes("https://www.googleapis.com/auth/drive.file")});
 }
 // Lets a user revoke WyteLab's Google Drive access from inside the app itself,
 // not only from myaccount.google.com — required so people have a real control
@@ -403,7 +411,15 @@ async function exportRepoToDrive(s,owner,repo,branch){
   const bytes=Buffer.from(await r.arrayBuffer());if(bytes.length>25*1024*1024)throw Object.assign(new Error("Repository archive is larger than 25 MB. Open GitHub to download the full archive."),{status:413,code:"DRIVE_EXPORT_TOO_LARGE"});const boundary=`----WyteLab${crypto.randomBytes(8).toString("hex")}`,meta=JSON.stringify({name:`${repo}-${ref.replace(/[^a-zA-Z0-9._-]/g,"_")}.zip`,mimeType:"application/zip"});
   const pre=Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: application/zip\r\n\r\n`),post=Buffer.from(`\r\n--${boundary}--\r\n`);
   const up=await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink",{method:"POST",headers:{Authorization:`Bearer ${token}`,"Content-Type":`multipart/related; boundary=${boundary}`},body:Buffer.concat([pre,bytes,post])});
-  const d=await up.json();if(!up.ok)throw Object.assign(new Error(d?.error?.message||`Google Drive upload failed (${up.status})`),{status:up.status});return d;
+  const d=await up.json().catch(()=>({}));
+  if(!up.ok){
+    const reason=Array.isArray(d?.error?.errors)?d.error.errors.map(x=>String(x?.reason||"")).join(" "):"";
+    const message=String(d?.error?.message||"");
+    const scopeFailure=/insufficient authentication scopes|insufficientpermissions|insufficient permission/i.test(`${reason} ${message}`);
+    if(scopeFailure)throw Object.assign(new Error("Google Drive permission is missing. Reconnect Google Drive and approve the Drive file permission."),{status:401,code:"GOOGLE_DRIVE_SCOPE_REQUIRED"});
+    throw Object.assign(new Error(message||`Google Drive upload failed (${up.status})`),{status:up.status});
+  }
+  return d;
 }
 
 function limitKey(s){return `${s.id||s.login}:${new Date().toISOString().slice(0,10)}`;}
