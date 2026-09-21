@@ -429,15 +429,20 @@ async function googleDriveStart(req,res){
   res.setHeader("Set-Cookie",`wydev_google_state=${state}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=600`);return redirect(res,u.toString());
 }
 async function googleDriveCallback(req,res){
-  const q=new URL(req.url,origin(req)).searchParams,state=q.get("state"),code=q.get("code"),oauthError=q.get("error");if(!state)return json(res,400,{error:"Invalid Google OAuth state"});
-  const record=await consumeOAuthState(state);if(!record||!(["google-drive","google-login"].includes(record.provider)))return json(res,400,{error:"Invalid or expired Google OAuth state"});
+  const q=new URL(req.url,origin(req)).searchParams,state=q.get("state"),code=q.get("code"),oauthError=q.get("error");
+  // Any failure here must redirect back into the SPA (never return raw JSON):
+  // a bare JSON body has no viewport meta tag, so on mobile it renders
+  // zoomed-out like a desktop page instead of showing the app's error UI.
+  if(!state)return redirect(res,"/?google=error&reason=GOOGLE_STATE_MISSING#github");
+  const record=await consumeOAuthState(state);
+  if(!record||!(["google-drive","google-login"].includes(record.provider)))return redirect(res,"/?google=error&reason=GOOGLE_STATE_EXPIRED#github");
   if(record.provider==="google-login"){
     if(oauthError)return redirect(res,`/?google=error&reason=${encodeURIComponent(oauthError)}`);
-    if(!code)return json(res,400,{error:"Google did not return an authorization code"});
+    if(!code)return redirect(res,"/?google=error&reason=GOOGLE_LOGIN_CODE_MISSING");
     return googleLoginCallback(req,res,record,code);
   }
   if(oauthError)return redirect(res,`/?google=error&reason=${encodeURIComponent(oauthError)}#github`);
-  if(!code)return json(res,400,{error:"Google did not return an authorization code"});
+  if(!code)return redirect(res,"/?google=error&reason=GOOGLE_DRIVE_CODE_MISSING#github");
   const clientId=String(process.env.GOOGLE_CLIENT_ID||"").trim(),secret=String(process.env.GOOGLE_CLIENT_SECRET||"").trim(),redirectUri=process.env.GOOGLE_REDIRECT_URI||`${origin(req)}/api/auth/google/callback`;
   const tokenResp=await fetch("https://oauth2.googleapis.com/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({code,client_id:clientId,client_secret:secret,redirect_uri:redirectUri,grant_type:"authorization_code"})});
   if(!db)return redirect(res,"/?google=error&reason=GOOGLE_DRIVE_STORAGE_NOT_CONFIGURED#github");
