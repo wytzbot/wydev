@@ -1,5 +1,5 @@
 import {getApp, getApps, initializeApp} from "firebase/app";
-import {getAuth, GoogleAuthProvider, getRedirectResult, onAuthStateChanged, signInWithRedirect, signOut} from "firebase/auth";
+import {getAuth, GoogleAuthProvider, getRedirectResult, onAuthStateChanged, signInWithPopup, signInWithRedirect, signOut} from "firebase/auth";
 import {FIREBASE_CONFIG} from "./firebase-config";
 
 let authInstance = null;
@@ -22,11 +22,20 @@ function googleProvider(){
   return provider;
 }
 
-// Use Firebase Web Auth for both the normal browser and the APK WebView.
-// Firebase handles the Google OAuth redirect; WyteLab never tries to turn a
-// Google email address into a GitHub credential.
+// Prefer Firebase's popup flow so browsers/WebViews do not lose redirect
+// storage between the app origin and firebaseapp.com. If the environment
+// blocks popups, fall back to Firebase's redirect flow. WyteLab never tries to
+// turn a Google email address into a GitHub credential.
 export async function signInWithGoogle(){
-  return signInWithRedirect(firebaseAuth(), googleProvider());
+  try{
+    return await signInWithPopup(firebaseAuth(), googleProvider());
+  }catch(e){
+    const code=String(e?.code||"");
+    if(["auth/popup-blocked","auth/operation-not-supported-in-this-environment","auth/cancelled-popup-request"].includes(code)){
+      return signInWithRedirect(firebaseAuth(), googleProvider());
+    }
+    throw e;
+  }
 }
 
 export async function consumeGoogleRedirect(){

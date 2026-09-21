@@ -370,8 +370,12 @@ async function oauthCallback(req,res){
   }else if(db){
     stateRecord=await consumeOAuthState(state);
   }
-  if(!stateRecord&&!cookieMatches)return json(res,400,{error:"Invalid OAuth state",code:"OAUTH_STATE_MISSING"});
-  if(stateRecord&&!(["github","github-link"].includes(stateRecord.provider)))return json(res,400,{error:"Invalid OAuth provider state",code:"OAUTH_PROVIDER_MISMATCH"});
+  // A matching cookie is not sufficient by itself. The server-side one-time
+  // record binds the OAuth request to its redirect URI/provider and survives
+  // Vercel instance changes. Reject missing/expired records even when the
+  // browser happened to preserve the state cookie.
+  if(!stateRecord)return json(res,400,{error:"Invalid or expired OAuth state",code:"OAUTH_STATE_MISSING"});
+  if(!["github","github-link"].includes(stateRecord.provider))return json(res,400,{error:"Invalid OAuth provider state",code:"OAUTH_PROVIDER_MISMATCH"});
   if(!code){clearOAuthCookie(res);return json(res,400,{error:"GitHub did not return an authorization code"});}
   const redirectUri=process.env.GITHUB_REDIRECT_URI||`${origin(req)}/api/auth/github/callback`;
   if(stateRecord?.redirectUri&&String(stateRecord.redirectUri)!==String(redirectUri)){clearOAuthCookie(res);return json(res,400,{error:"Invalid OAuth redirect"});}
@@ -781,11 +785,14 @@ async function renewDue(){
         const base=Math.max(Date.now(),Number(e.expiresAt)||0);
         const expiresAt=addOneMonth(base);
         await setEntitlement(e.id,{status:"active",expiresAt,renewAt:expiresAt,renewalPending:false,renewalStartedAt:null,renewalReference:null,updatedAt:Date.now(),lastRenewalReference:reference});
-      }else{
-        // Flutterwave documents recurring charges as terminal success/failure
-        // charges. Never silently extend a pending/unknown result; the webhook
-        // can restore the entitlement if the provider later reports success.
+      }else if(["failed","cancelled","canceled","voided"].includes(status)){
+        // Only terminal failures should remove the active entitlement. A
+        // pending/processing charge must remain recoverable by the webhook;
+        // otherwise a slow bank/provider response can incorrectly downgrade a
+        // paying customer before Flutterwave reports the final result.
         await setEntitlement(e.id,{status:"past_due",renewalPending:false,renewalStartedAt:null,renewalReference:null,updatedAt:Date.now(),lastRenewalReference:reference});
+      }else{
+        await setEntitlement(e.id,{status:"active",renewalPending:true,renewalStartedAt:Date.now(),renewalReference:reference,updatedAt:Date.now(),lastRenewalReference:reference});
       }
       processed++;
     }catch{await setEntitlement(e.id,{status:"past_due",renewalPending:false,renewalStartedAt:null,renewalReference:null,updatedAt:Date.now()});}
