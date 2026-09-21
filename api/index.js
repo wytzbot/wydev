@@ -425,7 +425,7 @@ async function googleDriveCallback(req,res){
   // zoomed-out like a desktop page instead of showing the app's error UI.
   if(!state)return redirect(res,"/?google=error&reason=GOOGLE_STATE_MISSING#github");
   const record=await consumeOAuthState(state);
-  if(!record||!(["google-drive","google-login"].includes(record.provider)))return redirect(res,"/?google=error&reason=GOOGLE_STATE_EXPIRED#github");
+  if(!record||record.provider!=="google-drive")return redirect(res,"/?google=error&reason=GOOGLE_STATE_EXPIRED#github");
   if(oauthError)return redirect(res,`/?google=error&reason=${encodeURIComponent(oauthError)}#github`);
   if(!code)return redirect(res,"/?google=error&reason=GOOGLE_DRIVE_CODE_MISSING#github");
   if(!db)return redirect(res,"/?google=error&reason=GOOGLE_DRIVE_STORAGE_NOT_CONFIGURED#github");

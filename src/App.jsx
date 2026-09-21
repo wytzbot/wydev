@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import Menu from "./components/Menu";
 import TopBar from "./components/TopBar";
 import TabBar from "./components/TabBar";
@@ -6,22 +6,34 @@ import DialogHost from "./components/DialogHost";
 import ToastHost from "./components/ToastHost";
 import { toastSuccess, toastError, toastInfo } from "./toast";
 import { openExternal } from "./utils";
+// Login, Home and Offline are on the critical path (the first thing a signed-out,
+// signed-in-with-no-repos, or offline visitor sees), so they stay in the main
+// bundle. Everything else is only needed once a user actually navigates there,
+// so it's code-split into its own lazily-fetched chunk. On a slow connection
+// this cuts the JS a first-time visitor has to download before seeing anything
+// from the whole app down to just what the current screen needs.
 import Login from "./pages/Login";
 import Home from "./pages/Home";
-import Repositories from "./pages/Repositories";
-import Changes from "./pages/Changes";
-import Settings from "./pages/Settings";
-import Billing from "./pages/Billing";
-import Project from "./pages/Project";
-import SearchPage from "./pages/Search";
-import LegalPage from "./pages/Legal";
 import Offline from "./pages/Offline";
-import Actions from "./pages/Actions";
-import GitHubHub from "./pages/GitHubHub";
-import Logs from "./pages/Logs";
+const Repositories = lazy(() => import("./pages/Repositories"));
+const Changes = lazy(() => import("./pages/Changes"));
+const Settings = lazy(() => import("./pages/Settings"));
+const Billing = lazy(() => import("./pages/Billing"));
+const Project = lazy(() => import("./pages/Project"));
+const SearchPage = lazy(() => import("./pages/Search"));
+const LegalPage = lazy(() => import("./pages/Legal"));
+const Actions = lazy(() => import("./pages/Actions"));
+const GitHubHub = lazy(() => import("./pages/GitHubHub"));
+const Logs = lazy(() => import("./pages/Logs"));
 import { github } from "./github";
 import { loadState, saveState } from "./storage";
 import { initNotifications } from "./notifications";
+
+// Shown the instant a lazy page chunk is requested, so a slow/flaky
+// connection never leaves the screen blank while that chunk downloads.
+function PageLoading() {
+  return <div className="loading">Loading…</div>;
+}
 
 export default function App() {
   const initialBillingReturn = new URLSearchParams(window.location.search).get("billing") === "return";
@@ -345,35 +357,37 @@ export default function App() {
           </button>
         )}
         {page === "home" && <Home repos={repos} loading={reposLoading} onOpen={open} onCreate={createRepo} />}
-        {page === "repos" && <Repositories repos={repos} repoLimit={repoLimit} loading={reposLoading} onOpen={open} onCreate={createRepo} onRefresh={loadRepos} />}
-        {page === "changes" && <Changes changes={workingChanges} onSelect={openFile} onDiscard={working?.discard} />}
-        {page === "actions" && <Actions repos={repos} />}
-        {page === "github" && <GitHubHub repos={repos} />}
-        {page === "logs" && <Logs />}
-        {page === "settings" && <Settings />}
-        {page === "billing" && <Billing />}
-        {page === "project" && repo && <Project
-          repo={repo}
-          openPath={openPath}
-          onBack={() => navigate("repos")}
-          onWorkingState={setWorking}
-          onDeleteRepo={(deleted) => {
-            setRepos((rs) => {
-              const next = rs.filter((r) => String(r.id) !== String(deleted.id));
-              saveState(`reposCache:${String(user.id)}`, { repos: next, repoLimit, savedAt: Date.now() });
-              return next;
-            });
-            setRepo((current) => (current && String(current.id) === String(deleted.id) ? null : current));
-            setWorking(null);
-          }}
-        />}
-        {page === "search" && <SearchPage repos={repos} onOpen={open} onNavigate={navigate} query={searchQuery} repoFiles={working?.files || {}} onOpenFile={openFile} />}
+        <Suspense fallback={<PageLoading />}>
+          {page === "repos" && <Repositories repos={repos} repoLimit={repoLimit} loading={reposLoading} onOpen={open} onCreate={createRepo} onRefresh={loadRepos} />}
+          {page === "changes" && <Changes changes={workingChanges} onSelect={openFile} onDiscard={working?.discard} />}
+          {page === "actions" && <Actions repos={repos} />}
+          {page === "github" && <GitHubHub repos={repos} />}
+          {page === "logs" && <Logs />}
+          {page === "settings" && <Settings />}
+          {page === "billing" && <Billing />}
+          {page === "project" && repo && <Project
+            repo={repo}
+            openPath={openPath}
+            onBack={() => navigate("repos")}
+            onWorkingState={setWorking}
+            onDeleteRepo={(deleted) => {
+              setRepos((rs) => {
+                const next = rs.filter((r) => String(r.id) !== String(deleted.id));
+                saveState(`reposCache:${String(user.id)}`, { repos: next, repoLimit, savedAt: Date.now() });
+                return next;
+              });
+              setRepo((current) => (current && String(current.id) === String(deleted.id) ? null : current));
+              setWorking(null);
+            }}
+          />}
+          {page === "search" && <SearchPage repos={repos} onOpen={open} onNavigate={navigate} query={searchQuery} repoFiles={working?.files || {}} onOpenFile={openFile} />}
+          {page === "privacy" && <LegalPage type="privacy" />}
+          {page === "terms" && <LegalPage type="terms" />}
+          {page === "about" && <LegalPage type="about" />}
+          {page === "contact" && <LegalPage type="contact" />}
+        </Suspense>
         {page === "recent" && <Recent onOpen={open} />}
         {page === "help" && <Help />}
-        {page === "privacy" && <LegalPage type="privacy" />}
-        {page === "terms" && <LegalPage type="terms" />}
-        {page === "about" && <LegalPage type="about" />}
-        {page === "contact" && <LegalPage type="contact" />}
         {page === "vercel" && <div className="page"><header><div><span className="eyebrow">DEPLOYMENT</span><h1>Vercel</h1></div></header><section className="panel"><p className="muted">Open Vercel to import or deploy a GitHub repository.</p><button className="primary" onClick={() => openExternal("https://vercel.com")}>Open Vercel</button></section></div>}
       </section>
       <TabBar page={page} setPage={navigate} onMore={openMenu} />

@@ -51,4 +51,25 @@ function copyRootAssets() {
 
 export default defineConfig({
   plugins: [react(), copyRootAssets()],
+  build: {
+    rollupOptions: {
+      output: {
+        // Group third-party code by library into its own long-lived chunks,
+        // separate from app code. App code changes on every deploy, but
+        // these dependencies rarely do — splitting them out means a returning
+        // visitor on a slow connection only re-downloads the small app chunk
+        // after an update, not React/Firebase/CodeMirror all over again,
+        // since the service worker below caches hashed chunks indefinitely.
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (id.includes("firebase")) return "vendor-firebase";
+          if (id.includes("codemirror") || id.includes("@uiw")) return "vendor-editor";
+          if (id.includes("react-dom") || id.includes("/react/") || id.includes("scheduler")) return "vendor-react";
+          if (id.includes("jszip")) return "vendor-jszip";
+          if (id.includes("lucide-react")) return "vendor-icons";
+          return "vendor";
+        },
+      },
+    },
+  },
 });

@@ -1,6 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Copy, FilePlus, FolderPlus, ExternalLink, Upload, Trash2, Move, GitBranch, RefreshCw, ChevronDown, Loader2, Undo2, History, Download, FileText, Share2 } from "lucide-react";
-import CodeEditor from "../components/CodeEditor";
+// CodeMirror (plus its language/theme packages) is the single heaviest
+// dependency in the app. It's only needed once someone actually opens a file,
+// so it's kept out of the Project chunk entirely and fetched on first use —
+// on a slow connection, browsing a repo's file tree or reviewing changes
+// never has to wait for the editor to download.
+const CodeEditor = lazy(() => import("../components/CodeEditor"));
 import FileExplorer from "../components/FileExplorer";
 import CommitPanel from "../components/CommitPanel";
 import AIDiagnostics from "../components/AIDiagnostics";
@@ -1118,5 +1123,5 @@ function FileViewer({ path, value, onChange, onViewReady, unsaved=false, onBack,
       </div>
     </div>;
   }
-  return <><div className="fileTitle"><button className="fileBack" aria-label="Back to files" onClick={onBack}>‹</button><b>{path}</b>{unsaved && <span> • Unsaved</span>}</div><CodeEditor path={path} value={String(value ?? "")} onChange={onChange} onViewReady={onViewReady} fontSize={fontSize} wordWrap={wordWrap} /></>;
+  return <><div className="fileTitle"><button className="fileBack" aria-label="Back to files" onClick={onBack}>‹</button><b>{path}</b>{unsaved && <span> • Unsaved</span>}</div><Suspense fallback={<div className="loading">Loading editor…</div>}><CodeEditor path={path} value={String(value ?? "")} onChange={onChange} onViewReady={onViewReady} fontSize={fontSize} wordWrap={wordWrap} /></Suspense></>;
 }
