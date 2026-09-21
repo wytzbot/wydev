@@ -361,8 +361,46 @@ async function googleLoginStart(req,res){
   await rememberOAuthState(state,redirectUri,{provider:"google-login"});
   const u=new URL("https://accounts.google.com/o/oauth2/v2/auth");
   u.searchParams.set("client_id",clientId);u.searchParams.set("redirect_uri",redirectUri);u.searchParams.set("response_type","code");u.searchParams.set("access_type","online");u.searchParams.set("prompt","select_account");u.searchParams.set("scope","openid email profile");u.searchParams.set("state",state);
-  res.setHeader("Set-Cookie",`wydev_google_state=${state}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=600`);
+  res.setHeader("Set-Cookie",`wydev_google_state=${state}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`);
   return redirect(res,u.toString());
+}
+
+async function googleNativeLoginStart(req,res){
+  const clientId=String(process.env.GOOGLE_CLIENT_ID||"").trim();
+  if(!clientId)return json(res,503,{error:"Google sign-in is not configured yet. Set GOOGLE_CLIENT_ID in Vercel."});
+  const state=b64(crypto.randomBytes(32));
+  // Median's native Google plugin returns the ID token to this endpoint. The
+  // state is kept in a SameSite cookie so the WebView callback is still CSRF
+  // protected without relying on the browser's OAuth redirect cookie.
+  res.setHeader("Set-Cookie",`wydev_google_native_state=${state}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`);
+  return json(res,200,{state,redirectUri:`${origin(req)}/api/auth/google/native`});
+}
+
+async function googleNativeLoginCallback(req,res){
+  const q=new URL(req.url,origin(req)).searchParams;
+  const state=String(q.get("state")||""),code=String(q.get("idToken")||"");
+  const cookieState=String(parseCookies(req).wydev_google_native_state||"");
+  const clear=()=>res.setHeader("Set-Cookie","wydev_google_native_state=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0");
+  if(!state||!cookieState||state!==cookieState){clear();return redirect(res,"/?google=error&reason=GOOGLE_NATIVE_STATE_INVALID");}
+  if(q.get("error")){clear();return redirect(res,`/?google=error&reason=${encodeURIComponent(String(q.get("error")))}`);}
+  if(!code){clear();return redirect(res,"/?google=error&reason=GOOGLE_NATIVE_TOKEN_MISSING");}
+  try{
+    // Google tokeninfo validates the signed ID token server-side. Never trust
+    // decoded client-side JWT claims for authentication.
+    const r=await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(code)}`);
+    const info=await r.json().catch(()=>({}));
+    if(!r.ok||!info.sub||!info.email)throw Object.assign(new Error("Google ID token validation failed"),{code:"GOOGLE_NATIVE_TOKEN_INVALID"});
+    const allowed=new Set([String(process.env.GOOGLE_CLIENT_ID||"").trim(),...String(process.env.GOOGLE_NATIVE_CLIENT_IDS||"").split(",").map(x=>x.trim()).filter(Boolean)]);
+    if(!allowed.has(String(info.aud||"")))throw Object.assign(new Error("Google ID token audience is not configured for WyteLab"),{code:"GOOGLE_NATIVE_AUDIENCE_INVALID"});
+    if(String(info.email_verified).toLowerCase()!=="true")throw Object.assign(new Error("Google account email is not verified"),{code:"GOOGLE_EMAIL_NOT_VERIFIED"});
+    const email=String(info.email).trim().toLowerCase(),sub=String(info.sub);
+    setSession(res,{token:null,refresh_token:null,login:"",id:`google:${sub}`,name:info.name||email.split("@")[0],avatar:info.picture||"",scope:"openid email profile",provider:"google",githubConnected:false,email,emailVerified:true,googleSub:sub});
+    clear();
+    return redirect(res,"/");
+  }catch(e){
+    clear();
+    return redirect(res,`/?google=error&reason=${encodeURIComponent(e.code||"GOOGLE_NATIVE_LOGIN_FAILED")}`);
+  }
 }
 async function googleLoginCallback(req,res,record,code){
   const clientId=String(process.env.GOOGLE_CLIENT_ID||"").trim(),secret=String(process.env.GOOGLE_CLIENT_SECRET||"").trim(),redirectUri=process.env.GOOGLE_REDIRECT_URI||`${origin(req)}/api/auth/google/callback`;
@@ -835,6 +873,8 @@ async function handler(req,res){
     }
     if(p==="/auth/github/callback"&&req.method==="GET")return oauthCallback(req,res);
     if(p==="/auth/google/login"&&req.method==="GET")return googleLoginStart(req,res);
+    if(p==="/auth/google/native/start"&&req.method==="GET")return googleNativeLoginStart(req,res);
+    if(p==="/auth/google/native"&&req.method==="GET")return googleNativeLoginCallback(req,res);
     if(p==="/auth/google"&&req.method==="GET")return googleDriveStart(req,res);
     if(p==="/auth/google/callback"&&req.method==="GET")return googleDriveCallback(req,res);
     if(p==="/auth/google/status"&&req.method==="GET")return googleDriveStatus(req,res);

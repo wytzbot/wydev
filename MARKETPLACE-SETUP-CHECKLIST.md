@@ -22,7 +22,7 @@ Configure the production project:
   - `email`
   - `profile`
   - `https://www.googleapis.com/auth/drive.file`
-- OAuth client: create a Web application client and add the exact production callback URL. Google SSO and Drive use the same `/api/auth/google/callback` callback and distinguish their one-time OAuth state server-side.
+- OAuth client: create a Web application client and add the exact production callback URL. Browser Google SSO and Drive use `/api/auth/google/callback` and distinguish their one-time OAuth state server-side. The Median APK uses the native Google Social Login plugin and `/api/auth/google/native`; it is a separate native path, not an OAuth redirect inside the Android WebView.
 - Authorized domain: add the production domain used by the app and public legal pages.
 - Verification: because `drive.file` is currently a non-sensitive scope, do not claim sensitive-scope verification is required solely because of `drive.file`. Complete any brand/basic OAuth verification or other verification Google actually requests for the project.
 

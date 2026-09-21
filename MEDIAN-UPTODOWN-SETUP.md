@@ -2,6 +2,12 @@
 
 This release keeps the existing Vite/React web app and adds a deliberate Median native integration layer. It does **not** pretend to be a Flutter project and does not require changing the web architecture.
 
+## Google Sign-In in the Median APK
+
+Google blocks OAuth sign-in inside Android WebViews. For the APK, enable **Native Plugins → Social Login → Google** in Median App Studio and configure the Google client IDs required by Median. WyteLab now uses the Median native Google login bridge in the APK and keeps the normal server-side OAuth flow for ordinary browsers. After enabling the plugin, rebuild the APK. This is required for Google SSO inside the APK.
+
+The web app's server endpoint is `https://wyte.name.ng/api/auth/google/native`. If you use an Android/native client ID different from the web client ID, add it to `GOOGLE_NATIVE_CLIENT_IDS` as a comma-separated Vercel environment variable.
+
 ## Required Median App Studio configuration
 
 Enable the JavaScript Bridge and configure these native features in the Median project used to build the APK:
