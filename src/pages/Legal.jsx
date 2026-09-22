@@ -6,8 +6,8 @@ const CONTENT = {
     label: "PRIVACY",
     title: "Privacy Policy",
     sections: [
-      ["What we collect", "WyteLab collects the information needed to authenticate your Google and/or GitHub account, connect you to repositories you choose to use, operate the workspace, and provide billing services. We aim to collect only what is necessary for these functions."],
-      ["Account sign-in", "You can sign in with Google using the openid, email, and profile scopes. Google SSO creates the WyteLab account session. Repository features still require a connected GitHub account because GitHub remains the source of truth for repository access. You can also sign in directly with GitHub."],
+      ["What we collect", "WyteLab collects the information needed to authenticate your GitHub account, connect you to repositories you choose to use, operate the workspace, and provide billing services. Optional Google Drive integration is separate and is used only when you choose to connect it. We aim to collect only what is necessary for these functions."],
+      ["Account sign-in", "WyteLab uses GitHub OAuth for account sign-in and repository access. You authorize the permissions shown by GitHub, and WyteLab uses the resulting connection for actions you request. There is no separate Google sign-in requirement for the WyteLab account."],
       ["GitHub access", "When you connect or sign in with GitHub, WyteLab uses the permissions granted during authorization to perform actions you request, such as reading repositories, editing files, and creating or updating repository content. WyteLab does not claim ownership of your code."],
       ["Payments", "Payments are processed through our payment provider. WyteLab does not intentionally store your full card number, CVV, or card PIN. Payment authorization data is handled through the payment flow provided by the payment processor."],
       ["Data use", "We use account and service data to operate WyteLab, prevent abuse, troubleshoot failures, maintain security, and provide requested features. We do not sell your private repository content."],

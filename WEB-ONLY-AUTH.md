@@ -1,21 +1,19 @@
-# WyteLab Web Google Sign-In — Popup + Redirect Fallback
+# WyteLab GitHub Sign-In — Web + APK
 
-Google authentication is web-only.
+GitHub is the account and repository connection for WyteLab.
 
-### Normal path
-1. User clicks **Continue with Google**.
-2. Firebase Web SDK opens the Google popup.
-3. Google authenticates the user.
-4. Firebase establishes the browser session.
-5. WyteLab exchanges the Firebase ID token for its server session.
+### Sign-in path
+1. User opens WyteLab.
+2. WyteLab checks the existing server session with `/api/auth/me`.
+3. If no session exists, the login screen immediately offers **Connect GitHub**.
+4. GitHub OAuth opens through `/api/auth/github`.
+5. GitHub returns to `/api/auth/github/callback`.
+6. The server creates the encrypted WyteLab session cookie and redirects to `/`.
+7. WyteLab loads the user's repositories through the GitHub API.
 
-### Automatic fallback
-If the popup cannot complete because the browser blocks it, does not support the popup environment, cannot use the required web storage, or reports a popup/internal browser failure, WyteLab automatically switches to:
+### Android APK behavior
+The APK uses the same server-side GitHub OAuth flow. It does not depend on Firebase Google redirect state, `sessionStorage`, or a native Google login plugin. WebView cookies are enabled so the OAuth round trip can establish the server session.
 
-`Firebase signInWithRedirect → Google → return to WyteLab → getRedirectResult → server session`
+The client also has a short `/auth/me` timeout and a 5-second login fallback, preventing a slow or suspended mobile network request from keeping the app on an indefinite **Loading WyteLab…** screen.
 
-This prevents users from being trapped on the login screen just because popup authentication is unavailable.
-
-The redirect result is consumed when the Login page loads. The returned Firebase user is then exchanged with the WyteLab server before the app redirects to the dashboard.
-
-No Median/native authentication bridge or native Google SDK is required.
+Google Drive remains an optional integration and is unrelated to account sign-in.

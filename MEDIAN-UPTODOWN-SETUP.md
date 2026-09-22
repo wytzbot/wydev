@@ -1,12 +1,12 @@
 # WyteLab — Median / Uptodown build setup
 
-This release keeps the existing Vite/React web app. Google account authentication is implemented with the **Firebase Web SDK** exactly like the normal web app; no Median Social Login or native Google authentication is required.
+This release keeps the existing Vite/React web app. Account sign-in uses **GitHub OAuth** exactly like the normal web app; no Median Social Login or native Google authentication is required.
 
-## Google Sign-In
+## GitHub Sign-In
 
-WyteLab uses Firebase Authentication with the Google provider:
+WyteLab uses its server-side GitHub OAuth flow:
 
-`Continue with Google → Firebase Web Auth → Google → Firebase ID token → WyteLab server session`
+`Connect GitHub → GitHub OAuth → WyteLab callback → encrypted WyteLab session`
 
 GitHub remains a separate authorization step:
 
@@ -27,7 +27,7 @@ The public Firebase Web SDK configuration is in `src/firebase-config.js`. Those 
 
 ## Median / APK
 
-No Median Google Social Login plugin is required. The APK can load the same web application and Firebase Web Authentication flow. If a specific Median build blocks external OAuth redirects, configure the app to allow the Firebase auth domain and the production WyteLab domain rather than replacing Firebase Auth with a second login system.
+No Median Google Social Login plugin is required. The APK loads the same web application and GitHub OAuth flow. Keep the production WyteLab domain and GitHub OAuth callback available to the WebView.
 
 The existing Median integrations for Firebase Cloud Messaging, sharing and other app features are independent of Google authentication.
 
@@ -39,4 +39,4 @@ Google Drive is a separate optional integration and still uses the server-side G
 - `GOOGLE_CLIENT_SECRET`
 - `GOOGLE_REDIRECT_URI=https://YOUR-DOMAIN/api/auth/google/callback`
 
-Do not use those Drive OAuth credentials as a substitute for Firebase Google Sign-In.
+Do not use Google Drive OAuth credentials as a substitute for GitHub account sign-in.

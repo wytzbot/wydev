@@ -1,5 +1,5 @@
 # Superseded mobile Google authentication note
 
-This file documents an earlier experiment with Firebase redirect authentication for embedded/native WebViews.
+This document records the Firebase/Google redirect experiment that is no longer used for WyteLab account sign-in.
 
-The active release is **web-only**. Google sign-in uses the Firebase Web SDK in a normal browser and does not depend on Median/native Google authentication.
+The current release uses **GitHub OAuth directly** for account sign-in and repository access, including the Android WebView build. Firebase remains available for unrelated app services such as notifications where configured.

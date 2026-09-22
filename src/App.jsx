@@ -272,6 +272,14 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.style.setProperty("--ui-font", loadState("fontSize", 16) + "px");
+    // Never make the login screen depend indefinitely on a session probe. This
+    // matters especially in Android WebViews, where a suspended socket can take
+    // a while to report failure. The session request continues in the background
+    // and can still promote the user into the app if it returns successfully.
+    let settled = false;
+    const loginFallback = window.setTimeout(() => {
+      if (!settled) setLoading(false);
+    }, 5000);
     github
       .session()
       .then((x) => {
@@ -283,8 +291,20 @@ export default function App() {
           initNotifications(x.user).catch(() => {});
         }
       })
-      .catch((e) => toastError(e))
-      .finally(() => setLoading(false));
+      .catch((e) => {
+        // A normal signed-out response is handled by the login screen; only
+        // surface unexpected network/server failures without blocking access.
+        if (Number(e?.status) !== 401) toastError(e);
+      })
+      .finally(() => {
+        settled = true;
+        window.clearTimeout(loginFallback);
+        setLoading(false);
+      });
+    return () => {
+      settled = true;
+      window.clearTimeout(loginFallback);
+    };
   }, []);
 
   useEffect(() => {

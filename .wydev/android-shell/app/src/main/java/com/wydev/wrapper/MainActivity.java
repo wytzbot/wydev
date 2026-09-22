@@ -54,6 +54,10 @@ public class MainActivity extends Activity {
     s.setSupportMultipleWindows(false);
     s.setBuiltInZoomControls(false);
     s.setDisplayZoomControls(false);
+    // GitHub OAuth is the APK sign-in path. Keep WebView cookies enabled across
+    // the GitHub -> WyteLab redirect so the server session can be established.
+    android.webkit.CookieManager.getInstance().setAcceptCookie(true);
+    android.webkit.CookieManager.getInstance().setAcceptThirdPartyCookies(web, true);
     web.addJavascriptInterface(new Bridge(), "WyBuild");
 
     web.setWebViewClient(new WebViewClient() {

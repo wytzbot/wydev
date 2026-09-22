@@ -1,7 +1,7 @@
 {
   "name": "WyteLab",
-  "release": "marketplace-ready-sso-reviewer",
-  "date": "2026-09-21",
+  "release": "github-oauth-apk-auth-fix",
+  "date": "2026-09-22",
   "vercel_serverless_functions": 1,
   "github_source_of_truth": true,
   "firebase_persistence": true,
@@ -11,7 +11,7 @@
   "source_checks": "PASS",
   "vite_build": "NOT_VERIFIABLE_IN_SANDBOX",
   "notes": [
-    "Google SSO uses openid, email and profile; GitHub remains required for repository access.",
+    "GitHub OAuth is the account sign-in and repository connection; Google Drive remains optional.",
     "Reviewer Pro access is controlled by server-only REVIEWER_PRO_ACCESS/REVIEWER_EMAILS/REVIEWER_GITHUB_LOGINS environment variables.",
     "Full Vite build could not be verified here because npm install timed out; run the production build in Vercel/CI."
   ],
@@ -20,6 +20,6 @@
     "USD": 7
   },
   "nigerian_default_currency": "NGN",
-  "google_sso": true,
+  "google_sso": false,
   "reviewer_pro_allowlist": true
 }
