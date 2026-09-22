@@ -23,6 +23,16 @@ function requestFullscreen() {
 }
 
 export function initFullscreen() {
+  // Median's native fullscreen controls the Android system UI. Use it immediately
+  // when available; the browser Fullscreen API cannot remove a native AppBrowser
+  // toolbar and is therefore only a fallback for ordinary browser/PWA use.
+  try {
+    if (window.median?.screen?.fullScreen) {
+      window.median.screen.fullScreen();
+      return;
+    }
+  } catch {}
+
   if (isAlreadyImmersive()) return;
   if (!document.documentElement.requestFullscreen &&
       !document.documentElement.webkitRequestFullscreen &&

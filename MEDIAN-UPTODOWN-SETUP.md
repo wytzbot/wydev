@@ -14,6 +14,21 @@ Enable the JavaScript Bridge and configure these native features in the Median p
 6. **Deep links / allowed URLs** — keep the Wytelab domain and required legal/API routes allowed. During testing, do not accidentally restrict the bridge away from `https://wyte.name.ng`.
 7. If using the injected Median bridge, leave bridge injection enabled. Do not also install the NPM bridge package unless the Median project is intentionally switched to the NPM-package approach.
 
+
+## Remove the Chrome-style top URL bar in the APK
+
+If the installed APK shows a top bar containing the domain, Share, and the three-dot menu, that is Median's **App Browser / Custom Tab**, not the WyteLab webpage. A webpage manifest or CSS change cannot remove that native toolbar. Median documents that same-domain URLs normally open in the main WebView, while App Browser is a separate native window.
+
+For the APK build, configure **App Studio → Link Behavior** as follows:
+
+1. Set the **initial WyteLab URL (`https://wyte.name.ng`) to Internal**, not App Browser.
+2. Keep only the authentication pages that genuinely need a browser flow in **App Browser** if required by the OAuth setup.
+3. Add the OAuth callback/success URL back to `https://wyte.name.ng` as **Internal**, so the successful login returns to the main WebView instead of leaving the app in the browser window.
+4. Rebuild the Android APK after changing Link Behavior.
+5. In **Interface → Full Screen**, enable **Full Screen**. This source also calls Median's native `median.screen.fullScreen()` when the bridge is available.
+
+This distinction is important: Full Screen hides Android's system status/navigation bars, while Link Behavior controls the Chrome-style App Browser toolbar. Both settings are needed for the intended app presentation.
+
 ## What this web release adds
 
 - A native-aware mobile bridge with safe browser fallbacks.

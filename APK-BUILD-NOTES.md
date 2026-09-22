@@ -60,3 +60,9 @@ The create-repo route already returns specific reasons (invalid name characters,
 - The repository name field only accepts letters, numbers, dots, dashes and underscores — a space or other punctuation will always be rejected client input, not a GitHub error.
 - If you recently added the `workflow`/`delete_repo` scopes to the server's OAuth request, existing signed-in sessions still hold the old token scope. Sign out and sign back in to re-authorize.
 - Tap the error toast (it stays up 10s) or check the browser/WebView console for the exact message — that will point to the precise cause (rate limit, 422 name conflict, 401 expired token, etc.).
+
+## Chrome-style top bar / App Browser fix
+
+The Chrome-style bar showing the domain, share button and menu is not rendered by the WyteLab web code. In a Median APK it indicates that the page is running in Median's App Browser/Custom Tab. The initial WyteLab URL must therefore be configured as **Internal** under Median App Studio → Link Behavior; OAuth pages may remain App Browser where required, but the OAuth callback back to `https://wyte.name.ng` must be Internal. Rebuild the APK after changing this.
+
+The web source now also invokes Median's native `median.screen.fullScreen()` when available. That handles Android system UI; it does not replace the Link Behavior setting for the App Browser toolbar.
