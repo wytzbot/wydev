@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import {createRequire} from "node:module";
 const require=createRequire(import.meta.url);
 let db=null;
+let firebaseAdmin=null;
 try{
   const admin=require("firebase-admin");
   if(!admin.apps.length){
@@ -17,7 +18,7 @@ try{
       })});
     }
   }
-  if(admin.apps.length) db=admin.firestore();
+  if(admin.apps.length){ firebaseAdmin=admin; db=admin.firestore(); }
 }catch(e){ console.error("Firebase Admin initialization failed:",e.message); }
 
 async function firebaseMessaging(){
@@ -189,51 +190,20 @@ function openCookie(v){try{const [iv,enc,tag]=v.split(".");const d=crypto.create
 function setSession(res,user){const value=seal(user);res.setHeader("Set-Cookie",`wydev_session=${encodeURIComponent(value)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800`);}
 function clearSession(res){res.setHeader("Set-Cookie","wydev_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0");}
 function session(req){const c=parseCookies(req).wydev_session;return c?openCookie(c):null;}
-function requireSession(req,res){const s=session(req);if(!s?.token||!s?.login){json(res,401,{error:"GitHub authentication required",code:"GITHUB_REQUIRED"});return null}return s;}
-
-async function firebaseGoogleLogin(req,res){
+function requireSession(req,res){const s=session(req);if(!s?.token||!s?.login){json(res,401,{error:"GitHub connection required. Connect GitHub to use repository features."});return null}return s;}
+async function firebaseLogin(req,res){
+  if(!firebaseAdmin?.auth) return json(res,503,{error:"Google sign-in is not configured on the WyteLab server.",code:"GOOGLE_AUTH_NOT_CONFIGURED"});
   const b=await body(req),idToken=String(b?.idToken||"").trim();
-  if(!idToken)return json(res,400,{error:"Firebase ID token required",code:"FIREBASE_TOKEN_MISSING"});
-  try{
-    let profile=null;
-    if(db){
-      const admin=require("firebase-admin");
-      const decoded=await admin.auth().verifyIdToken(idToken,true);
-      profile={uid:decoded.uid,email:decoded.email,emailVerified:decoded.email_verified,name:decoded.name,picture:decoded.picture};
-    }else{
-      // Fallback for deployments that use Firebase Authentication but have not
-      // installed Firebase Admin credentials. The Identity Toolkit endpoint
-      // validates the Firebase ID token against this exact Firebase project.
-      const r=await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(FIREBASE_WEB_CONFIG.apiKey)}`,{
-        method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({idToken})
-      });
-      const data=await r.json().catch(()=>({}));
-      const u=Array.isArray(data.users)?data.users[0]:null;
-      if(!r.ok||!u)throw Object.assign(new Error("Firebase ID token validation failed"),{code:"FIREBASE_TOKEN_INVALID"});
-      profile={uid:u.localId,email:u.email,emailVerified:u.emailVerified,name:u.displayName,picture:u.photoUrl};
-    }
-    const uid=String(profile?.uid||"").trim(),email=String(profile?.email||"").trim().toLowerCase();
-    if(!uid||!email)throw Object.assign(new Error("Google account profile is incomplete"),{code:"FIREBASE_PROFILE_INVALID"});
-    if(profile.emailVerified===false)throw Object.assign(new Error("Your Google account email must be verified."),{code:"FIREBASE_EMAIL_NOT_VERIFIED"});
-    const name=String(profile.name||email.split("@")[0]||"Google user");
-    const avatar=String(profile.picture||"");
-    const googleSub=uid;
-    setSession(res,{token:null,refresh_token:null,login:"",id:`google:${googleSub}`,name,avatar,scope:"openid email profile",provider:"google",githubConnected:false,email,emailVerified:true,googleSub});
-    return json(res,200,{ok:true,user:{id:`google:${googleSub}`,login:"",name,avatar,email,provider:"google",githubConnected:false,googleConnected:true}});
-  }catch(e){
-    console.error("[firebase-google] ID token verification failed:",e?.message||e);
-    const code=String(e?.code||"");
-    if(code==="auth/id-token-expired"||code==="auth/id-token-revoked")return json(res,401,{error:"Google sign-in expired. Please sign in with Google again.",code:"FIREBASE_TOKEN_EXPIRED"});
-    if(code==="FIREBASE_EMAIL_NOT_VERIFIED")return json(res,403,{error:e.message,code});
-    return json(res,401,{error:"Google sign-in could not be verified. Please try again.",code:"FIREBASE_TOKEN_INVALID"});
-  }
-}
-function reviewerList(name){return String(process.env[name]||"").split(",").map(x=>x.trim().toLowerCase()).filter(Boolean);}
-function hasReviewerProAccess(s){
-  if(String(process.env.REVIEWER_PRO_ACCESS||"").toLowerCase()!=="true")return false;
-  const emails=reviewerList("REVIEWER_EMAILS"),logins=reviewerList("REVIEWER_GITHUB_LOGINS");
-  const email=String(s?.email||"").trim().toLowerCase(),login=String(s?.login||"").trim().toLowerCase();
-  return (email&&s?.emailVerified!==false&&emails.includes(email))||(login&&logins.includes(login));
+  if(!idToken) return json(res,400,{error:"Google identity token is required."});
+  let decoded;
+  try{ decoded=await firebaseAdmin.auth().verifyIdToken(idToken); }
+  catch{ return json(res,401,{error:"Google sign-in could not be verified. Please try again.",code:"GOOGLE_TOKEN_INVALID"}); }
+  const email=String(decoded.email||"").trim();
+  const name=String(decoded.name||email.split("@")[0]||"Google user").trim();
+  const avatar=String(decoded.picture||"").trim();
+  if(!decoded.uid||!email) return json(res,400,{error:"Google account email is unavailable."});
+  setSession(res,{provider:"google",firebaseUid:String(decoded.uid),id:`google:${decoded.uid}`,login:email,name,avatar,token:null,scope:"google-signin"});
+  return json(res,200,{user:{id:`google:${decoded.uid}`,login:email,name,avatar,provider:"google",githubConnected:false}});
 }
 function ghHeaders(token){return{"Authorization":`Bearer ${token}`,"Accept":"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28","User-Agent":"WyteLab-Mobile-Editor"};}
 async function gh(token,path,opts={}){
@@ -301,40 +271,27 @@ async function recoverCreatedRepo(token,owner,name){
 
 function origin(req){const proto=(req.headers["x-forwarded-proto"]||"https").split(",")[0];const host=req.headers["x-forwarded-host"]||req.headers.host;return `${proto}://${host}`;}
 function oauthStateKey(state){return crypto.createHash("sha256").update(String(state)).digest("hex");}
-async function rememberOAuthState(state,redirectUri,extra={}){
-  const key=oauthStateKey(state),record={createdAt:Date.now(),redirectUri:String(redirectUri||""),...extra};
+async function rememberOAuthState(state,redirectUri){
+  const key=oauthStateKey(state),record={createdAt:Date.now(),redirectUri:String(redirectUri||"")};
   memory.oauthStates.set(key,record);
   // Firestore makes the state available across Vercel serverless instances.
   // This is the cookie-loss fallback needed by Android WebViews/custom tabs.
-  // Without it, a login-start and its callback landing on two different
-  // lambda instances will always look like "invalid/expired state" even
-  // though nothing is actually wrong with the OAuth flow itself.
-  if(db){
-    try{await db.collection("wydev_oauth_states").doc(key).set(record);}
-    catch(e){console.error(`[oauth-state] Firestore write failed for provider=${extra?.provider||"unknown"}:`,e.message);}
-  }else{
-    console.warn(`[oauth-state] Firebase Admin is not configured (db is null) — state for provider=${extra?.provider||"unknown"} only survives on this one serverless instance. If the callback lands on a different instance it WILL fail as "expired/invalid state". Set FIREBASE_SERVICE_ACCOUNT_JSON (or the three FIREBASE_* fields) in Vercel to fix this permanently.`);
-  }
+  if(db){await db.collection("wydev_oauth_states").doc(key).set(record);}
 }
 async function consumeOAuthState(state){
   const key=oauthStateKey(state),local=memory.oauthStates.get(key);
   memory.oauthStates.delete(key);
   if(local){
-    if(Date.now()-Number(local.createdAt)>10*60*1000){console.warn(`[oauth-state] found in local memory but TTL expired (>10min) for provider=${local.provider}`);return null;}
+    if(Date.now()-Number(local.createdAt)>10*60*1000)return null;
     return local;
   }
-  if(!db){console.warn("[oauth-state] not found in local memory and Firebase Admin is not configured — cannot check Firestore. This is almost certainly a missing-env-var problem, not a real expired/reused link.");return null;}
-  try{
-    const ref=db.collection("wydev_oauth_states").doc(key),snap=await ref.get();
-    if(!snap.exists){console.warn("[oauth-state] not found in local memory or Firestore. Either it was already consumed (double callback / user hit back+retry), or it genuinely expired.");return null;}
-    const record=snap.data()||{};
-    await ref.delete();
-    if(Date.now()-Number(record.createdAt)>10*60*1000){console.warn(`[oauth-state] found in Firestore but TTL expired (>10min) for provider=${record.provider}`);return null;}
-    return record;
-  }catch(e){
-    console.error("[oauth-state] Firestore read failed — check Firebase Admin credentials/permissions:",e.message);
-    return null;
-  }
+  if(!db)return null;
+  const ref=db.collection("wydev_oauth_states").doc(key),snap=await ref.get();
+  if(!snap.exists)return null;
+  const record=snap.data()||{};
+  await ref.delete();
+  if(Date.now()-Number(record.createdAt)>10*60*1000)return null;
+  return record;
 }
 function clearOAuthCookie(res){
   const current=res.getHeader("Set-Cookie");
@@ -344,7 +301,7 @@ function clearOAuthCookie(res){
 async function oauthStart(req,res){
   const state=b64(crypto.randomBytes(32));
   const redirectUri=process.env.GITHUB_REDIRECT_URI||`${origin(req)}/api/auth/github/callback`;
-  await rememberOAuthState(state,redirectUri,{provider:"github"});
+  await rememberOAuthState(state,redirectUri);
   const url=new URL("https://github.com/login/oauth/authorize");
   url.searchParams.set("client_id",process.env.GITHUB_CLIENT_ID||"");
   url.searchParams.set("redirect_uri",redirectUri);
@@ -370,12 +327,7 @@ async function oauthCallback(req,res){
   }else if(db){
     stateRecord=await consumeOAuthState(state);
   }
-  // A matching cookie is not sufficient by itself. The server-side one-time
-  // record binds the OAuth request to its redirect URI/provider and survives
-  // Vercel instance changes. Reject missing/expired records even when the
-  // browser happened to preserve the state cookie.
-  if(!stateRecord)return json(res,400,{error:"Invalid or expired OAuth state",code:"OAUTH_STATE_MISSING"});
-  if(!["github","github-link"].includes(stateRecord.provider))return json(res,400,{error:"Invalid OAuth provider state",code:"OAUTH_PROVIDER_MISMATCH"});
+  if(!stateRecord&&!cookieMatches)return json(res,400,{error:"Invalid OAuth state",code:"OAUTH_STATE_MISSING"});
   if(!code){clearOAuthCookie(res);return json(res,400,{error:"GitHub did not return an authorization code"});}
   const redirectUri=process.env.GITHUB_REDIRECT_URI||`${origin(req)}/api/auth/github/callback`;
   if(stateRecord?.redirectUri&&String(stateRecord.redirectUri)!==String(redirectUri)){clearOAuthCookie(res);return json(res,400,{error:"Invalid OAuth redirect"});}
@@ -383,23 +335,7 @@ async function oauthCallback(req,res){
   const token=await r.json();
   if(!r.ok||!token.access_token){clearOAuthCookie(res);return json(res,502,{error:"GitHub token exchange failed"});}
   const me=await gh(token.access_token,"/user");
-  const linkMode=stateRecord?.provider==="github-link";
-  if(linkMode){
-    const current=session(req);
-    if(!current?.id)return json(res,401,{error:"Your sign-in session expired. Start again.",code:"SESSION_EXPIRED"});
-    if(stateRecord?.userId&&String(stateRecord.userId)!==String(current.id))return json(res,403,{error:"The GitHub connection request belongs to a different sign-in session.",code:"OAUTH_SESSION_MISMATCH"});
-    if(current.googleSub&&db){
-      const existing=await db.collection("wydev_auth_google").doc(String(current.googleSub)).get();
-      if(existing.exists&&String(existing.data()?.userId||"")!==String(me.id))return json(res,409,{error:"This Google account is already linked to another GitHub account.",code:"GOOGLE_ACCOUNT_LINKED"});
-    }
-    if(db&&current.googleSub){
-      await db.collection("wydev_auth_google").doc(String(current.googleSub)).set({userId:String(me.id),email:String(current.email||""),updatedAt:Date.now()},{merge:true});
-    }
-    setSession(res,{token:token.access_token,refresh_token:token.refresh_token||null,login:me.login,id:me.id,name:me.name||current.name,avatar:me.avatar_url||current.avatar,scope:token.scope,provider:"github",githubConnected:true,email:current.email||null,emailVerified:current.emailVerified!==false,googleSub:current.googleSub||null});
-    clearOAuthCookie(res);
-    return redirect(res,"/");
-  }
-  setSession(res,{token:token.access_token,refresh_token:token.refresh_token||null,login:me.login,id:me.id,name:me.name,avatar:me.avatar_url,scope:token.scope,provider:"github",githubConnected:true,email:me.email||null,emailVerified:!!me.email});
+  setSession(res,{token:token.access_token,refresh_token:token.refresh_token||null,login:me.login,id:me.id,name:me.name,avatar:me.avatar_url,scope:token.scope});
   clearOAuthCookie(res);
   redirect(res,"/");
 }
@@ -412,44 +348,23 @@ async function rememberGoogleState(state,userId,redirectUri){
 async function googleDriveStart(req,res){
   const s=requireSession(req,res);if(!s)return;
   const clientId=String(process.env.GOOGLE_CLIENT_ID||"").trim(),secret=String(process.env.GOOGLE_CLIENT_SECRET||"").trim();
-  if(!clientId||!secret){
-    console.error(`[google-drive] GOOGLE_CLIENT_ID and/or GOOGLE_CLIENT_SECRET are missing on this deployment (clientId set: ${!!clientId}, secret set: ${!!secret}).`);
-    return redirect(res,"/?google=error&reason=GOOGLE_NOT_CONFIGURED#github");
-  }
+  if(!clientId||!secret)return json(res,503,{error:"Google Drive integration is not configured yet. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in Vercel."});
   const state=b64(crypto.randomBytes(32)),redirectUri=process.env.GOOGLE_REDIRECT_URI||`${origin(req)}/api/auth/google/callback`;
   await rememberGoogleState(state,s.id,redirectUri);
   const u=new URL("https://accounts.google.com/o/oauth2/v2/auth");
-  u.searchParams.set("client_id",clientId);u.searchParams.set("redirect_uri",redirectUri);u.searchParams.set("response_type","code");u.searchParams.set("access_type","offline");u.searchParams.set("prompt","consent");u.searchParams.set("include_granted_scopes","true");u.searchParams.set("scope","openid email https://www.googleapis.com/auth/drive.file");u.searchParams.set("state",state);
+  u.searchParams.set("client_id",clientId);u.searchParams.set("redirect_uri",redirectUri);u.searchParams.set("response_type","code");u.searchParams.set("access_type","offline");u.searchParams.set("prompt","consent");u.searchParams.set("scope","openid email https://www.googleapis.com/auth/drive.file");u.searchParams.set("state",state);
   res.setHeader("Set-Cookie",`wydev_google_state=${state}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=600`);return redirect(res,u.toString());
 }
 async function googleDriveCallback(req,res){
-  const q=new URL(req.url,origin(req)).searchParams,state=q.get("state"),code=q.get("code"),oauthError=q.get("error");
-  // Any failure here must redirect back into the SPA (never return raw JSON):
-  // a bare JSON body has no viewport meta tag, so on mobile it renders
-  // zoomed-out like a desktop page instead of showing the app's error UI.
-  if(!state)return redirect(res,"/?google=error&reason=GOOGLE_STATE_MISSING#github");
-  const record=await consumeOAuthState(state);
-  if(!record||record.provider!=="google-drive")return redirect(res,"/?google=error&reason=GOOGLE_STATE_EXPIRED#github");
+  const q=new URL(req.url,origin(req)).searchParams,state=q.get("state"),code=q.get("code"),oauthError=q.get("error");if(!state)return json(res,400,{error:"Invalid Google OAuth state"});
+  const record=await consumeOAuthState(state);if(!record||record.provider!=="google-drive")return json(res,400,{error:"Invalid or expired Google OAuth state"});
   if(oauthError)return redirect(res,`/?google=error&reason=${encodeURIComponent(oauthError)}#github`);
-  if(!code)return redirect(res,"/?google=error&reason=GOOGLE_DRIVE_CODE_MISSING#github");
-  if(!db)return redirect(res,"/?google=error&reason=GOOGLE_DRIVE_STORAGE_NOT_CONFIGURED#github");
-  try{
-    const clientId=String(process.env.GOOGLE_CLIENT_ID||"").trim(),secret=String(process.env.GOOGLE_CLIENT_SECRET||"").trim(),redirectUri=process.env.GOOGLE_REDIRECT_URI||`${origin(req)}/api/auth/google/callback`;
-    const tokenResp=await fetch("https://oauth2.googleapis.com/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({code,client_id:clientId,client_secret:secret,redirect_uri:redirectUri,grant_type:"authorization_code"})});
-    const token=await tokenResp.json().catch(()=>({}));
-    if(!tokenResp.ok||!token.access_token){
-      console.error(`[google-drive] token exchange failed (status ${tokenResp.status}): ${token.error||"unknown"} — ${token.error_description||"no description"}. redirect_uri used: ${redirectUri}`);
-      return redirect(res,"/?google=error&reason=TOKEN_EXCHANGE_FAILED#github");
-    }
-    const grantedScopes=String(token.scope||"").split(/[\s,]+/).filter(Boolean);
-    if(!grantedScopes.includes("https://www.googleapis.com/auth/drive.file"))return redirect(res,"/?google=error&reason=DRIVE_FILE_SCOPE_NOT_GRANTED#github");
-    if(!token.refresh_token)return redirect(res,"/?google=error&reason=NO_REFRESH_TOKEN#github");
-    await db.collection("wydev_google_tokens").doc(String(record.userId)).set({encrypted:seal({access_token:token.access_token,refresh_token:token.refresh_token,expires_at:Date.now()+Number(token.expires_in||3600)*1000,scope:grantedScopes.join(" ")}),updatedAt:Date.now()},{merge:true});
-    res.setHeader("Set-Cookie","wydev_google_state=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0");return redirect(res,"/?google=connected#github");
-  }catch(e){
-    console.error("[google-drive] unexpected error during token exchange/storage:",e.message,e.stack);
-    return redirect(res,"/?google=error&reason=GOOGLE_DRIVE_UNEXPECTED_ERROR#github");
-  }
+  if(!code)return json(res,400,{error:"Google did not return an authorization code"});
+  const clientId=String(process.env.GOOGLE_CLIENT_ID||"").trim(),secret=String(process.env.GOOGLE_CLIENT_SECRET||"").trim(),redirectUri=process.env.GOOGLE_REDIRECT_URI||`${origin(req)}/api/auth/google/callback`;
+  const tokenResp=await fetch("https://oauth2.googleapis.com/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({code,client_id:clientId,client_secret:secret,redirect_uri:redirectUri,grant_type:"authorization_code"})});
+  const token=await tokenResp.json();if(!tokenResp.ok||!token.access_token)return json(res,502,{error:"Google token exchange failed"});
+  if(db){await db.collection("wydev_google_tokens").doc(String(record.userId)).set({encrypted:seal({access_token:token.access_token,refresh_token:token.refresh_token||null,expires_at:Date.now()+Number(token.expires_in||3600)*1000,scope:token.scope||"https://www.googleapis.com/auth/drive.file"}),updatedAt:Date.now()},{merge:true});}
+  res.setHeader("Set-Cookie","wydev_google_state=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0");return redirect(res,"/?google=connected#github");
 }
 async function getGoogleDriveToken(userId){
   if(!db)throw Object.assign(new Error("Google Drive requires Firebase persistence."),{status:503,code:"GOOGLE_DRIVE_NOT_CONFIGURED"});
@@ -503,18 +418,11 @@ async function exportRepoToDrive(s,owner,repo,branch){
   const bytes=Buffer.from(await r.arrayBuffer());if(bytes.length>25*1024*1024)throw Object.assign(new Error("Repository archive is larger than 25 MB. Open GitHub to download the full archive."),{status:413,code:"DRIVE_EXPORT_TOO_LARGE"});const boundary=`----WyteLab${crypto.randomBytes(8).toString("hex")}`,meta=JSON.stringify({name:`${repo}-${ref.replace(/[^a-zA-Z0-9._-]/g,"_")}.zip`,mimeType:"application/zip"});
   const pre=Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: application/zip\r\n\r\n`),post=Buffer.from(`\r\n--${boundary}--\r\n`);
   const up=await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink",{method:"POST",headers:{Authorization:`Bearer ${token}`,"Content-Type":`multipart/related; boundary=${boundary}`},body:Buffer.concat([pre,bytes,post])});
-  const d=await up.json();
-  if(!up.ok){
-    const msg=String(d?.error?.message||"");
-    const scopeProblem=up.status===401||(up.status===403&&/insufficient|scope|permission/i.test(msg));
-    if(scopeProblem && db) await db.collection("wydev_google_tokens").doc(String(s.id)).delete().catch(()=>{});
-    throw Object.assign(new Error(scopeProblem?"Google Drive authorization needs to be refreshed. Reconnect Google Drive and try again.":(msg||`Google Drive upload failed (${up.status})`)),{status:scopeProblem?401:up.status,code:scopeProblem?"GOOGLE_DRIVE_RECONNECT":undefined});
-  }
-  return d;
+  const d=await up.json();if(!up.ok)throw Object.assign(new Error(d?.error?.message||`Google Drive upload failed (${up.status})`),{status:up.status});return d;
 }
 
 function limitKey(s){return `${s.id||s.login}:${new Date().toISOString().slice(0,10)}`;}
-async function entitlement(s){if(hasReviewerProAccess(s))return "pro";const e=await getEntitlement(s.id);return e?.status==="active"&&(!e.expiresAt||e.expiresAt>Date.now())?"pro":"free";}
+async function entitlement(s){const e=await getEntitlement(s.id);return e?.status==="active"&&(!e.expiresAt||e.expiresAt>Date.now())?"pro":"free";}
 async function checkAIQuota(s){const day=new Date().toISOString().slice(0,10),used=await getUsage(s.id,day),plan=await entitlement(s),limit=Math.max(1,plan==="pro"?Number(process.env.AI_PRO_DAILY_LIMIT||5):Number(process.env.AI_FREE_DAILY_LIMIT||3));if(used>=limit)throw Object.assign(new Error(`Daily AI diagnostic limit reached (${limit}). Try again tomorrow.`),{status:429,code:"AI_QUOTA_EXCEEDED",limit,used,plan});return {day,plan,limit,used};}
 // Redacts likely secrets before code is sent to the AI. This must NEVER
 // corrupt the surrounding code -- mangled output reads to the model (and to
@@ -785,14 +693,11 @@ async function renewDue(){
         const base=Math.max(Date.now(),Number(e.expiresAt)||0);
         const expiresAt=addOneMonth(base);
         await setEntitlement(e.id,{status:"active",expiresAt,renewAt:expiresAt,renewalPending:false,renewalStartedAt:null,renewalReference:null,updatedAt:Date.now(),lastRenewalReference:reference});
-      }else if(["failed","cancelled","canceled","voided"].includes(status)){
-        // Only terminal failures should remove the active entitlement. A
-        // pending/processing charge must remain recoverable by the webhook;
-        // otherwise a slow bank/provider response can incorrectly downgrade a
-        // paying customer before Flutterwave reports the final result.
-        await setEntitlement(e.id,{status:"past_due",renewalPending:false,renewalStartedAt:null,renewalReference:null,updatedAt:Date.now(),lastRenewalReference:reference});
       }else{
-        await setEntitlement(e.id,{status:"active",renewalPending:true,renewalStartedAt:Date.now(),renewalReference:reference,updatedAt:Date.now(),lastRenewalReference:reference});
+        // Flutterwave documents recurring charges as terminal success/failure
+        // charges. Never silently extend a pending/unknown result; the webhook
+        // can restore the entitlement if the provider later reports success.
+        await setEntitlement(e.id,{status:"past_due",renewalPending:false,renewalStartedAt:null,renewalReference:null,updatedAt:Date.now(),lastRenewalReference:reference});
       }
       processed++;
     }catch{await setEntitlement(e.id,{status:"past_due",renewalPending:false,renewalStartedAt:null,renewalReference:null,updatedAt:Date.now()});}
@@ -867,27 +772,16 @@ async function verifyCharge(s,id,reference){
 function validWebhook(req,raw){const sig=req.headers["flutterwave-signature"];if(!sig||!process.env.FLW_WEBHOOK_SECRET_HASH)return false;const h=crypto.createHmac("sha256",process.env.FLW_WEBHOOK_SECRET_HASH).update(raw).digest("base64");const a=Buffer.from(h),b=Buffer.from(String(sig));return a.length===b.length&&crypto.timingSafeEqual(a,b);}
 
 async function handler(req,res){
-  // Computed outside the try block so the catch-all below can still see which
-  // route was being served even if something throws before reaching it.
-  let p="/";
   try{
-    const rawUrl=String(req.url||"/"), original=String(req.headers?.["x-original-url"]||req.headers?.["x-vercel-original-url"]||req.headers?.["x-forwarded-uri"]||rawUrl), url=new URL(original,origin(req));
-    p=url.pathname.replace(/^\/api(?:\/index\.js)?/,"")||"/"; p=p.replace(/\/+$/,"")||"/";
+    const rawUrl=String(req.url||"/"), original=String(req.headers?.["x-original-url"]||req.headers?.["x-vercel-original-url"]||req.headers?.["x-forwarded-uri"]||rawUrl), url=new URL(original,origin(req)); let p=url.pathname.replace(/^\/api(?:\/index\.js)?/,"")||"/"; p=p.replace(/\/+$/,"")||"/";
     if(p==="/auth/github"&&req.method==="GET")return oauthStart(req,res);
-    if(p==="/auth/github/connect"&&req.method==="GET"){
-      const s=session(req);if(!s)return redirect(res,"/");
-      const state=b64(crypto.randomBytes(32)),redirectUri=process.env.GITHUB_REDIRECT_URI||`${origin(req)}/api/auth/github/callback`;
-      await rememberOAuthState(state,redirectUri,{provider:"github-link",userId:String(s.id),googleSub:String(s.googleSub||""),email:String(s.email||""),emailVerified:s.emailVerified!==false});
-      const u=new URL("https://github.com/login/oauth/authorize");u.searchParams.set("client_id",process.env.GITHUB_CLIENT_ID||"");u.searchParams.set("redirect_uri",redirectUri);u.searchParams.set("scope","read:user repo workflow delete_repo");u.searchParams.set("state",state);
-      res.setHeader("Set-Cookie",`wydev_oauth_state=${state}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=600`);return redirect(res,u.toString());
-    }
+    if(p==="/auth/firebase"&&req.method==="POST")return firebaseLogin(req,res);
     if(p==="/auth/github/callback"&&req.method==="GET")return oauthCallback(req,res);
-    if(p==="/auth/firebase"&&req.method==="POST")return firebaseGoogleLogin(req,res);
     if(p==="/auth/google"&&req.method==="GET")return googleDriveStart(req,res);
     if(p==="/auth/google/callback"&&req.method==="GET")return googleDriveCallback(req,res);
     if(p==="/auth/google/status"&&req.method==="GET")return googleDriveStatus(req,res);
     if(p==="/auth/google/disconnect"&&req.method==="POST")return googleDriveDisconnect(req,res);
-    if(p==="/auth/me"&&req.method==="GET"){const s=session(req);return json(res,200,s?{user:{id:s.id,login:s.login||"",name:s.name,avatar:s.avatar,email:s.email||null,provider:s.provider||"github",githubConnected:!!s.token&&!!s.login,googleConnected:!!s.googleSub}}:{user:null});}
+    if(p==="/auth/me"&&req.method==="GET"){const s=session(req);return json(res,200,s?{user:{id:s.id,login:s.login,name:s.name,avatar:s.avatar,provider:s.provider||"github",githubConnected:Boolean(s.token&&s.provider!=="google")}}:{user:null});}
     if(p==="/auth/logout"&&req.method==="POST"){clearSession(res);return json(res,200,{ok:true});}
 
     if(p==="/notifications/config"&&req.method==="GET") return json(res,200,await publicFirebaseConfig());
@@ -1109,34 +1003,10 @@ async function handler(req,res){
     const bm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/branches$/);
     if(bm&&req.method==="POST"){const owner=decodeURIComponent(bm[1]),repo=decodeURIComponent(bm[2]),b=await body(req);const name=String(b.name||"").trim();const from=String(b.from||"").trim();if(!/^[A-Za-z0-9._\/-]{1,120}$/.test(name)||name.startsWith("-")||name.endsWith("/"))return json(res,400,{error:"Invalid branch name"});const ref=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(from)}`);const created=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/refs`,{method:"POST",body:JSON.stringify({ref:`refs/heads/${name}`,sha:ref.object.sha})});return json(res,201,{name,sha:created.object.sha});}
     // Pull requests are free: the user's own GitHub token performs the operation.
-    // Merging an existing pull request has its own path (…/pulls/:number/merge)
-    // so it can never collide with the create/list route below, which used to
-    // sit at the exact same "/pulls" path as the GitHub Hub's merge action and
-    // silently swallowed it (see fix notes at this block).
-    const prMerge=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)\/merge$/);
-    if(prMerge&&req.method==="POST"){
-      const owner=decodeURIComponent(prMerge[1]),repo=decodeURIComponent(prMerge[2]),number=Number(prMerge[3]);
-      const b=await body(req),method=String(b.method||"merge");
-      const d=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${number}/merge`,{method:"PUT",body:JSON.stringify({merge_method:["merge","squash","rebase"].includes(method)?method:"merge",commit_title:b.commit_title?String(b.commit_title).slice(0,200):undefined,commit_message:b.commit_message?String(b.commit_message).slice(0,5000):undefined})});
-      return json(res,200,d);
-    }
     const prm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/pulls$/);
     if(prm){
       const owner=decodeURIComponent(prm[1]),repo=decodeURIComponent(prm[2]);
-      if(req.method==="GET"){
-        // Two different callers share this route: Project.jsx wants every PR
-        // (open+closed) as a raw array with no ?state, while the GitHub Hub
-        // screen passes ?state=open|closed|all and expects {pulls:[...]}.
-        // FIXED: this used to always ignore ?state and return the raw array,
-        // which — combined with the merge collision above — left the Hub's
-        // PR list permanently empty (reading a .pulls property off an array).
-        const stateParam=url.searchParams.get("state");
-        if(stateParam){
-          const data=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?state=${encodeURIComponent(stateParam)}&per_page=50`);
-          return json(res,200,{pulls:Array.isArray(data)?data:[]});
-        }
-        return json(res,200,await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?state=all&per_page=30`));
-      }
+      if(req.method==="GET")return json(res,200,await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?state=all&per_page=30`));
       if(req.method==="POST"){
         const b=await body(req);
         const title=String(b.title||"").trim(),head=String(b.head||"").trim(),base=String(b.base||"").trim();
@@ -1196,7 +1066,7 @@ async function handler(req,res){
     }
     // Mobile-friendly GitHub Hub: common issues/releases/PR/compare/star/fork
     // actions that otherwise require bouncing between multiple GitHub screens.
-    const ghHub=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/(issues|releases|compare|star|fork)$/);
+    const ghHub=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/(issues|releases|compare|pulls|star|fork)$/);
     if(ghHub){
       const owner=decodeURIComponent(ghHub[1]),repo=decodeURIComponent(ghHub[2]),kind=ghHub[3],base=`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
       if(kind==="issues"&&req.method==="GET"){
@@ -1220,6 +1090,14 @@ async function handler(req,res){
         if(!baseRef||!headRef)return json(res,400,{error:"Base and head refs are required"});
         const data=await gh(s.token,`${base}/compare/${encodeURIComponent(baseRef)}...${encodeURIComponent(headRef)}`);
         return json(res,200,{status:data.status,ahead_by:data.ahead_by,behind_by:data.behind_by,total_commits:data.total_commits,files:(data.files||[]).slice(0,100).map(f=>({filename:f.filename,status:f.status,additions:f.additions,deletions:f.deletions,changes:f.changes})),html_url:data.html_url});
+      }
+      if(kind==="pulls"&&req.method==="GET"){
+        const state=url.searchParams.get("state")||"open",data=await gh(s.token,`${base}/pulls?state=${encodeURIComponent(state)}&per_page=50`); return json(res,200,{pulls:Array.isArray(data)?data:[]});
+      }
+      if(kind==="pulls"&&req.method==="POST"){
+        const b=await body(req),number=Number(b.number),method=String(b.method||"merge"); if(!number)return json(res,400,{error:"Pull request number is required"});
+        const d=await gh(s.token,`${base}/pulls/${number}/merge`,{method:"PUT",body:JSON.stringify({merge_method:["merge","squash","rebase"].includes(method)?method:"merge",commit_title:b.commit_title?String(b.commit_title).slice(0,200):undefined,commit_message:b.commit_message?String(b.commit_message).slice(0,5000):undefined})});
+        return json(res,200,d);
       }
       if(kind==="star"&&req.method==="GET"){
         try{await gh(s.token,`${base}/subscription`,{timeoutMs:10000});}catch{}
@@ -1246,37 +1124,6 @@ async function handler(req,res){
     const binaryExt=new Set(["png","jpg","jpeg","gif","webp","ico","bmp","svgz","pdf","zip","gz","tar","7z","rar","woff","woff2","ttf","otf","eot","mp3","mp4","mov","avi","webm","wav","exe","dll","so","dylib","class","jar","psd","ai","sqlite","db"]);
     const isBinaryPath=(p)=>binaryExt.has(String(p).split(".").pop()?.toLowerCase()||"");
     const mimeForPath=(p)=>({png:"image/png",jpg:"image/jpeg",jpeg:"image/jpeg",gif:"image/gif",webp:"image/webp",ico:"image/x-icon",bmp:"image/bmp",svg:"image/svg+xml",pdf:"application/pdf",woff:"font/woff",woff2:"font/woff2",ttf:"font/ttf",otf:"font/otf",eot:"application/vnd.ms-fontobject",mp3:"audio/mpeg",mp4:"video/mp4",mov:"video/quicktime",webm:"video/webm",wav:"audio/wav"}[String(p).split(".").pop()?.toLowerCase()||""]||"application/octet-stream");
-    const tm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/file-times$/);
-    if(tm && req.method==="POST"){
-      const owner=decodeURIComponent(tm[1]),repo=decodeURIComponent(tm[2]),b=await body(req);
-      const branch=String(b.branch||"HEAD");
-      const paths=Array.isArray(b.paths)?[...new Set(b.paths.map(x=>String(x||"").replaceAll("\\","/").replace(/^\/+/,"")).filter(Boolean))]:[];
-      if(paths.length>2000)return json(res,413,{error:"Too many paths requested at once. Load timestamps in smaller batches."});
-      const times={};
-      let cursor=0;
-      const worker=async()=>{
-        while(cursor<paths.length){
-          const path=paths[cursor++];
-          try{
-            const q=new URLSearchParams({path,sha:branch,per_page:"1"});
-            const commits=await gh(s.token,`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits?${q.toString()}`);
-            const c=Array.isArray(commits)?commits[0]:null;
-            const date=c?.commit?.author?.date||c?.commit?.committer?.date||null;
-            if(date)times[path]=new Date(date).getTime();
-          }catch(e){
-            if(e.status===404) continue;
-            if(e.status===409) continue;
-            if(e.status===403 || e.status===429) throw e;
-          }
-        }
-      };
-      try{
-        await Promise.all(Array.from({length:Math.min(8,Math.max(1,paths.length))},()=>worker()));
-      }catch(e){
-        return json(res,e.status||502,{error:e.status===403||e.status===429?"GitHub rate limit reached while loading file timestamps. File content remains available; timestamps will use the saved local values until the next refresh.":(e.message||"Unable to load file timestamps."),code:e.status===403||e.status===429?"TIMESTAMP_RATE_LIMIT":"TIMESTAMP_LOOKUP_FAILED",times});
-      }
-      return json(res,200,{times});
-    }
     const m=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/(tree|file|branches)$/);
     if(m){
       const owner=decodeURIComponent(m[1]),repo=decodeURIComponent(m[2]),kind=m[3];
@@ -1702,16 +1549,6 @@ async function handler(req,res){
     }
     if(p==="/billing/checkout"&&req.method==="POST"){const b=await body(req);b.req=req;const d=await createBillingCheckout(s,b);return json(res,200,d);}
     return json(res,404,{error:"Route not found"});
-  }catch(e){
-    console.error(`[handler] unhandled error on ${p}:`,e.message,e.stack);
-    // GET routes under /auth/* are followed by full-page browser navigation
-    // (Google/GitHub redirecting the user back), never by fetch()/XHR. A raw
-    // JSON error body there has no viewport meta tag, so it renders zoomed
-    // out on mobile — looking like the app "switched to desktop view" — and
-    // gives the user no way back into the app. Always redirect those instead.
-    if(req.method==="GET"&&p.startsWith("/auth/google"))return redirect(res,`/?google=error&reason=SERVER_ERROR#github`);
-    if(req.method==="GET"&&p.startsWith("/auth/github"))return redirect(res,`/?github=error&reason=SERVER_ERROR`);
-    return json(res,e.status||500,{error:e.message||"Server error",code:e.code,limit:e.limit,used:e.used,remaining:e.remaining,plan:e.plan});
-  }
+  }catch(e){return json(res,e.status||500,{error:e.message||"Server error",code:e.code,limit:e.limit,used:e.used,remaining:e.remaining,plan:e.plan});}
 }
 export default handler;

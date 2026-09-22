@@ -1,13 +1,13 @@
 import {API_BASE_URL} from "./config";
 import {fetchTimeout} from "./net";
-const api=async(path,opts={},timeoutMs=20000)=>{let r;try{r=await fetchTimeout(`${API_BASE_URL}${path}`,{credentials:"include",headers:{"Content-Type":"application/json",...(opts.headers||{})},...opts},timeoutMs)}catch(e){throw new Error(`Network error: ${e?.message||"Unable to reach WyteLab server"}`)}let e=null;try{e=await r.json()}catch{}if(!r.ok){const err=new Error(e?.error||`Request failed (${r.status})`);err.status=r.status;err.code=e?.code;err.details=e;throw err}return e};
+const api=async(path,opts={})=>{let r;try{r=await fetchTimeout(`${API_BASE_URL}${path}`,{credentials:"include",headers:{"Content-Type":"application/json",...(opts.headers||{})},...opts})}catch(e){throw new Error(`Network error: ${e?.message||"Unable to reach WyteLab server"}`)}let e=null;try{e=await r.json()}catch{}if(!r.ok){const err=new Error(e?.error||`Request failed (${r.status})`);err.status=r.status;err.code=e?.code;err.details=e;throw err}return e};
 export const github={
- session:()=>api("/auth/me",{},7000),login:()=>location.href=`${API_BASE_URL}/auth/github`,connectGitHub:()=>location.href=`${API_BASE_URL}/auth/github/connect`,logout:async()=>{ const result=await api("/auth/logout",{method:"POST"}); return result; },
+ session:()=>api("/auth/me"),login:()=>location.href=`${API_BASE_URL}/auth/github`,logout:()=>api("/auth/logout",{method:"POST"}),
+ firebaseLogin:(idToken)=>api("/auth/firebase",{method:"POST",body:JSON.stringify({idToken})}),
  repos:()=>api("/github/repos"),
  createRepo:(p)=>api("/github/repos",{method:"POST",body:JSON.stringify(p)}),
  deleteRepo:(o,r)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}`,{method:"DELETE"}),
  tree:(o,r,b)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/tree?branch=${encodeURIComponent(b)}`),
- fileTimes:(o,r,b,paths)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/file-times`,{method:"POST",body:JSON.stringify({branch:b,paths})}),
  file:(o,r,p,b)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/file?path=${encodeURIComponent(p)}&branch=${encodeURIComponent(b)}`),
  branches:(o,r)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/branches`),
  createBranch:(o,r,p)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/branches`,{method:"POST",body:JSON.stringify(p)}),
@@ -30,7 +30,7 @@ export const github={
  createRelease:(o,r,p)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/releases`,{method:"POST",body:JSON.stringify(p)}),
  compare:(o,r,b,h)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/compare?base=${encodeURIComponent(b)}&head=${encodeURIComponent(h)}`),
  pullList:(o,r,state="open")=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/pulls?state=${encodeURIComponent(state)}`),
- mergePull:(o,r,n,p)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/pulls/${encodeURIComponent(n)}/merge`,{method:"POST",body:JSON.stringify(p)}),
+ mergePull:(o,r,n,p)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/pulls`,{method:"POST",body:JSON.stringify({number:n,...p})}),
  starStatus:(o,r)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/star`),
  star:(o,r)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/star`,{method:"PUT"}),
  unstar:(o,r)=>api(`/github/repos/${encodeURIComponent(o)}/${encodeURIComponent(r)}/star`,{method:"DELETE"}),

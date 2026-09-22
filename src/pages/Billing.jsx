@@ -73,8 +73,12 @@ export default function Billing(){
  const verify=async(id,reference)=>{
    const v=await billing.verify({id,reference});
    if(v.active){showSuccess();return true}
-   const terminal=["failed","cancelled","canceled","voided"].includes(String(v.status||"").toLowerCase());
-   if(terminal){stopPolling();setErr(v.message||"Payment did not complete. No Pro access was granted.");return false}
+   const state=String(v?.status||"").toLowerCase();
+   if(["failed","cancelled","canceled","voided"].includes(state)){
+     stopPolling();
+     setErr("Flutterwave did not complete the payment. No Pro access was granted. Please retry with another payment method or card.");
+     return false;
+   }
    startPolling(reference);
    setErr("Payment is still processing. Complete the bank authorization and WyteLab will activate Pro automatically.");
    return false;

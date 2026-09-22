@@ -54,10 +54,6 @@ public class MainActivity extends Activity {
     s.setSupportMultipleWindows(false);
     s.setBuiltInZoomControls(false);
     s.setDisplayZoomControls(false);
-    // GitHub OAuth is the APK sign-in path. Keep WebView cookies enabled across
-    // the GitHub -> WyteLab redirect so the server session can be established.
-    android.webkit.CookieManager.getInstance().setAcceptCookie(true);
-    android.webkit.CookieManager.getInstance().setAcceptThirdPartyCookies(web, true);
     web.addJavascriptInterface(new Bridge(), "WyBuild");
 
     web.setWebViewClient(new WebViewClient() {
@@ -142,20 +138,15 @@ public class MainActivity extends Activity {
   }
 
   private void configureFullscreen() {
-    // Immersive mode for the converted APK: hide status/navigation bars and keep
-    // them hidden when the Activity regains focus. Users can reveal transient
-    // bars with a system swipe when Android requires it.
+    // The app shell must not expose browser/system chrome during normal use.
+    // Modern replacement for the deprecated View.SYSTEM_UI_FLAG_* immersive flags,
+    // which on Android 11+ (especially gesture-nav devices) frequently failed to
+    // hide the bars and/or failed to report insets, leaving content clipped under
+    // the status bar and the tab bar pinned to the true edge under the gesture pill.
     WindowInsetsControllerCompat controller = WindowCompat.getInsetsController(getWindow(), web);
     if (controller == null) return;
     controller.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
-    controller.hide(WindowInsetsCompat.Type.statusBars() | WindowInsetsCompat.Type.navigationBars());
-  }
-
-  private void enterFullscreenFromWeb() {
-    runOnUiThread(() -> {
-      WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
-      configureFullscreen();
-    });
+    controller.hide(WindowInsetsCompat.Type.systemBars());
   }
 
   @Override public void onWindowFocusChanged(boolean hasFocus) {
@@ -208,11 +199,6 @@ public class MainActivity extends Activity {
       if (!VIBRATION) return;
       ((android.os.Vibrator)getSystemService(VIBRATOR_SERVICE)).vibrate(Math.max(1,Math.min(ms,2000)));
     }
-    @android.webkit.JavascriptInterface public void enterFullscreen() {
-      if (!FULLSCREEN) return;
-      enterFullscreenFromWeb();
-    }
-
     @android.webkit.JavascriptInterface public boolean hasFeature(String f) {
       String x=f==null?"":f.toUpperCase(Locale.ROOT);
       switch(x){

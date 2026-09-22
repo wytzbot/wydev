@@ -1,60 +1,47 @@
-// Fullscreen/immersive handling for web, PWA and the Android wrapper.
-// Native Android shells get a stronger system-bar hide through WyBuild; regular
-// browsers use the Fullscreen API on the first real user gesture.
-function isImmersive() {
-  try {
-    return !!(window.matchMedia?.("(display-mode: fullscreen)").matches ||
-      window.matchMedia?.("(display-mode: standalone)").matches ||
-      window.navigator.standalone === true ||
-      document.fullscreenElement);
-  } catch (_) { return false; }
+// Best-effort fullscreen for WyteLab when it's opened as a regular browser
+// tab. Installed PWAs already go fullscreen via manifest.webmanifest
+// (display: "fullscreen"), so this only kicks in for plain browser visits,
+// where the Fullscreen API requires a user gesture to succeed.
+
+function isAlreadyImmersive() {
+  const standaloneMatch =
+    window.matchMedia?.("(display-mode: fullscreen)").matches ||
+    window.matchMedia?.("(display-mode: standalone)").matches;
+  const iosStandalone = window.navigator.standalone === true;
+  return standaloneMatch || iosStandalone;
 }
 
-function nativeFullscreen() {
-  try {
-    // Median Android apps expose the documented native bridge. This hides the
-    // Android status/navigation bars; the website itself cannot hide Median's
-    // native top navigation/App Browser toolbar, which must be disabled in
-    // Median App Studio/link handling.
-    if (window.median?.android?.screen?.fullScreen) {
-      window.median.android.screen.fullScreen();
-      return true;
-    }
-    if (window.gonative?.android?.screen?.fullScreen) {
-      window.gonative.android.screen.fullScreen();
-      return true;
-    }
-    if (window.WyBuild && typeof window.WyBuild.enterFullscreen === "function") {
-      window.WyBuild.enterFullscreen();
-      return true;
-    }
-  } catch (_) {}
-  return false;
-}
-
-function webFullscreen() {
-  try {
-    const el = document.documentElement;
-    const request = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
-    if (request) {
-      const result = request.call(el);
-      if (result?.catch) result.catch(() => {});
-      return true;
-    }
-  } catch (_) {}
-  return false;
+function requestFullscreen() {
+  const el = document.documentElement;
+  const request =
+    el.requestFullscreen ||
+    el.webkitRequestFullscreen ||
+    el.msRequestFullscreen;
+  if (request) {
+    request.call(el).catch(() => {});
+  }
 }
 
 export function initFullscreen() {
-  // The Android wrapper can hide system bars without requiring a user gesture.
-  nativeFullscreen();
-  if (isImmersive()) return;
+  if (isAlreadyImmersive()) return;
+  if (!document.documentElement.requestFullscreen &&
+      !document.documentElement.webkitRequestFullscreen &&
+      !document.documentElement.msRequestFullscreen) {
+    return; // Fullscreen API unsupported (e.g. iOS Safari) — nothing to do.
+  }
 
-  // Browser/PWA fullscreen is restricted by Chromium to a user gesture.
-  const onGesture = () => {
-    nativeFullscreen();
-    if (!isImmersive()) webFullscreen();
+  const tryEnter = () => {
+    if (document.fullscreenElement) return;
+    requestFullscreen();
   };
-  document.addEventListener("click", onGesture, { once: true, passive: true });
-  document.addEventListener("touchend", onGesture, { once: true, passive: true });
+
+  // Fullscreen must be triggered by a genuine user gesture, so attach to
+  // the first tap/click instead of firing on load.
+  const onFirstGesture = () => {
+    tryEnter();
+    document.removeEventListener("click", onFirstGesture);
+    document.removeEventListener("touchend", onFirstGesture);
+  };
+  document.addEventListener("click", onFirstGesture, { once: true });
+  document.addEventListener("touchend", onFirstGesture, { once: true });
 }

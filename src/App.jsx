@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Menu from "./components/Menu";
 import TopBar from "./components/TopBar";
 import TabBar from "./components/TabBar";
@@ -6,35 +6,22 @@ import DialogHost from "./components/DialogHost";
 import ToastHost from "./components/ToastHost";
 import { toastSuccess, toastError, toastInfo } from "./toast";
 import { openExternal } from "./utils";
-// Login, Home and Offline are on the critical path (the first thing a signed-out,
-// signed-in-with-no-repos, or offline visitor sees), so they stay in the main
-// bundle. Everything else is only needed once a user actually navigates there,
-// so it's code-split into its own lazily-fetched chunk. On a slow connection
-// this cuts the JS a first-time visitor has to download before seeing anything
-// from the whole app down to just what the current screen needs.
 import Login from "./pages/Login";
 import Home from "./pages/Home";
+import Repositories from "./pages/Repositories";
+import Changes from "./pages/Changes";
+import Settings from "./pages/Settings";
+import Billing from "./pages/Billing";
+import Project from "./pages/Project";
+import SearchPage from "./pages/Search";
+import LegalPage from "./pages/Legal";
 import Offline from "./pages/Offline";
-const Repositories = lazy(() => import("./pages/Repositories"));
-const Changes = lazy(() => import("./pages/Changes"));
-const Settings = lazy(() => import("./pages/Settings"));
-const Billing = lazy(() => import("./pages/Billing"));
-const Project = lazy(() => import("./pages/Project"));
-const SearchPage = lazy(() => import("./pages/Search"));
-const LegalPage = lazy(() => import("./pages/Legal"));
-const Actions = lazy(() => import("./pages/Actions"));
-const GitHubHub = lazy(() => import("./pages/GitHubHub"));
-const Logs = lazy(() => import("./pages/Logs"));
+import Actions from "./pages/Actions";
+import GitHubHub from "./pages/GitHubHub";
+import Logs from "./pages/Logs";
 import { github } from "./github";
 import { loadState, saveState } from "./storage";
 import { initNotifications } from "./notifications";
-import { consumeGoogleRedirect, establishGoogleServerSession, signOutGoogle } from "./firebase-auth";
-
-// Shown the instant a lazy page chunk is requested, so a slow/flaky
-// connection never leaves the screen blank while that chunk downloads.
-function PageLoading() {
-  return <div className="loading">Loading…</div>;
-}
 
 export default function App() {
   const initialBillingReturn = new URLSearchParams(window.location.search).get("billing") === "return";
@@ -59,7 +46,7 @@ export default function App() {
   const lastForegroundRefreshRef = useRef(0);
 
   const loadRepos = async ({ silent = false } = {}) => {
-    if (!user?.id) return [];
+    if (!user?.id || user.provider === "google") return [];
     // One request per signed-in account. This prevents an old request from a
     // previous account/session from ever replacing the current user's list.
     if (reposRequestRef.current && reposUserRef.current === String(user.id)) return reposRequestRef.current;
@@ -273,66 +260,18 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.style.setProperty("--ui-font", loadState("fontSize", 16) + "px");
-    // Never make the login screen depend indefinitely on a session probe. This
-    // matters especially in Android WebViews, where a suspended socket can take
-    // a while to report failure. The session request continues in the background
-    // and can still promote the user into the app if it returns successfully.
-    let settled = false;
-    const loginFallback = window.setTimeout(() => {
-      if (!settled) setLoading(false);
-    }, 5000);
-    (async () => {
-      // First consume a Firebase Google redirect result, if this page is the
-      // return leg of sign-in. Firebase owns the OAuth state; after a successful
-      // return we exchange its ID token for the encrypted WyteLab server session.
-      try {
-        const redirectResult = await Promise.race([
-          consumeGoogleRedirect(),
-          new Promise((_, reject) => window.setTimeout(() => {
-            const e = new Error("Google sign-in return timed out. Please try again.");
-            e.code = "GOOGLE_REDIRECT_TIMEOUT"; reject(e);
-          }, 10000))
-        ]);
-        if (redirectResult?.user) {
-          const googleUser = await establishGoogleServerSession(redirectResult);
-          if (googleUser) {
-            setUser(googleUser);
-            initNotifications(googleUser).catch(() => {});
-          }
-        }
-      } catch (e) {
-        // A failed/cancelled redirect must never leave the app on an endless
-        // loading screen. The login page remains available so the user can
-        // start a fresh Google redirect.
-        if (String(e?.code || "").includes("missing-initial-state")) {
-          toastError("Google sign-in could not restore its browser session. Start Google sign-in again.");
-        } else if (String(e?.code || "") !== "auth/popup-closed-by-user") {
-          toastError(e);
-        }
-      }
-
-      // If the redirect did not establish a session, read the persistent server
-      // cookie. This also handles ordinary page loads and Android app restarts.
-      try {
-        const x = await github.session();
+    github
+      .session()
+      .then((x) => {
         if (x?.user) {
           setUser(x.user);
           const cached = loadState(`reposCache:${String(x.user.id)}`, null);
           if (cached?.repos?.length) { setRepos(cached.repos); setRepoLimit(cached.repoLimit || null); }
-          initNotifications(x.user).catch(() => {});
+          if (x.user.provider !== "google") { loadRepos({ silent: true }); initNotifications(x.user).catch(() => {}); }
         }
-      } catch (e) {
-        if (Number(e?.status) !== 401) toastError(e);
-      }
-    })().finally(() => {
-      settled = true;
-      window.clearTimeout(loginFallback);
-      setLoading(false);
-    });
-    return () => {
-      settled = true;
-      window.clearTimeout(loginFallback);
-    };
+      })
+      .catch((e) => toastError(e))
+      .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
@@ -345,7 +284,7 @@ export default function App() {
   if (offline) return <Offline />;
   if (loading) return <div className="loading">Loading WyteLab…</div>;
   if (!user) return <Login />;
-  if (!user.githubConnected) return <Login githubRequired />;
+  if (user.provider === "google" && !user.githubConnected) return <main className="login"><div className="loginBox"><div className="brand">WyteLab</div><h1>Connect GitHub to continue</h1><p>Your Google account is connected. WyteLab uses GitHub as the source of truth for repositories, code changes, commits and Actions.</p><button className="primary wide" onClick={()=>github.login()}>Connect GitHub</button><button className="secondary wide" onClick={async()=>{await github.logout().catch(()=>{});window.location.reload()}}>Sign out</button><small>Your Google sign-in remains separate from GitHub authorization. You can revoke either connection independently.</small><nav className="loginLegal"><a href="/legal/about.html">About</a><a href="/legal/privacy.html">Privacy Policy</a><a href="/legal/terms.html">Terms of Service</a><a href="/legal/contact.html">Contact</a></nav></div></main>;
 
   const open = (r) => {
     if (r) {
@@ -396,7 +335,7 @@ export default function App() {
   return (
     <div className="app">
       <TopBar user={user} onMenu={openMenu} onSearch={() => navigate("search")} onAvatar={() => navigate("settings")} />
-      <Menu page={page} setPage={navigate} onSearch={(q) => setSearchQuery(q)} onLogout={async () => { await github.logout(); await signOutGoogle(); location.reload(); }} />
+      <Menu page={page} setPage={navigate} onSearch={(q) => setSearchQuery(q)} onLogout={async () => { await github.logout(); location.reload(); }} />
       <div className="menuScrim" onClick={closeMenu} />
       <section className="content">
         {page !== "home" && page !== "project" && (
@@ -405,37 +344,35 @@ export default function App() {
           </button>
         )}
         {page === "home" && <Home repos={repos} loading={reposLoading} onOpen={open} onCreate={createRepo} />}
-        <Suspense fallback={<PageLoading />}>
-          {page === "repos" && <Repositories repos={repos} repoLimit={repoLimit} loading={reposLoading} onOpen={open} onCreate={createRepo} onRefresh={loadRepos} />}
-          {page === "changes" && <Changes changes={workingChanges} onSelect={openFile} onDiscard={working?.discard} />}
-          {page === "actions" && <Actions repos={repos} />}
-          {page === "github" && <GitHubHub repos={repos} />}
-          {page === "logs" && <Logs />}
-          {page === "settings" && <Settings />}
-          {page === "billing" && <Billing />}
-          {page === "project" && repo && <Project
-            repo={repo}
-            openPath={openPath}
-            onBack={() => navigate("repos")}
-            onWorkingState={setWorking}
-            onDeleteRepo={(deleted) => {
-              setRepos((rs) => {
-                const next = rs.filter((r) => String(r.id) !== String(deleted.id));
-                saveState(`reposCache:${String(user.id)}`, { repos: next, repoLimit, savedAt: Date.now() });
-                return next;
-              });
-              setRepo((current) => (current && String(current.id) === String(deleted.id) ? null : current));
-              setWorking(null);
-            }}
-          />}
-          {page === "search" && <SearchPage repos={repos} onOpen={open} onNavigate={navigate} query={searchQuery} repoFiles={working?.files || {}} onOpenFile={openFile} />}
-          {page === "privacy" && <LegalPage type="privacy" />}
-          {page === "terms" && <LegalPage type="terms" />}
-          {page === "about" && <LegalPage type="about" />}
-          {page === "contact" && <LegalPage type="contact" />}
-        </Suspense>
+        {page === "repos" && <Repositories repos={repos} repoLimit={repoLimit} loading={reposLoading} onOpen={open} onCreate={createRepo} onRefresh={loadRepos} />}
+        {page === "changes" && <Changes changes={workingChanges} onSelect={openFile} onDiscard={working?.discard} />}
+        {page === "actions" && <Actions repos={repos} />}
+        {page === "github" && <GitHubHub repos={repos} />}
+        {page === "logs" && <Logs />}
+        {page === "settings" && <Settings />}
+        {page === "billing" && <Billing />}
+        {page === "project" && repo && <Project
+          repo={repo}
+          openPath={openPath}
+          onBack={() => navigate("repos")}
+          onWorkingState={setWorking}
+          onDeleteRepo={(deleted) => {
+            setRepos((rs) => {
+              const next = rs.filter((r) => String(r.id) !== String(deleted.id));
+              saveState(`reposCache:${String(user.id)}`, { repos: next, repoLimit, savedAt: Date.now() });
+              return next;
+            });
+            setRepo((current) => (current && String(current.id) === String(deleted.id) ? null : current));
+            setWorking(null);
+          }}
+        />}
+        {page === "search" && <SearchPage repos={repos} onOpen={open} onNavigate={navigate} query={searchQuery} repoFiles={working?.files || {}} onOpenFile={openFile} />}
         {page === "recent" && <Recent onOpen={open} />}
         {page === "help" && <Help />}
+        {page === "privacy" && <LegalPage type="privacy" />}
+        {page === "terms" && <LegalPage type="terms" />}
+        {page === "about" && <LegalPage type="about" />}
+        {page === "contact" && <LegalPage type="contact" />}
         {page === "vercel" && <div className="page"><header><div><span className="eyebrow">DEPLOYMENT</span><h1>Vercel</h1></div></header><section className="panel"><p className="muted">Open Vercel to import or deploy a GitHub repository.</p><button className="primary" onClick={() => openExternal("https://vercel.com")}>Open Vercel</button></section></div>}
       </section>
       <TabBar page={page} setPage={navigate} onMore={openMenu} />

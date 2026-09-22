@@ -1,10 +1,3 @@
-/* Full-height native/PWA shell. The Android wrapper hides system bars; safe-area variables
-   are injected by the wrapper so content remains correctly positioned on cutout devices. */
-html,body,#root{width:100%;height:100%;min-height:100%;margin:0;padding:0}
-html{background:var(--bg, #0d1117);overscroll-behavior:none}
-body{min-height:100dvh;min-height:100vh;overflow-x:hidden;overscroll-behavior-y:none}
-#root{min-height:100dvh;min-height:100vh}
-
 :root{
   --bg:#0d1117;--panel:#161b22;--panel2:#21262d;--panel3:#2d333b;--line:#30363d;
   --text:#e6edf3;--muted:#8b949e;--accent:#58a6ff;--accent-strong:#1f6feb;
@@ -21,7 +14,7 @@ a:hover{text-decoration:underline}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
 
 /* ---------- app shell (mobile-first) ---------- */
-.app{min-height:100dvh;min-height:100vh;display:flex;flex-direction:column}
+.app{min-height:100vh;display:flex;flex-direction:column}
 .content{flex:1;min-width:0;padding-top:calc(var(--topbar-h) + var(--safe-top));padding-bottom:calc(var(--tabbar-h) + var(--safe-bottom))}
 
 /* top bar: GitHub-web style header, mobile default */
@@ -136,9 +129,6 @@ body.menu-open,body.modal-open{overflow:hidden}
 .loginBox h1{font-size:26px;margin:12px 0 8px}
 .loginBox p,.loginBox small{color:var(--muted)}
 .loginLegal{display:flex;flex-wrap:wrap;gap:10px 14px;margin-top:18px;padding-top:14px;border-top:1px solid var(--line)}
-.loginBox .wide{width:100%;display:flex;align-items:center;justify-content:center;gap:9px;margin-top:9px}
-.loginBox .secondary{background:var(--panel2);border:1px solid var(--line);color:var(--text);padding:10px 14px;border-radius:7px}
-.loginSignout{margin-top:8px!important}
 .loginLegal a{color:var(--muted);font-size:12.5px;text-decoration:none}
 .loginLegal a:hover{color:var(--text);text-decoration:underline}
 .wide{width:100%;display:flex;align-items:center;justify-content:center;gap:9px;margin:24px 0;min-height:46px}
@@ -423,4 +413,4 @@ select:focus{border-color:var(--accent)}
 .hubQuick{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px}.hubQuick button,.hubTabs button{display:inline-flex;align-items:center;gap:6px}.hubTabs{display:flex;gap:4px;overflow:auto;margin:12px 0;border-bottom:1px solid var(--line)}.hubTabs button{border:0;border-bottom:2px solid transparent;background:transparent;padding:9px 11px;white-space:nowrap;color:var(--muted)}.hubTabs button.active{color:var(--text);border-bottom-color:var(--accent)}.hubGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.hubGrid button{display:flex;flex-direction:column;align-items:flex-start;gap:6px;text-align:left;padding:14px;border:1px solid var(--line);border-radius:9px;background:var(--panel2)}.hubGrid span{font-size:12px;color:var(--muted)}.hubRow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 0;border-bottom:1px solid var(--line)}.hubRow:last-child{border-bottom:0}.hubRow>div:first-child{min-width:0;display:flex;flex-direction:column;gap:3px}.hubRow small{color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.hubRowActions{display:flex;gap:5px}.hubList{display:flex;flex-direction:column;gap:6px;margin:12px 0}.hubList>div{display:flex;justify-content:space-between;gap:10px;border:1px solid var(--line);padding:8px;border-radius:7px}.hubList small{color:var(--muted)}
 @media(max-width:560px){.hubGrid{grid-template-columns:1fr}.hubTabs button{font-size:12px;padding:8px}}
 
-.googleMark{font-weight:800;font-size:18px;line-height:1;width:19px;text-align:center}
+.googleMark{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:#fff;color:#4285f4;font-weight:800;font-size:15px;font-family:Arial,sans-serif}.loginError{margin:10px 0}.loginBox .secondary{margin-top:10px}.loginBox button:disabled{opacity:.65;cursor:wait}
