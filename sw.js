@@ -4,7 +4,7 @@ importScripts("https://www.gstatic.com/firebasejs/12.1.0/firebase-app-compat.js"
 // Do not add Firebase Admin service-account credentials here.
 const FIREBASE_CONFIG={
   apiKey:"AIzaSyCqN_fapK0cvhrtQfJp6YIAefR2bfUwXeU",
-  authDomain:"wydev0.firebaseapp.com",
+  authDomain:"wyte.name.ng",
   projectId:"wydev0",
   storageBucket:"wydev0.firebasestorage.app",
   messagingSenderId:"966164490746",

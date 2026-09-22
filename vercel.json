@@ -9,6 +9,14 @@
   },
   "rewrites": [
     {
+      "source": "/__/auth/:path*",
+      "destination": "https://wydev0.firebaseapp.com/__/auth/:path*"
+    },
+    {
+      "source": "/__/firebase/init.json",
+      "destination": "https://wydev0.firebaseapp.com/__/firebase/init.json"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api/index.js"
     }

@@ -28,6 +28,7 @@ const Logs = lazy(() => import("./pages/Logs"));
 import { github } from "./github";
 import { loadState, saveState } from "./storage";
 import { initNotifications } from "./notifications";
+import { consumeGoogleRedirect, establishGoogleServerSession, signOutGoogle } from "./firebase-auth";
 
 // Shown the instant a lazy page chunk is requested, so a slow/flaky
 // connection never leaves the screen blank while that chunk downloads.
@@ -280,27 +281,54 @@ export default function App() {
     const loginFallback = window.setTimeout(() => {
       if (!settled) setLoading(false);
     }, 5000);
-    github
-      .session()
-      .then((x) => {
+    (async () => {
+      // First consume a Firebase Google redirect result, if this page is the
+      // return leg of sign-in. Firebase owns the OAuth state; after a successful
+      // return we exchange its ID token for the encrypted WyteLab server session.
+      try {
+        const redirectResult = await Promise.race([
+          consumeGoogleRedirect(),
+          new Promise((_, reject) => window.setTimeout(() => {
+            const e = new Error("Google sign-in return timed out. Please try again.");
+            e.code = "GOOGLE_REDIRECT_TIMEOUT"; reject(e);
+          }, 10000))
+        ]);
+        if (redirectResult?.user) {
+          const googleUser = await establishGoogleServerSession(redirectResult);
+          if (googleUser) {
+            setUser(googleUser);
+            initNotifications(googleUser).catch(() => {});
+          }
+        }
+      } catch (e) {
+        // A failed/cancelled redirect must never leave the app on an endless
+        // loading screen. The login page remains available so the user can
+        // start a fresh Google redirect.
+        if (String(e?.code || "").includes("missing-initial-state")) {
+          toastError("Google sign-in could not restore its browser session. Start Google sign-in again.");
+        } else if (String(e?.code || "") !== "auth/popup-closed-by-user") {
+          toastError(e);
+        }
+      }
+
+      // If the redirect did not establish a session, read the persistent server
+      // cookie. This also handles ordinary page loads and Android app restarts.
+      try {
+        const x = await github.session();
         if (x?.user) {
           setUser(x.user);
           const cached = loadState(`reposCache:${String(x.user.id)}`, null);
           if (cached?.repos?.length) { setRepos(cached.repos); setRepoLimit(cached.repoLimit || null); }
-          loadRepos({ silent: true });
           initNotifications(x.user).catch(() => {});
         }
-      })
-      .catch((e) => {
-        // A normal signed-out response is handled by the login screen; only
-        // surface unexpected network/server failures without blocking access.
+      } catch (e) {
         if (Number(e?.status) !== 401) toastError(e);
-      })
-      .finally(() => {
-        settled = true;
-        window.clearTimeout(loginFallback);
-        setLoading(false);
-      });
+      }
+    })().finally(() => {
+      settled = true;
+      window.clearTimeout(loginFallback);
+      setLoading(false);
+    });
     return () => {
       settled = true;
       window.clearTimeout(loginFallback);
@@ -368,7 +396,7 @@ export default function App() {
   return (
     <div className="app">
       <TopBar user={user} onMenu={openMenu} onSearch={() => navigate("search")} onAvatar={() => navigate("settings")} />
-      <Menu page={page} setPage={navigate} onSearch={(q) => setSearchQuery(q)} onLogout={async () => { await github.logout(); location.reload(); }} />
+      <Menu page={page} setPage={navigate} onSearch={(q) => setSearchQuery(q)} onLogout={async () => { await github.logout(); await signOutGoogle(); location.reload(); }} />
       <div className="menuScrim" onClick={closeMenu} />
       <section className="content">
         {page !== "home" && page !== "project" && (

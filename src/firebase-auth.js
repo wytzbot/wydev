@@ -1,6 +1,7 @@
 import {getApp, getApps, initializeApp} from "firebase/app";
-import {getAuth, GoogleAuthProvider, getRedirectResult, onAuthStateChanged, signInWithPopup, signInWithRedirect, signOut} from "firebase/auth";
+import {getAuth, GoogleAuthProvider, getRedirectResult, onAuthStateChanged, signInWithRedirect, signOut} from "firebase/auth";
 import {FIREBASE_CONFIG} from "./firebase-config";
+import {fetchTimeout} from "./net";
 
 let authInstance = null;
 
@@ -22,45 +23,38 @@ function googleProvider(){
   return provider;
 }
 
-// Prefer Firebase's popup flow so browsers/WebViews do not lose redirect
-// storage between the app origin and firebaseapp.com. If the environment
-// blocks popups, fall back to Firebase's redirect flow. WyteLab never tries to
-// turn a Google email address into a GitHub credential.
+// Google authentication deliberately uses Firebase's full-page redirect flow.
+// The Firebase authDomain is the same as the production WyteLab origin and the
+// Vercel deployment transparently proxies /__/auth/* to Firebase. That avoids
+// the third-party sessionStorage problem that caused the old
+// "missing initial state" screen in Android/partitioned browsers.
 export async function signInWithGoogle(){
-  const auth=firebaseAuth();
-
-  // Web-only authentication: use the Firebase Web SDK in a normal browser.
-  // Popup is preferred because it keeps the user on the current page. If the
-  // browser blocks popups or does not support the popup environment, use
-  // Firebase's browser redirect flow as the web fallback. No Median/native
-  // authentication bridge is used here.
-  try{
-    return await signInWithPopup(auth, googleProvider());
-  }catch(e){
-    const code=String(e?.code||"");
-    // These errors mean the popup could not complete in the current
-    // browser environment. Switch to the full-page Firebase redirect flow
-    // instead of making the user retry the same incompatible popup.
-    //
-    // popup-closed-by-user is included deliberately: some browsers/WebViews
-    // report a popup that they cannot keep open with this code. A real
-    // cancellation is still harmless—the redirect flow simply asks the user
-    // to continue with Google on the next page.
-    if([
-      "auth/popup-blocked",
-      "auth/popup-closed-by-user",
-      "auth/operation-not-supported-in-this-environment",
-      "auth/web-storage-unsupported",
-      "auth/internal-error"
-    ].includes(code)){
-      return signInWithRedirect(auth, googleProvider());
-    }
-    throw e;
-  }
+  await signInWithRedirect(firebaseAuth(), googleProvider());
 }
 
 export async function consumeGoogleRedirect(){
   return getRedirectResult(firebaseAuth());
+}
+
+// Turn the Firebase client credential into the same encrypted WyteLab server
+// session used by the rest of the app. Never put a Firebase token in a URL.
+export async function establishGoogleServerSession(result){
+  if (!result?.user) return null;
+  const idToken = await result.user.getIdToken(true);
+  const response = await fetchTimeout("/api/auth/firebase", {
+    method:"POST",
+    credentials:"include",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({idToken})
+  }, 12000);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(data?.error || "Google sign-in could not be completed.");
+    error.code = data?.code || `HTTP_${response.status}`;
+    error.status = response.status;
+    throw error;
+  }
+  return data?.user || null;
 }
 
 export function currentFirebaseUser(){

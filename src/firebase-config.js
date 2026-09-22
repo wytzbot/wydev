@@ -4,7 +4,7 @@
 // server-side only.
 export const FIREBASE_CONFIG = Object.freeze({
   apiKey: "AIzaSyCqN_fapK0cvhrtQfJp6YIAefR2bfUwXeU",
-  authDomain: "wydev0.firebaseapp.com",
+  authDomain: "wyte.name.ng",
   projectId: "wydev0",
   storageBucket: "wydev0.firebasestorage.app",
   messagingSenderId: "966164490746",
