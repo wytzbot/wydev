@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Upload, FileArchive, File, X, Check, FolderOpen } from "lucide-react";
+import { isWyBuildApp, nativePickFiles } from "../wybuildBridge";
 
 export default function UploadPicker({ open, onClose, onFiles }) {
   const inputRef = useRef(null);
@@ -25,7 +26,21 @@ export default function UploadPicker({ open, onClose, onFiles }) {
     setSelected(files);
   };
 
-  const choose = () => inputRef.current?.click();
+  const choose = async () => {
+    if (isWyBuildApp()) {
+      const picked = await nativePickFiles(true);
+      if (picked?.length) {
+        const files = picked.filter(x => x?.data && !x.error).map(x => {
+          const raw = atob(x.data); const bytes = new Uint8Array(raw.length);
+          for (let i=0;i<raw.length;i++) bytes[i]=raw.charCodeAt(i);
+          return new File([bytes], x.name || "file", { type: x.mime || "application/octet-stream" });
+        });
+        if (files.length) setSelected(files);
+        return;
+      }
+    }
+    inputRef.current?.click();
+  };
   const submit = () => {
     if (selected.length) onFiles?.(selected);
   };

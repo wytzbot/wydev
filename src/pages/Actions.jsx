@@ -6,6 +6,7 @@ import {loadState,saveState} from "../storage";
 import {toastError,toastSuccess,toastInfo} from "../toast";
 import Select from "../components/Select";
 import { openExternal } from "../utils";
+import { nativeNotify } from "../wybuildBridge";
 
 const statusLabel=(run)=>String(run?.conclusion||run?.status||"unknown").replaceAll("_"," ");
 const isRunning=run=>["queued","in_progress","waiting","requested","pending"].includes(String(run?.status||"").toLowerCase());
@@ -28,7 +29,24 @@ export default function Actions({repos}){
  const inspect=async run=>{setSelectedRun(run);setBusy(`jobs:${run.id}`);try{const d=await github.actionsJobs(owner,repo.name,run.id);setJobs(d.jobs||[])}catch(e){toastError(e.message)}finally{setBusy("")}};
  const rerun=(run,debug=false)=>{if(plan!=="pro"){toastInfo("Retrying a workflow is a Pro feature. Upgrade to Pro to rerun failed jobs.");return}return runAction(`rerun:${run.id}`,()=>github.rerunFailed(owner,repo.name,run.id,{debug}))};
  const cancel=(run,force=false)=>runAction(`cancel:${run.id}`,()=>github.cancelRun(owner,repo.name,run.id,force));
- const dispatch=async()=>{if(!workflowId||!ref.trim())return;await runAction("dispatch",async()=>{await github.dispatchWorkflow(owner,repo.name,workflowId,{ref:ref.trim(),inputs:{}});setShowDispatch(false)})};
+ const dispatch=async()=>{if(!workflowId||!ref.trim())return;const dispatchedAt=Date.now();await runAction("dispatch",async()=>{await github.dispatchWorkflow(owner,repo.name,workflowId,{ref:ref.trim(),inputs:{}});setShowDispatch(false)});notifyWhenRunFinishes(workflowId,dispatchedAt)};
+ const notifyWhenRunFinishes=async(dispatchedWorkflowId,dispatchedAt)=>{
+   // Workflow dispatch doesn't hand back the run it created, so poll recent
+   // runs for this workflow until the newest one since dispatch stops
+   // running, then surface a native notification — the one place a build
+   // result should reach the user even if WyteLab is backgrounded.
+   for(let i=0;i<40;i++){
+     await new Promise(r=>setTimeout(r,15000));
+     try{
+       const d=await github.actionsRuns(owner,repo.name);
+       const candidate=(d.runs||[]).find(r=>String(r.workflow_id)===String(dispatchedWorkflowId)&&new Date(r.created_at).getTime()>=dispatchedAt-5000);
+       if(candidate&&!isRunning(candidate)){
+         nativeNotify("WyteLab",`${repo.full_name}: workflow run ${statusLabel(candidate)}`);
+         return;
+       }
+     }catch{}
+   }
+ };
  if(!repo)return <div className="page"><header><div><span className="eyebrow">ACTIONS</span><h1>Actions Control Center</h1></div></header><section className="panel"><p className="muted">Create or open a GitHub repository first. WyteLab will show its workflow runs here.</p></section></div>;
  return <div className="page actionsPage">
    <header><div><span className="eyebrow">GITHUB ACTIONS</span><h1>Actions Control Center</h1><p className="muted">See builds, retry failures and control workflows without opening GitHub.</p></div><button className="ghost" onClick={load} disabled={loading}><RefreshCw size={16}/>Refresh</button></header>

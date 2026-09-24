@@ -25,7 +25,7 @@ function vercelDomain(repoName) {
   return `${slug || "app"}.vercel.app`;
 }
 
-export default function Project({ repo, onBack, onWorkingState, openPath, onDeleteRepo }) {
+export default function Project({ repo, onBack, onWorkingState, openPath, onDeleteRepo, pendingShareText, onConsumeShare }) {
   const key = `project:${repo.id}`;
   const cached = loadState(key, null);
   const editorFontSize = loadState("fontSize", 16);
@@ -290,6 +290,33 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
     setSelected(p);
     toastSuccess(`File ${p} created`);
   };
+  useEffect(() => {
+    if (!pendingShareText) return;
+    let cancelled = false;
+    (async () => {
+      const result = await promptDialog({
+        title: "Create file from shared content",
+        message: "Content was shared to WyteLab from another app.",
+        confirmLabel: "Create file",
+        fields: [
+          { key: "path", label: "File path", placeholder: "src/NewFile.js" },
+          { key: "content", label: "Content", type: "textarea", defaultValue: pendingShareText },
+        ],
+      });
+      if (cancelled) return;
+      if (result) {
+        const p = safeRepoPath(result.path);
+        if (p) {
+          applyFiles({ ...files, [p]: result.content || "" }, `Created ${p}`);
+          setSelected(p);
+          toastSuccess(`File ${p} created from shared content`);
+        }
+      }
+      onConsumeShare?.();
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingShareText]);
   const createFolder = async () => {
     // Files that aren't inside any folder yet (no "/" in their path) — offered
     // as a pick-list so they can be dropped straight into the new folder.

@@ -48,3 +48,9 @@ This source ZIP alone cannot enable native plugins. The Median App Studio config
 ## Uptodown review goal
 
 The purpose of these changes is to make mobile-specific functionality part of the actual Wytelab experience rather than merely displaying the website. Final acceptance remains a decision made by Uptodown's review process.
+
+## Important: native shell is now the preferred Uptodown build
+
+The maintained `.wydev/android-shell` now contains a real Android `MainActivity` rather than relying on Median. It provides native file picking, Downloads handling, Android sharing, clipboard, haptics, fullscreen, network/device information, local notifications, deep-link/share intents, and native JavaScript bridging. The web UI remains the main interface, but these capabilities are implemented in the Android APK itself.
+
+For Uptodown, build the APK with the GitHub Actions `build_type=apk` workflow and use the resulting artifact from the native shell. Do not submit an APK produced by Median for this version.

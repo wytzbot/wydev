@@ -3,6 +3,7 @@ import { getLocalPreferences, loadState, saveState, syncPreferences, loadSyncedP
 import { confirmDialog } from "../dialog";
 import Select from "../components/Select";
 import { enableNotifications, disableNotifications, getNotificationPermission, isNotificationsEnabled, refreshNotificationPermission, isMedianApp } from "../notifications";
+import { isWyBuildApp, nativeDeviceInfo, nativeBatteryPercent, nativeIsOnline } from "../wybuildBridge";
 
 export default function Settings() {
   const [font, setFont] = useState(loadState("fontSize", 16));
@@ -14,7 +15,19 @@ export default function Settings() {
   const [notificationsEnabled, setNotificationsEnabled] = useState(() => isNotificationsEnabled());
   const [notificationBusy, setNotificationBusy] = useState(false);
   const [syncError, setSyncError] = useState("");
+  const [deviceInfo] = useState(() => nativeDeviceInfo());
+  const [battery, setBattery] = useState(() => nativeBatteryPercent());
+  const [online, setOnline] = useState(() => nativeIsOnline());
   const syncTimer = useRef(null);
+
+  useEffect(() => {
+    if (!isWyBuildApp()) return;
+    const refreshDiagnostics = () => { setBattery(nativeBatteryPercent()); setOnline(nativeIsOnline()); };
+    const timer = setInterval(refreshDiagnostics, 30000);
+    window.addEventListener("online", refreshDiagnostics);
+    window.addEventListener("offline", refreshDiagnostics);
+    return () => { clearInterval(timer); window.removeEventListener("online", refreshDiagnostics); window.removeEventListener("offline", refreshDiagnostics); };
+  }, []);
 
   const apply = (prefs) => {
     if (prefs.fontSize !== undefined) { setFont(prefs.fontSize); document.documentElement.style.setProperty("--ui-font", prefs.fontSize + "px"); }
@@ -130,6 +143,16 @@ export default function Settings() {
         <button onClick={() => { localStorage.removeItem("wydev:recentProjects"); location.reload(); }}>Clear recent projects</button>
         <button onClick={clearWorkingData}>Clear local working data</button>
       </section>
+      {isWyBuildApp() && (
+        <section className="panel">
+          <h3>APP INFO</h3>
+          {deviceInfo && <p className="muted">{deviceInfo.manufacturer} {deviceInfo.model} · Android {deviceInfo.version} (SDK {deviceInfo.sdk})</p>}
+          <p className="muted">
+            {battery != null && `Battery: ${battery}% · `}
+            {online ? "Online" : "Offline"}
+          </p>
+        </section>
+      )}
     </div>
   );
 }

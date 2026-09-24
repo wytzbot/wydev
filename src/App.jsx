@@ -22,6 +22,9 @@ import Logs from "./pages/Logs";
 import { github } from "./github";
 import { loadState, saveState } from "./storage";
 import { initNotifications } from "./notifications";
+import { onNativeDeepLink, onNativeShare, consumePendingDeepLink, consumePendingShare } from "./wybuildBridge";
+
+const PENDING_SHARE_KEY = "wydevNativePendingShare";
 
 export default function App() {
   const initialBillingReturn = new URLSearchParams(window.location.search).get("billing") === "return";
@@ -35,7 +38,10 @@ export default function App() {
     [working, setWorking] = useState(null),
     [searchQuery, setSearchQuery] = useState(""),
     [openPath, setOpenPath] = useState(""),
+    [incomingShare, setIncomingShare] = useState(null),
     [loading, setLoading] = useState(true);
+  const reposRef = useRef([]);
+  const repoRef = useRef(null);
   const reposRequestRef = useRef(null);
   const reposUserRef = useRef(null);
   // Always holds the most recently rendered loadRepos, so listeners that are
@@ -135,6 +141,48 @@ export default function App() {
   }, []);
 
   loadReposRef.current = loadRepos;
+  reposRef.current = repos;
+  repoRef.current = repo;
+
+  // Native Android deep links (wytelab://open/<owner>/<repo>[/<path>]) and
+  // "Share into app" text from Android's Share sheet arrive as window
+  // CustomEvents dispatched by the WyBuild shell. Anything that arrived
+  // before this listener attached (cold start) is replayed once via the
+  // consume* calls below.
+  useEffect(() => {
+    const openDeepLink = async (raw) => {
+      if (!raw) return;
+      let parsed;
+      try { parsed = new URL(raw); } catch { return; }
+      const segments = `${parsed.host || ""}${parsed.pathname || ""}`.split("/").filter(Boolean);
+      if (segments[0] !== "open" || segments.length < 3) return;
+      const [, owner, name, ...rest] = segments;
+      const fullName = `${owner}/${name}`;
+      const path = rest.join("/");
+      let match = reposRef.current.find((r) => r.full_name === fullName);
+      if (!match) match = (await loadReposRef.current?.({ silent: true }))?.find((r) => r.full_name === fullName);
+      if (!match) { toastError(`Could not find repository ${fullName}.`); return; }
+      setRepo(match);
+      navigate("project");
+      saveState("recentProjects", [{ id: match.id, full_name: match.full_name, repo: match }, ...loadState("recentProjects", []).filter((x) => x.id !== match.id)].slice(0, 10));
+      if (path) setOpenPath(path);
+    };
+    const handleShare = (text) => {
+      if (!text) return;
+      if (repoRef.current) setIncomingShare(text);
+      else {
+        try { sessionStorage.setItem(PENDING_SHARE_KEY, text); } catch {}
+        toastInfo("Content shared to WyteLab. Open a project to save it as a file.");
+      }
+    };
+    const pendingLink = consumePendingDeepLink();
+    if (pendingLink) openDeepLink(pendingLink);
+    const pendingShare = consumePendingShare();
+    if (pendingShare) handleShare(pendingShare);
+    const offLink = onNativeDeepLink(openDeepLink);
+    const offShare = onNativeShare(handleShare);
+    return () => { offLink(); offShare(); };
+  }, [user]);
 
   // The Android APK shell is a bare WebView. After it's been backgrounded
   // for a while, Chromium's compositor frequently stops repainting the
@@ -278,6 +326,10 @@ export default function App() {
     if (repo) {
       const saved = loadState(`project:${repo.id}`, null);
       if (saved) setWorking({ repo, branch: saved.branch, files: saved.files || {}, base: saved.base || {}, changes: [] });
+      try {
+        const stashedShare = sessionStorage.getItem(PENDING_SHARE_KEY);
+        if (stashedShare) { sessionStorage.removeItem(PENDING_SHARE_KEY); setIncomingShare(stashedShare); }
+      } catch {}
     }
   }, [repo]);
 
@@ -354,6 +406,8 @@ export default function App() {
         {page === "project" && repo && <Project
           repo={repo}
           openPath={openPath}
+          pendingShareText={incomingShare}
+          onConsumeShare={() => setIncomingShare(null)}
           onBack={() => navigate("repos")}
           onWorkingState={setWorking}
           onDeleteRepo={(deleted) => {

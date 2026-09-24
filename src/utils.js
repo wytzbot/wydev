@@ -23,6 +23,7 @@ function legacyCopy(text){
 }
 
 export const copy=async text=>{
+  try { const b=window.WyBuild; if(b?.copy) return !!b.copy(String(text)); } catch {}
   if(navigator.clipboard?.writeText){
     try{await navigator.clipboard.writeText(text);return true}catch{}
   }
@@ -55,6 +56,7 @@ export const copyBlob=async text=>{
 // the shell's external-link handling actually intercepts.
 export function openExternal(url) {
   if (!url) return;
+  try { if (window.WyBuild?.openExternal && window.WyBuild.openExternal(url)) return; } catch {}
   let w = null;
   try {
     w = window.open(url, "_blank", "noopener,noreferrer");
@@ -73,6 +75,13 @@ export function openExternal(url) {
 // platforms that support sharing files, and fall back to the classic anchor
 // trick everywhere else (desktop browsers, older WebViews).
 export async function saveFile(blob, filename, mime) {
+  try {
+    if (window.WyBuild?.downloadBase64) {
+      const r = new FileReader();
+      const ok = await new Promise(resolve => { r.onload=()=>{ try { resolve(!!window.WyBuild.downloadBase64(filename, mime || blob.type || "application/octet-stream", String(r.result).split(",")[1] || "")); } catch { resolve(false); } }; r.onerror=()=>resolve(false); r.readAsDataURL(blob); });
+      if (ok) return true;
+    }
+  } catch {}
   try {
     const file = new File([blob], filename, { type: mime || blob.type || "application/octet-stream" });
     if (navigator.canShare?.({ files: [file] })) {
