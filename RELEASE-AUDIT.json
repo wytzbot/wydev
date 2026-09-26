@@ -1,7 +1,7 @@
 {
   "name": "WyteLab",
-  "release": "production-hardened-final",
-  "date": "2026-08-26",
+  "release": "marketplace-oauth-submission-ready-2026-09-26",
+  "date": "2026-09-26",
   "vercel_serverless_functions": 1,
   "github_source_of_truth": true,
   "firebase_persistence": true,
@@ -9,10 +9,12 @@
   "ai_diagnosis_only": true,
   "frontend_secret_scan": "PASS",
   "source_checks": "PASS",
-  "vite_build": "NOT_VERIFIABLE_IN_SANDBOX",
+  "vite_build": "NOT_VERIFIED_DEPENDENCY_INSTALL_TIMEOUT",
+  "oauth_flow_audit": "PASS_STATIC_SEPARATION_FIREBASE_SIGNIN_VS_GOOGLE_DRIVE",
   "notes": [
-    "Vite executable in this sandbox returns Permission denied.",
-    "Run npm ci && npm run build:source in Vercel/CI to validate the production bundle."
+    "npm install timed out in this sandbox, so the Vite production bundle was not executed here.",
+    "Run npm ci && npm run check && npm run build:source in Vercel/CI to validate the production bundle.",
+    "Google account sign-in uses Firebase Authentication; /api/auth/google/callback is reserved for the separate Google Drive integration."
   ],
   "pro_pricing": {
     "NGN": 7500,

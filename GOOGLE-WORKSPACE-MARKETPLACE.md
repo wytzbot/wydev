@@ -1,39 +1,69 @@
-# WyteLab — Google Workspace Marketplace
+# WyteLab — Google Workspace Marketplace™ submission
 
-## Integration
-WyteLab is submitted as a **Web app** with a focused Google Workspace integration through Google Drive. Users can optionally connect Drive and save a repository ZIP snapshot to their Drive. GitHub remains the source of truth for repositories.
+## Product and integration
 
-### Google OAuth scope
-- `openid` — identifies the Google account used for the optional Drive connection.
-- `email` — identifies the connected Google account.
-- `https://www.googleapis.com/auth/drive.file` — only for files WyteLab creates/opens through the Drive integration.
+WyteLab is an independent mobile-friendly developer workspace for GitHub repositories. Its Google Workspace integration is focused on an optional Google Drive™ export: a user can authorize WyteLab to save a repository ZIP snapshot to their Drive. GitHub remains the source of truth for repository data.
+
+WyteLab is not endorsed by, sponsored by, or affiliated with Google LLC.
+
+## Google™ authentication vs Google Drive™ integration
+
+These are separate flows:
+
+- **Account sign-in:** Firebase Authentication handles **Continue with Google™**. Firebase returns an ID token to WyteLab, and the server verifies that token with Firebase Admin.
+- **Drive export:** the optional **Save ZIP to Google Drive™** feature uses a separate server-side Google OAuth client and the callback `https://wyte.name.ng/api/auth/google/callback`.
+
+Do not configure or document `/api/auth/google/callback` as the Firebase sign-in callback.
+
+## Google Drive™ scopes
+
+The direct Drive integration requests only:
+
+- `openid`
+- `email`
+- `https://www.googleapis.com/auth/drive.file`
 
 No Gmail, Calendar, Docs, Sheets, or full-Drive permissions are requested.
 
-## Pricing
-- Free: core repository editing, browsing, Actions inspection, issues, pull requests, releases, compare, and other basic tools.
-- Pro: **$7/month** or **₦7,500/month**.
-- Pro unlocks higher repository access, higher AI diagnostic limits, repository revert, failed workflow reruns/debug reruns, and other clearly marked Pro controls.
+## Production OAuth settings
 
-The Marketplace listing should identify WyteLab as the seller and display the total mandatory price clearly.
+For the direct Drive OAuth client, the exact Authorized redirect URI is:
+
+```text
+https://wyte.name.ng/api/auth/google/callback
+```
+
+For Firebase Google™ sign-in, confirm the Google provider is enabled and `wyte.name.ng` is an Authorized domain in Firebase Authentication. The Firebase-managed redirect handler is:
+
+```text
+https://wydev0.firebaseapp.com/__/auth/handler
+```
+
+The Google Auth Platform audience is currently intended to be **External** and **In production**, as required for a public OAuth/Marketplace submission.
 
 ## Reviewer flow
+
 1. Open WyteLab from the Marketplace listing.
-2. Sign in with Google or GitHub. If Google is selected, WyteLab then asks the user to connect GitHub because GitHub is the repository source of truth.
-3. Open Developer Hub and select a repository.
-4. Test Issues, Pull Requests, Compare, Releases and Actions.
-5. Test **Save ZIP to Google Drive**; Google authorization should be requested only when the Drive feature is first used.
-6. Test **Disconnect Drive** (shown in Developer Hub once connected) — confirms WyteLab revokes the grant and deletes the stored token, not just relying on the user going to myaccount.google.com.
-7. Test Pro controls with a Pro reviewer account where required.
+2. Choose **Continue with Google™** or GitHub.
+3. If Google™ sign-in is selected, connect GitHub because GitHub is the repository source of truth.
+4. Open Developer Hub and select a repository.
+5. Test Issues, Pull Requests, Compare, Releases and Actions.
+6. Test **Save ZIP to Google Drive™**; Google authorization is requested only when this feature is first used.
+7. Test **Disconnect Google Drive™**.
+8. Test Pro controls with the configured reviewer entitlement.
 
-## Production environment variables
-`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI` must be configured in the production deployment. The redirect URI should be the exact HTTPS production callback URL.
+## Google branding attribution
 
-## OAuth consent screen / verification checklist (Cloud Console — done outside this repo)
-- App name, logo, support email and developer contact match what's shown in the app.
-- Application home page = the production URL of `index.html` (the pre-login screen now links Privacy Policy / Terms / About / Contact in its footer, which Google's review checks for).
-- Authorized domain = the production domain; `GOOGLE_REDIRECT_URI` must be an exact HTTPS match under it.
-- Privacy Policy URL = the public production privacy-policy page (it must disclose `openid`, `email`, and `drive.file`, Limited Use compliance, and how to revoke access) and Terms of Service URL = the public production terms page.
-- Scopes requested must exactly match what's registered on the consent screen: `openid`, `email`, `https://www.googleapis.com/auth/drive.file`. `drive.file` is a **sensitive** (not restricted) scope — Google's standard OAuth verification is required before removing the "unverified app" warning; no CASA security assessment is required for this scope alone.
-- Workspace Marketplace SDK → Store Listing needs: 128x128+ app icon, at least one 1280x800 screenshot, short/long description, support link, category, and the same Privacy Policy/Terms URLs as above. These listing assets are submitted directly in Cloud Console and aren't part of this codebase.
-- Submit for verification once the above is filled in; expect it to take days, and don't change the requested scopes afterward without re-submitting.
+> Google Drive™ is a trademark of Google LLC.
+
+> Google Workspace Marketplace™ is a trademark of Google LLC.
+
+Use the same attribution in the detailed Marketplace listing if Google product names are mentioned there.
+
+## Pricing
+
+Current product documentation: Free core access and Pro at **$7/month** or **₦7,500/month**. The Marketplace listing must match the live product price.
+
+## Listing assets
+
+Provide production screenshots only. Use clear screenshots of the actual WyteLab interface; do not include browser chrome, OS status bars, or unrelated information. Target 1280×800 where the Marketplace form permits it.

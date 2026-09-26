@@ -1,19 +1,17 @@
-# WyteLab GitHub Sign-In — Web + APK
+# WyteLab web authentication
 
-GitHub is the account and repository connection for WyteLab.
+## Google™ account sign-in
 
-### Sign-in path
-1. User opens WyteLab.
-2. WyteLab checks the existing server session with `/api/auth/me`.
-3. If no session exists, the login screen immediately offers **Connect GitHub**.
-4. GitHub OAuth opens through `/api/auth/github`.
-5. GitHub returns to `/api/auth/github/callback`.
-6. The server creates the encrypted WyteLab session cookie and redirects to `/`.
-7. WyteLab loads the user's repositories through the GitHub API.
+The web app uses Firebase Authentication's Google provider. The frontend starts `signInWithRedirect()` and receives the result through `getRedirectResult()`. It then sends the Firebase ID token to `/api/auth/firebase` for server-side verification with Firebase Admin.
 
-### Android APK behavior
-The APK uses the same server-side GitHub OAuth flow. It does not depend on Firebase Google redirect state, `sessionStorage`, or a native Google login plugin. WebView cookies are enabled so the OAuth round trip can establish the server session.
+Firebase, not the WyteLab API, owns the Google™ sign-in redirect handler. For the `wydev0` Firebase project the handler follows:
 
-The client also has a short `/auth/me` timeout and a 5-second login fallback, preventing a slow or suspended mobile network request from keeping the app on an indefinite **Loading WyteLab…** screen.
+`https://wydev0.firebaseapp.com/__/auth/handler`
 
-Google Drive remains an optional integration and is unrelated to account sign-in.
+## Google Drive™
+
+The optional Google Drive™ export is a separate direct OAuth flow. It uses `/api/auth/google` and `/api/auth/google/callback` with the production callback:
+
+`https://wyte.name.ng/api/auth/google/callback`
+
+The two flows intentionally use different callbacks and different credentials.
