@@ -1,0 +1,47 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'ng.name.wyte.app'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'ng.name.wyte.app'
+        minSdk 23
+        targetSdk 36
+        versionCode 1
+        versionName '1.0.0'
+    }
+
+    signingConfigs {
+        if (System.getenv('WYTELAB_KEYSTORE')) {
+            release {
+                storeFile file(System.getenv('WYTELAB_KEYSTORE'))
+                storePassword System.getenv('WYTELAB_STOREPASS')
+                keyAlias System.getenv('WYTELAB_KEYALIAS')
+                keyPassword System.getenv('WYTELAB_KEYPASS')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (System.getenv('WYTELAB_KEYSTORE')) { signingConfig signingConfigs.release }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packaging {
+        resources { excludes += ['/META-INF/{AL2.0,LGPL2.1}'] }
+    }
+}
+
+dependencies {
+    implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.7.3'
+}

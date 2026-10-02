@@ -1,0 +1,4 @@
+<resources>
+    <string name='app_name'>WyteLab</string>
+    <string name='share_target' translatable='false'>{&quot;action&quot;:&quot;/&quot;,&quot;method&quot;:&quot;GET&quot;,&quot;enctype&quot;:&quot;application/x-www-form-urlencoded&quot;,&quot;params&quot;:{&quot;title&quot;:&quot;title&quot;,&quot;text&quot;:&quot;text&quot;,&quot;url&quot;:&quot;url&quot;}}</string>
+</resources>

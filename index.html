@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta name="google-site-verification" content="NpOlnZ93jYTaEjrDNRurwSf3ZENTR1iBgK6nEY3jZgQ" />
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<title>WyteLab</title>
+
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png" />
+<link rel="icon" href="/favicon-16.png" sizes="16x16" type="image/png" />
+<link rel="shortcut icon" href="/favicon.ico" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+<link rel="manifest" href="/manifest.webmanifest" />
+
+<meta name="theme-color" content="#0b0e11" />
+<meta name="background-color" content="#0b0e11" />
+<meta name="color-scheme" content="dark" />
+<meta name="description" content="Edit, organize, diagnose and push GitHub projects from your phone." />
+
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="WyteLab" />
+<script>
+// Boot watchdog: if the app bundle fails to load or crashes before React mounts, show why
+// instead of a blank screen (a TWA has no devtools).
+(function(){
+  var errs=[];
+  function note(m){ errs.push(String(m).slice(0,300)); }
+  window.addEventListener("error",function(e){
+    var t=e.target;
+    note(t&&t.src?("Failed to load "+t.src):(e.message||"script error"));
+  },true);
+  window.addEventListener("unhandledrejection",function(e){ note("Unhandled: "+(e.reason&&e.reason.message||e.reason)); });
+  setTimeout(function(){
+    var r=document.getElementById("root");
+    if(r&&r.childElementCount===0){
+      r.innerHTML='<div style="padding:32px 20px;color:#e6edf3;font:14px system-ui,sans-serif"><h2>WyteLab could not start</h2><pre style="white-space:pre-wrap;word-break:break-word;font-size:12px;background:#161b22;padding:12px;border-radius:8px">'+
+        (errs.length?errs.join("\n").replace(/</g,"&lt;"):"No error was reported (the app script may be blocked or empty).")+
+        '</pre><button onclick="location.reload()" style="padding:12px 18px;border:0;border-radius:10px;background:#58a6ff;color:#0b0e11;font-weight:600">Reload</button></div>';
+    }
+  },8000);
+})();
+</script>
+</head>
+<body>
+<div id="root"></div>
+<script type="module" src="/src/main.jsx"></script>
+</body>
+</html>
