@@ -1,12 +1,12 @@
 import React from "react";
 
 const CONTENT = {
-  contact: { label: "SUPPORT", title: "Contact Us", sections: [["Email", "For payment issues, bugs, account access problems, or general support, contact wytetechcompany@gmail.com."], ["Payment support", "Include the GitHub username, approximate transaction time, and the error shown by WyteLab. Never send your card number, CVV, PIN, OTP, password, or access token."], ["Security reports", "Report suspected security problems privately by email so they can be investigated without exposing repository or account data."]] },
+  contact: { label: "SUPPORT", title: "Contact Us", sections: [["Email", "For bugs, account access problems, or general support, contact wytetechcompany@gmail.com."], ["Payment support", "Include the GitHub username, approximate transaction time, and the error shown by WyteLab. Never send your card number, CVV, PIN, OTP, password, or access token."], ["Security reports", "Report suspected security problems privately by email so they can be investigated without exposing repository or account data."]] },
   privacy: {
     label: "PRIVACY",
     title: "Privacy Policy",
     sections: [
-      ["What we collect", "WyteLab collects the information needed to authenticate your GitHub account, connect you to repositories you choose to use, operate the workspace, and provide billing services. We aim to collect only what is necessary for these functions."],
+      ["What we collect", "WyteLab collects the information needed to authenticate your account, connect you to repositories you choose to use, and operate the workspace. We aim to collect only what is necessary for these functions."],
       ["GitHub access", "When you sign in with GitHub, WyteLab uses the permissions granted during authorization to perform actions you request, such as reading repositories, editing files, and creating or updating repository content. WyteLab does not claim ownership of your code."],
       ["Payments", "Payments are processed through our payment provider. WyteLab does not intentionally store your full card number, CVV, or card PIN. Payment authorization data is handled through the payment flow provided by the payment processor."],
       ["Data use", "We use account and service data to operate WyteLab, prevent abuse, troubleshoot failures, maintain security, and provide requested features. We do not sell your private repository content."],

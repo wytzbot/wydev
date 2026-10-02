@@ -95,11 +95,6 @@
       ]
     }
   ],
-  "crons": [
-    {
-      "path": "/api/billing/renew",
-      "schedule": "0 8 * * *"
-    }
-  ],
+  "crons": [],
   "installCommand": "npm install"
 }

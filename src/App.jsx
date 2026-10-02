@@ -11,7 +11,6 @@ import Home from "./pages/Home";
 import Repositories from "./pages/Repositories";
 import Changes from "./pages/Changes";
 import Settings from "./pages/Settings";
-import Billing from "./pages/Billing";
 import Project from "./pages/Project";
 import SearchPage from "./pages/Search";
 import LegalPage from "./pages/Legal";
@@ -28,10 +27,9 @@ import { onNativeDeepLink, onNativeShare, consumePendingDeepLink, consumePending
 const PENDING_SHARE_KEY = "wydevNativePendingShare";
 
 export default function App() {
-  const initialBillingReturn = new URLSearchParams(window.location.search).get("billing") === "return";
   const [user, setUser] = useState(null),
     [offline, setOffline] = useState(() => !nativeIsOnline()),
-    [page, setPage] = useState(() => initialBillingReturn ? "billing" : (window.history.state?.wydevPage || (window.location.hash.replace("#","") || "home"))),
+    [page, setPage] = useState(() => (window.history.state?.wydevPage || (window.location.hash.replace("#","") || "home"))),
     [repos, setRepos] = useState([]),
     [repoLimit, setRepoLimit] = useState(null),
     [reposLoading, setReposLoading] = useState(false),
@@ -322,7 +320,7 @@ export default function App() {
   // previous WyteLab screen instead of closing the PWA/web app.
   useEffect(() => {
     if (!window.history.state?.wydevPage) {
-      window.history.replaceState({ wydevPage: initialBillingReturn ? "billing" : page }, "", window.location.href);
+      window.history.replaceState({ wydevPage: page }, "", window.location.href);
     }
     const onPopState = (event) => {
       const next = event.state?.wydevPage;
@@ -433,7 +431,7 @@ export default function App() {
       setRepos((rs) => {
         const next=[r,...rs.filter(x=>x.id!==r.id)];
         saveState(`reposCache:${String(user.id)}`, { repos: next, repoLimit, savedAt: Date.now() });
-        if(next.length>=8 && next.length<=10) toastInfo(`Free plan: ${next.length}/10 repositories used.`);
+
         return next;
       });
       saveState(key, null);
@@ -508,7 +506,6 @@ export default function App() {
         {page === "github" && <GitHubHub repos={repos} />}
         {page === "logs" && <Logs />}
         {page === "settings" && <Settings />}
-        {page === "billing" && <Billing />}
         {page === "project" && repo && <Project
           repo={repo}
           openPath={openPath}

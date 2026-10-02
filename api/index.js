@@ -438,15 +438,12 @@ async function exportRepoToDrive(s,owner,repo,branch){
 }
 
 function limitKey(s){return `${s.id||s.login}:${new Date().toISOString().slice(0,10)}`;}
-async function entitlement(s){const e=await getEntitlement(s.id);return e?.status==="active"&&(!e.expiresAt||e.expiresAt>Date.now())?"pro":"free";}
+async function entitlement(s){return "pro"; // WyteLab is free: all signed-in users get the full feature set without subscriptions.
+}
 async function checkAIQuota(s){
-  const day=new Date().toISOString().slice(0,10),used=await getUsage(s.id,day),plan=await entitlement(s);
-  // AI diagnosis is a Pro-only feature. Enforce this server-side before any
-  // model request or usage increment so a Free client cannot bypass the UI.
-  if(plan!=="pro") throw Object.assign(new Error("AI diagnosis is a WyteLab Pro feature. Upgrade to Pro to run repository diagnostics."),{status:403,code:"PRO_REQUIRED",plan});
-  const limit=Math.max(1,Number(process.env.AI_PRO_DAILY_LIMIT||5));
-  if(used>=limit)throw Object.assign(new Error(`Daily AI diagnostic limit reached (${limit}). Try again tomorrow.`),{status:429,code:"AI_QUOTA_EXCEEDED",limit,used,plan});
-  return {day,plan,limit,used};
+  // Free mode: no subscription gate and no daily app-imposed AI quota.
+  const day=new Date().toISOString().slice(0,10),used=await getUsage(s.id,day);
+  return {day,plan:"pro",limit:Number.MAX_SAFE_INTEGER,used};
 }
 // Redacts likely secrets before code is sent to the AI. This must NEVER
 // corrupt the surrounding code -- mangled output reads to the model (and to
@@ -912,7 +909,7 @@ async function handler(req,res){
     if(p==="/billing/renew"&&(req.method==="GET"||req.method==="POST")){
       const auth=req.headers.authorization||"";
       if(!process.env.CRON_SECRET||auth!==`Bearer ${process.env.CRON_SECRET}`)return json(res,401,{error:"Unauthorized"});
-      return json(res,200,{processed:await renewDue(),notifications:await runScheduledNotifications()});
+      return json(res,200,{processed:0,billingDisabled:true,notifications:await runScheduledNotifications()});
     }
 
     const s=requireSession(req,res);if(!s)return;
@@ -931,14 +928,14 @@ async function handler(req,res){
       else memory.preferences.set(String(s.id),preferences);
       return json(res,200,{ok:true,preferences});
     }
-    if(p==="/billing/authorize"&&req.method==="POST"){const b=await body(req);return json(res,200,await authorizeCharge(s,b.id,b.authorization,b.reference));}
-    if(p==="/billing/cancel"&&req.method==="POST"){return json(res,200,await cancelSubscription(s));}
+    if(p==="/billing/authorize"&&req.method==="POST")return json(res,410,{error:"WyteLab is free. Payments and card authorization are disabled.",code:"BILLING_DISABLED"});
+    if(p==="/billing/cancel"&&req.method==="POST")return json(res,200,{ok:true,billingDisabled:true,plan:"free"});
     if(p==="/github/repos"&&req.method==="GET"){
       const snapshot=await getRepoSnapshot(s.id);
       try{
         const all=await gh(s.token,"/user/repos?per_page=100&sort=updated");
         const plan=await entitlement(s);
-        const limit=plan==="pro"?null:Number(process.env.FREE_REPO_LIMIT||10);
+        const limit=null;
         const repos=limit!=null?all.slice(0,limit):all;
         if(!repos.length && snapshot?.repos?.length){
           // Confirm an empty GitHub result before accepting it. This protects
@@ -992,7 +989,7 @@ async function handler(req,res){
       }
 
       const plan=await entitlement(s);
-      if(plan!=="pro"){
+      if(false){
         const limit=Number(process.env.FREE_REPO_LIMIT||10);
         const snapshot=await getRepoSnapshot(s.id);
         // Prefer a recent local/server snapshot to avoid a slow extra GitHub call.
@@ -1048,7 +1045,7 @@ async function handler(req,res){
       if(operationId)await saveRepoCreateOperation(s.id,operationId,{status:"completed",repo:created});
       const snapshot=await getRepoSnapshot(s.id);
       if(snapshot){
-        const nextLimit=plan==="pro"?null:Number(process.env.FREE_REPO_LIMIT||10);
+        const nextLimit=null;
         const nextRepos=[created,...(snapshot.repos||[]).filter(x=>x.id!==created.id)];
         const total=Number(snapshot.total||0)+1;
         await saveRepoSnapshot(s.id,{repos:nextLimit==null?nextRepos:nextRepos.slice(0,nextLimit),total,limit:nextLimit,plan});
@@ -1059,7 +1056,7 @@ async function handler(req,res){
     const lkm=p.match(/^\/github\/licenses\/([^/]+)$/);
     if(lkm&&req.method==="GET"){
       const plan=await entitlement(s);
-      if(plan!=="pro")return json(res,402,{error:"Adding a license to an existing repository is a WyteLab Pro feature. Upgrade to unlock it.",code:"PRO_REQUIRED"});
+      // License templates are available in free mode.
       const key=decodeURIComponent(lkm[1]);
       const lic=await gh(s.token,`/licenses/${encodeURIComponent(key)}`);
       return json(res,200,{key:lic.key,name:lic.name,body:lic.body});
@@ -1067,7 +1064,7 @@ async function handler(req,res){
     const drm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)$/);
     if(drm&&req.method==="DELETE"){
       const plan=await entitlement(s);
-      if(plan!=="pro") return json(res,403,{error:"Delete repository is a WyteLab Pro feature.",code:"PRO_REQUIRED",plan});
+      // Repository deletion is available in free mode, subject to GitHub permissions.
       const owner=decodeURIComponent(drm[1]),repo=decodeURIComponent(drm[2]);
       if(!owner||!repo) return json(res,400,{error:"Repository owner and name are required."});
       const scope=String(s.scope||"");
@@ -1121,7 +1118,7 @@ async function handler(req,res){
     const arrm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/actions\/runs\/([^/]+)\/rerun-failed$/);
     if(arrm&&req.method==="POST"){
       const owner=decodeURIComponent(arrm[1]),repo=decodeURIComponent(arrm[2]),runId=decodeURIComponent(arrm[3]),b=await body(req);
-      if(await entitlement(s)!=="pro")return json(res,402,{error:"Retrying a GitHub Actions workflow is a WyteLab Pro feature. Upgrade to Pro to rerun failed jobs.",code:"PRO_REQUIRED"});
+      // Workflow retries are available in free mode, subject to GitHub permissions.
       const path=`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${encodeURIComponent(runId)}/rerun-failed-jobs`;
       await gh(s.token,path,{method:"POST",body:JSON.stringify({enable_debug_logging:!!b.debug})});
       return json(res,201,{ok:true,debug:!!b.debug});
@@ -1280,7 +1277,7 @@ async function handler(req,res){
     if(rvm&&req.method==="POST"){
       const owner=decodeURIComponent(rvm[1]),repo=decodeURIComponent(rvm[2]),b=await body(req);
       const plan=await entitlement(s);
-      if(plan!=="pro")return json(res,402,{error:"Reverting to a previous commit is a WyteLab Pro feature. Upgrade to unlock it.",code:"PRO_REQUIRED"});
+      // Commit revert is available in free mode, subject to GitHub permissions.
       const branch=String(b.branch||"").trim(), targetSha=String(b.sha||"").trim();
       if(!branch||!targetSha) return json(res,400,{error:"A branch and a commit to revert to are required"});
       const encodedOwner=encodeURIComponent(owner),encodedRepo=encodeURIComponent(repo);
@@ -1628,21 +1625,9 @@ async function handler(req,res){
     }
     if(p==="/ai/diagnose"&&req.method==="POST"){const b=await body(req);return json(res,200,await aiDiagnose(s,b));}
     if(p==="/ai/diagnose-repo"&&req.method==="POST"){const b=await body(req);return json(res,200,await aiDiagnoseRepo(s,b));}
-    if(p==="/billing/status"&&req.method==="GET"){
-      let recovered=null;
-      if(db){try{recovered=await recoverEntitlement(s)}catch(e){console.warn("Billing recovery failed:",e.message)}}
-      const e=await getEntitlement(s.id);
-      return json(res,200,{plan:await entitlement(s),expiresAt:e?.expiresAt||null,renewAt:e?.renewAt||null,renewalPending:!!e?.renewalPending,recovered:!!recovered?.recovered});
-    }
-    if(p==="/billing/config"&&req.method==="GET")return json(res,200,{usd:Number(process.env.FLW_PRO_USD||7),ngn:Number(process.env.FLW_PRO_NGN||7500),environment:FLW_LIVE?"live":"sandbox",encryptionKey:process.env.FLW_ENCRYPTION_KEY||""});
-    if(p==="/billing/verify"&&req.method==="POST"){const b=await body(req);if(!b.reference)return json(res,400,{error:"Transaction reference required"});return json(res,200,await verifyCharge(s,b.id,b.reference));}
-    if(p==="/billing/recover"&&req.method==="POST"){const b=await body(req);return json(res,200,await recoverEntitlement(s,String(b.reference||"")));}
-    if(p==="/billing/resolve"&&req.method==="POST"){
-      const b=await body(req);const reference=String(b.reference||"").trim();if(!reference)return json(res,400,{error:"Transaction reference required"});
-      const tx=await getTransaction(reference);if(!tx||String(tx.userId)!==String(s.id))return json(res,404,{error:"Payment transaction not found"});
-      return json(res,200,await verifyCharge(s,tx.chargeId,reference));
-    }
-    if(p==="/billing/checkout"&&req.method==="POST"){const b=await body(req);b.req=req;const d=await createBillingCheckout(s,b);return json(res,200,d);}
+    if(p==="/billing/status"&&req.method==="GET")return json(res,200,{plan:"pro",freeMode:true,billingDisabled:true,expiresAt:null,renewAt:null,renewalPending:false});
+    if(p==="/billing/config"&&req.method==="GET")return json(res,200,{freeMode:true,billingDisabled:true,usd:0,ngn:0,encryptionKey:""});
+    if(p.startsWith("/billing/")&&["POST","PUT","DELETE"].includes(req.method))return json(res,410,{error:"WyteLab is free. Payments and subscriptions are disabled.",code:"BILLING_DISABLED"});
     return json(res,404,{error:"Route not found"});
   }catch(e){return json(res,e.status||500,{error:e.message||"Server error",code:e.code,limit:e.limit,used:e.used,remaining:e.remaining,plan:e.plan});}
 }

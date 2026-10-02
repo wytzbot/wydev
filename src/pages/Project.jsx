@@ -5,7 +5,6 @@ import FileExplorer from "../components/FileExplorer";
 import CommitPanel from "../components/CommitPanel";
 import AIDiagnostics from "../components/AIDiagnostics";
 import { github } from "../github";
-import { billing } from "../billing";
 import { buildChangeSet, renameFolder } from "../git";
 import { copy, saveFile, openExternal, readClipboardText } from "../utils";
 import { nativeShareText } from "../wybuildBridge";
@@ -46,7 +45,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
     [editorView, setEditorView] = useState(null),
     [times, setTimes] = useState(cached?.times || {}),
     [loadedAt, setLoadedAt] = useState(cached?.loadedAt || Date.now()),
-    [plan, setPlan] = useState("free"),
+    [plan, setPlan] = useState("pro"),
     [prs, setPrs] = useState([]),
     [prOpen, setPrOpen] = useState(false),
     [prBusy, setPrBusy] = useState(false),
@@ -57,9 +56,6 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
     [historyBusy, setHistoryBusy] = useState(false),
     [revertBusy, setRevertBusy] = useState(false),
     loadGeneration = useRef(0);
-  useEffect(() => {
-    billing.status().then((s) => setPlan(s.plan)).catch(() => {});
-  }, []);
   const changes = useMemo(() => buildChangeSet(base, files), [base, files]);
   const selectedBinary = Boolean(files[selected] && typeof files[selected] === "object" && files[selected].__wydevBinary);
   const displayTimes = useMemo(() => {
@@ -75,7 +71,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
   // Every discrete file/folder action (not raw keystrokes — CodeMirror already
   // has its own text-edit undo) records a snapshot here first, so the Undo
   // button can step it back and restore exactly what was there before.
-  // Pro keeps the full session history; Free is capped so memory stays bounded.
+  // Full session history is available in free mode.
   // "Last modified" times are tracked here too, in one place, so every action
   // that goes through applyFiles gets a timestamp for free: unchanged content
   // keeps its existing time, anything new or changed gets "now".
@@ -619,10 +615,6 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
   // so it goes through the normal review + commit flow rather than pushing
   // straight to GitHub.
   const addLicense = async () => {
-    if (plan !== "pro") {
-      toastError("Adding a license to an existing repository is a WyteLab Pro feature.");
-      return;
-    }
     const result = await promptDialog({
       title: "Add a license",
       confirmLabel: "Add LICENSE",
@@ -647,7 +639,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
       applyFiles({ ...files, LICENSE: text }, `Added ${tpl.name}`);
       toastSuccess(`${tpl.name} staged as LICENSE — commit to publish it`);
     } catch (e) {
-      toastError(e.code === "PRO_REQUIRED" || e.status === 402 ? "Adding a license to an existing repository is a WyteLab Pro feature." : e.message || "Could not fetch that license template");
+      toastError(e.message || "Could not fetch that license template");
     }
   };
 
@@ -747,10 +739,6 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
   };
 
   const deleteRepository = async () => {
-    if (plan !== "pro") {
-      toastError("Delete repository is a WyteLab Pro feature.");
-      return;
-    }
     const confirmation = await promptDialog({
       title: "Delete repository",
       message: `This permanently deletes ${repo.full_name} from GitHub. This cannot be undone. Type the exact repository name to continue.`,
@@ -789,7 +777,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
       onBack?.();
     } catch (e) {
       if (e.status === 401) toastError("GitHub authentication expired. Sign in again before deleting the repository.");
-      else if (e.status === 403) toastError(e.code === "PRO_REQUIRED" ? "Delete repository is a WyteLab Pro feature." : "GitHub denied repository deletion. Re-authorize WyteLab with repository deletion permission or check your GitHub permissions.");
+      else if (e.status === 403) toastError("GitHub denied repository deletion. Re-authorize WyteLab with repository deletion permission or check your GitHub permissions.");
       else if (e.status === 404) toastError("GitHub could not find this repository. It may already have been deleted.");
       else if (e.status === 409) toastError("GitHub could not delete this repository because it is currently in a conflicting state. Check GitHub and try again.");
       else if (e.status === 422) toastError("GitHub rejected the deletion request. Check your repository permissions and try again.");
@@ -893,21 +881,21 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
           <Upload size={16} />
           Export ZIP
         </button>
-        <button onClick={addLicense} title={plan === "pro" ? "Add a GitHub license template to this repository" : "Adding a license to an existing repository requires WyteLab Pro"}>
+        <button onClick={addLicense} title={plan === "pro" ? "Add a GitHub license template to this repository" : "Add a GitHub license template to this repository"}>
           <FileText size={16} />
-          Add license{plan !== "pro" ? " (Pro)" : ""}
+          Add license
         </button>
         <button onClick={loadPRs}>
           <GitBranch size={16} />
           Pull Requests
         </button>
-        <button className="danger" onClick={deleteRepository} disabled={busy} title={plan === "pro" ? "Permanently delete this GitHub repository" : "Delete repository requires WyteLab Pro"}>
+        <button className="danger" onClick={deleteRepository} disabled={busy} title={plan === "pro" ? "Permanently delete this GitHub repository" : "Permanently delete this GitHub repository"}>
           <Trash2 size={16} />
-          Delete repository{plan !== "pro" ? " (Pro)" : ""}
+          Delete repository
         </button>
         <button onClick={loadCommitHistory} disabled={revertBusy}>
           <History size={16} />
-          Revert{plan !== "pro" ? " (Pro)" : ""}
+          Revert
         </button>
       </div>
       {historyOpen && (
