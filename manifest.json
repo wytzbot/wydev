@@ -1,0 +1,32 @@
+{
+  "packageId": "ng.name.wyte.app",
+  "host": "wyte.name.ng",
+  "name": "WyteLab — Mobile GitHub Workspace",
+  "launcherName": "WyteLab",
+  "display": "fullscreen",
+  "orientation": "portrait",
+  "themeColor": "#0b0e11",
+  "themeColorDark": "#0b0e11",
+  "navigationColor": "#0b0e11",
+  "navigationColorDark": "#0b0e11",
+  "navigationDividerColor": "#0b0e11",
+  "navigationDividerColorDark": "#0b0e11",
+  "backgroundColor": "#0b0e11",
+  "enableNotifications": true,
+  "startUrl": "/",
+  "iconUrl": "https://wyte.name.ng/icon-512.png",
+  "maskableIconUrl": "https://wyte.name.ng/icon-maskable-512.png",
+  "webManifestUrl": "https://wyte.name.ng/manifest.webmanifest",
+  "appVersionName": "1.0.0",
+  "appVersion": "1",
+  "fallbackType": "customtabs",
+  "signingKey": {
+    "path": "./android.keystore",
+    "alias": "wytelab"
+  },
+  "minSdkVersion": 21,
+  "isChromeOSOnly": false,
+  "isMetaQuest": false,
+  "enableSiteSettingsShortcut": false,
+  "generatorApp": "bubblewrap-cli"
+}
