@@ -1,4 +1,4 @@
-# wydev-workflow-version: 27
+# wydev-workflow-version: 28
 name: WyteLab
 on:
   workflow_dispatch:
@@ -7,202 +7,147 @@ on:
         description: Build target
         required: true
         type: choice
-        options: [auto, apk, aab, web]
-        default: auto
+        options: [both, aab, apk]
+        default: both
       build_mode:
-        description: Build mode
+        description: release = Play Store signed, debug = quick test
         required: true
         type: choice
-        options: [debug, release]
+        options: [release, debug]
         default: release
+      version_code:
+        description: versionCode (must increase on every Play upload)
+        required: true
+        type: string
+        default: "1"
+      version_name:
+        description: versionName shown to users
+        required: true
+        type: string
+        default: "1.0.0"
       native_features:
-        description: Native Web-to-App features (server-authorized)
+        description: Native Web-to-App features
         required: false
         type: string
         default: FULLSCREEN,NETWORK_STATUS,DEVICE_INFO
-run-name: "WyteLab: ${{ inputs.build_type }} (${{ inputs.build_mode }}) [${{ inputs.native_features }}] on ${{ github.ref_name }}"
+run-name: "WyteLab ${{ inputs.build_type }} ${{ inputs.build_mode }} v${{ inputs.version_name }} (${{ inputs.version_code }})"
 permissions:
   contents: read
 concurrency:
-  group: wydev-${{ github.repository }}-${{ github.ref }}-${{ inputs.build_type }}-${{ inputs.build_mode }}
+  group: wydev-${{ github.ref }}
   cancel-in-progress: false
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
+    env:
+      MODE: ${{ inputs.build_mode }}
+      TARGET: ${{ inputs.build_type }}
+      VC: ${{ inputs.version_code }}
+      VN: ${{ inputs.version_name }}
+      FEATURES: ${{ inputs.native_features }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Detect project type
-        id: detect
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f pubspec.yaml ]; then type=flutter
-          elif find . -type f -name gradlew -not -path './.git/*' -not -path '*/node_modules/*' | grep -q .; then type=gradle
-          elif [ -f package.json ]; then
-            if node -e "const p=require('./package.json'); process.exit(p.dependencies?.next || p.devDependencies?.next ? 0 : 1)"; then type=next; else type=node-web; fi
-          elif find . -maxdepth 3 -type f \( -name index.html -o -name '*.html' \) -not -path './.git/*' | grep -q .; then type=vanilla
-          else type=unknown; fi
-          echo "type=$type" >> "$GITHUB_OUTPUT"
-      - name: Validate requested target
-        shell: bash
+      - uses: actions/checkout@v4
+
+      - name: Validate inputs and signing secrets
         env:
-          REQUESTED: ${{ inputs.build_type }}
-          DETECTED: ${{ steps.detect.outputs.type }}
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KS_KEYPASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KS_STOREPASS: ${{ secrets.ANDROID_STORE_PASSWORD }}
         run: |
           set -euo pipefail
-          if [ "$DETECTED" = unknown ]; then echo '::error::Unsupported project'; exit 1; fi
-          if [ "$REQUESTED" = web ] && { [ "$DETECTED" = flutter ] || [ "$DETECTED" = gradle ]; }; then echo '::error::Web target unavailable for native project'; exit 1; fi
-          if [ "$DETECTED" = next ] && [ "$REQUESTED" != web ] && [ "$REQUESTED" != auto ]; then echo '::error::Next.js requires static export for APK/AAB'; exit 1; fi
-      - name: Set up Java (native Android project)
-        if: steps.detect.outputs.type == 'flutter' || steps.detect.outputs.type == 'gradle'
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-          cache: gradle
-      - name: Set up Java (web wrapper)
-        if: steps.detect.outputs.type == 'node-web' || steps.detect.outputs.type == 'vanilla'
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-      - name: Set up Flutter
-        if: steps.detect.outputs.type == 'flutter'
-        uses: subosito/flutter-action@v2.23.0
-        with:
-          channel: stable
-          cache: true
-      - name: Build Flutter Android
-        if: steps.detect.outputs.type == 'flutter' && (inputs.build_type == 'apk' || inputs.build_type == 'aab' || inputs.build_type == 'auto')
-        shell: bash
-        run: |
-          set -euo pipefail
-          flutter pub get
-          if [ '${{ inputs.build_type }}' = aab ]; then flutter build appbundle --release
-          elif [ '${{ inputs.build_type }}' = apk ] && [ '${{ inputs.build_mode }}' = debug ]; then flutter build apk --debug
-          else flutter build apk --release; fi
-      - name: Build existing Gradle Android project
-        if: steps.detect.outputs.type == 'gradle' && (inputs.build_type == 'apk' || inputs.build_type == 'aab' || inputs.build_type == 'auto')
-        shell: bash
-        run: |
-          set -euo pipefail
-          wrapper="$(find . -type f -name gradlew -not -path './.git/*' -not -path '*/node_modules/*' | head -n 1)"
-          cd "$(dirname "$wrapper")"; chmod +x ./gradlew
-          if [ '${{ inputs.build_type }}' = aab ]; then ./gradlew bundleRelease --no-daemon --stacktrace
-          elif [ '${{ inputs.build_type }}' = apk ] && [ '${{ inputs.build_mode }}' = debug ]; then ./gradlew assembleDebug --no-daemon --stacktrace
-          else ./gradlew assembleRelease --no-daemon --stacktrace; fi
-      - name: Set up Node.js
-        if: steps.detect.outputs.type == 'next' || steps.detect.outputs.type == 'node-web'
-        uses: actions/setup-node@v4
+          [[ "$VC" =~ ^[1-9][0-9]*$ ]] || { echo "::error::version_code must be a positive integer"; exit 1; }
+          [[ "$VN" =~ ^[0-9A-Za-z][0-9A-Za-z.+_-]*$ ]] || { echo "::error::invalid version_name"; exit 1; }
+          if [ "$MODE" = release ]; then
+            for v in KS_B64 KS_ALIAS KS_KEYPASS KS_STOREPASS; do
+              [ -n "${!v}" ] || { echo "::error::Missing signing secret ($v). Play Store needs one permanent upload key - see GITHUB-APK-BUILD.md"; exit 1; }
+            done
+            printf '%s' "$KS_B64" | base64 --decode > "$RUNNER_TEMP/upload.jks"
+            echo "KEYSTORE_FILE=$RUNNER_TEMP/upload.jks" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_ALIAS=$KS_ALIAS" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_PASSWORD=$KS_KEYPASS" >> "$GITHUB_ENV"
+            echo "ANDROID_STORE_PASSWORD=$KS_STOREPASS" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: ${{ hashFiles('**/package-lock.json', '**/npm-shrinkwrap.json', '**/yarn.lock') != '' && 'npm' || '' }}
-      - name: Install Node dependencies
-        if: steps.detect.outputs.type == 'next' || steps.detect.outputs.type == 'node-web'
-        shell: bash
+          cache: ${{ hashFiles('package-lock.json') != '' && 'npm' || '' }}
+
+      - name: Build web app
         run: |
           set -euo pipefail
-          if [ -f package-lock.json ]; then npm ci; elif [ -f pnpm-lock.yaml ]; then corepack enable && pnpm install --frozen-lockfile; elif [ -f yarn.lock ]; then corepack enable && yarn install --immutable; else npm install; fi
-      - name: Build static web output
-        if: (steps.detect.outputs.type == 'node-web' || steps.detect.outputs.type == 'vanilla') && (inputs.build_type == 'web' || inputs.build_type == 'apk' || inputs.build_type == 'aab' || inputs.build_type == 'auto')
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p wydev-output
-          if [ '${{ steps.detect.outputs.type }}' = node-web ] && node -e "const p=require('./package.json'); process.exit(typeof p.scripts?.build === 'string' ? 0 : 1)"; then npm run build; fi
-          if [ -d dist ]; then cp -R dist/. wydev-output/
-          elif [ -d build ]; then cp -R build/. wydev-output/
-          elif [ -d out ]; then cp -R out/. wydev-output/
-          elif [ -f index.html ]; then rsync -a --exclude node_modules --exclude .git --exclude wydev-output ./ wydev-output/
-          elif [ -f web/index.html ]; then rsync -a --exclude node_modules --exclude .git --exclude wydev-output web/ wydev-output/
-          else echo '::error::No static output found'; exit 1; fi
-          test -f wydev-output/index.html || { echo '::error::Static output has no index.html'; exit 1; }
-      - name: Set up Gradle
-        if: (inputs.build_type == 'apk' || inputs.build_type == 'aab' || inputs.build_type == 'auto') && (steps.detect.outputs.type == 'node-web' || steps.detect.outputs.type == 'vanilla')
-        uses: gradle/actions/setup-gradle@v4
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+          npm run build
+          test -f dist/index.html
+
+      - uses: actions/setup-java@v4
         with:
-          gradle-version: '8.9'
-      - name: Prepare maintained WyteLab native shell
-        if: (inputs.build_type == 'apk' || inputs.build_type == 'aab' || inputs.build_type == 'auto') && (steps.detect.outputs.type == 'node-web' || steps.detect.outputs.type == 'vanilla')
-        shell: bash
-        env:
-          FEATURES: ${{ inputs.native_features }}
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Prepare Android shell
         run: |
           set -euo pipefail
-          test -f .wydev/android-shell/settings.gradle
-          test -f .wydev/android-shell/build.gradle
-          test -f .wydev/android-shell/app/build.gradle
-          test -f .wydev/android-shell/app/src/main/AndroidManifest.xml
-          test -f .wydev/android-shell/app/src/main/java/com/wydev/wrapper/MainActivity.java
-          rm -rf wydev-wrapper
           cp -R .wydev/android-shell wydev-wrapper
-          rm -rf wydev-wrapper/app/src/main/assets/www
           mkdir -p wydev-wrapper/app/src/main/assets/www
-          cp -R wydev-output/. wydev-wrapper/app/src/main/assets/www/
-          FEATURES="${FEATURES:-FREE}"; FEATURES="$(printf '%s' "$FEATURES" | tr '[:lower:]' '[:upper:]')"
-          has(){ case ",$FEATURES," in *,"$1",*) return 0;; *) return 1;; esac; }
-          for pair in CAMERA_MIC:CAMERA LOCATION:LOCATION DOWNLOADS:DOWNLOADS EXTERNAL_LINKS:EXTERNAL_LINKS FULLSCREEN:FULLSCREEN SHARE:SHARE VIBRATION:VIBRATION ORIENTATION:ORIENTATION BATTERY:BATTERY NETWORK_STATUS:NETWORK_STATUS DEVICE_INFO:DEVICE_INFO LOCAL_NOTIFICATIONS:LOCAL_NOTIFICATIONS BIOMETRIC:BIOMETRIC SECURE_STORAGE:SECURE_STORAGE SCREEN_CAPTURE:SCREEN_CAPTURE PICTURE_IN_PICTURE:PICTURE_IN_PICTURE DEEP_LINKS:DEEP_LINKS; do key="${pair%%:*}"; ph="${pair##*:}"; v=false; has "$key" && v=true || true; sed -i "s/__FEATURE_${ph}__/$v/g" wydev-wrapper/app/src/main/java/com/wydev/wrapper/MainActivity.java; done
+          cp -R dist/. wydev-wrapper/app/src/main/assets/www/
+          F="wydev-wrapper/app/src/main/java/com/wydev/wrapper/MainActivity.java"
+          FEATURES="$(printf '%s' "${FEATURES:-}" | tr '[:lower:]' '[:upper:]')"
+          for key in CAMERA_MIC LOCATION DOWNLOADS EXTERNAL_LINKS FULLSCREEN SHARE VIBRATION ORIENTATION BATTERY NETWORK_STATUS DEVICE_INFO LOCAL_NOTIFICATIONS BIOMETRIC SECURE_STORAGE SCREEN_CAPTURE PICTURE_IN_PICTURE DEEP_LINKS; do
+            case ",$FEATURES," in *",$key,"*) v=true;; *) v=false;; esac
+            sed -i "s/__FEATURE_${key}__/$v/g" "$F"
+          done
           sed -i "s/__APP_NAME__/WyteLab App/g" wydev-wrapper/app/src/main/AndroidManifest.xml
-          # The shell owns its Gradle wrapper; do not regenerate the Android project.
-          cd wydev-wrapper
-          if [ '${{ inputs.build_type }}' = aab ]; then gradle bundleRelease --no-daemon --stacktrace
-          elif [ '${{ inputs.build_mode }}' = debug ]; then gradle assembleDebug --no-daemon --stacktrace
-          else gradle assembleRelease --no-daemon --stacktrace; fi
-      - name: Sign Android release artifacts
-        if: inputs.build_mode == 'release' && (inputs.build_type == 'apk' || inputs.build_type == 'aab' || inputs.build_type == 'auto') && (steps.detect.outputs.type == 'flutter' || steps.detect.outputs.type == 'gradle' || steps.detect.outputs.type == 'node-web' || steps.detect.outputs.type == 'vanilla')
-        shell: bash
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ! grep -rn "__FEATURE_\|__APP_NAME__" wydev-wrapper/app/src/main
+
+      - name: Build with Gradle
+        working-directory: wydev-wrapper
         run: |
           set -euo pipefail
-          KEYSTORE=/tmp/wydev-release.jks
-          if [ -n "${ANDROID_KEYSTORE_BASE64:-}" ] && [ -n "${ANDROID_KEY_ALIAS:-}" ] && [ -n "${ANDROID_KEY_PASSWORD:-}" ] && [ -n "${ANDROID_STORE_PASSWORD:-}" ]; then
-            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE"; ALIAS="$ANDROID_KEY_ALIAS"; KP="$ANDROID_KEY_PASSWORD"; SP="$ANDROID_STORE_PASSWORD"
+          if [ "$MODE" = debug ]; then TASKS="assembleDebug"
           else
-            keytool -genkeypair -v -keystore "$KEYSTORE" -storepass wydev-temp-store -keypass wydev-temp-key -alias wydev -keyalg RSA -keysize 4096 -validity 10000 -dname 'CN=WyteLab Release, O=WyteLab, C=NG'; ALIAS=wydev; KP=wydev-temp-key; SP=wydev-temp-store
+            case "$TARGET" in apk) TASKS="assembleRelease";; aab) TASKS="bundleRelease";; *) TASKS="assembleRelease bundleRelease";; esac
           fi
-          find . -type f -name '*.apk' -path '*/build/outputs/apk/*' -print0 | while IFS= read -r -d '' apk; do tool="$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -1)"; "$tool" sign --ks "$KEYSTORE" --ks-key-alias "$ALIAS" --ks-pass "pass:$SP" --key-pass "pass:$KP" "$apk"; "$tool" verify "$apk"; done
-          find . -type f -name '*.aab' -path '*/build/outputs/bundle/*' -print0 | while IFS= read -r -d '' aab; do jarsigner -keystore "$KEYSTORE" -storepass "$SP" -keypass "$KP" "$aab" "$ALIAS"; jarsigner -verify -strict "$aab"; done
-      - name: Build Next.js web package
-        if: steps.detect.outputs.type == 'next' && (inputs.build_type == 'web' || inputs.build_type == 'auto')
-        run: npm run build
-      - name: Upload web output
-        if: inputs.build_type == 'web' || inputs.build_type == 'auto'
-        uses: actions/upload-artifact@v4
+          gradle $TASKS -Pvc="$VC" -Pvn="$VN" --no-daemon --stacktrace
+
+      - name: Verify and collect
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          B=wydev-wrapper/app/build/outputs
+          if [ "$MODE" = debug ]; then
+            cp $B/apk/debug/*.apk "out/WyteLab-$VN-debug.apk"
+          else
+            TOOL="$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -1)"
+            if [ "$TARGET" != aab ]; then
+              cp $B/apk/release/*.apk "out/WyteLab-$VN.apk"
+              "$TOOL" verify --verbose "out/WyteLab-$VN.apk"
+            fi
+            if [ "$TARGET" != apk ]; then
+              cp $B/bundle/release/*.aab "out/WyteLab-$VN.aab"
+              jarsigner -verify "out/WyteLab-$VN.aab" | grep -q "jar verified"
+              keytool -printcert -jarfile "out/WyteLab-$VN.aab" | grep -E "SHA256|Owner"
+            fi
+          fi
+          (cd out && sha256sum * > SHA256SUMS.txt); ls -lh out
+
+      - uses: actions/upload-artifact@v4
         with:
-          name: wydev-web-${{ github.run_number }}
-          path: 'wydev-output/*'
+          name: WyteLab-${{ inputs.version_name }}-${{ inputs.build_mode }}
+          path: out/*
           if-no-files-found: error
-          retention-days: 7
-      - name: Upload APK
-        if: inputs.build_type == 'apk' || (inputs.build_type == 'auto' && (steps.detect.outputs.type == 'flutter' || steps.detect.outputs.type == 'gradle' || steps.detect.outputs.type == 'node-web' || steps.detect.outputs.type == 'vanilla'))
-        uses: actions/upload-artifact@v4
-        with:
-          name: wydev-apk-${{ github.run_number }}
-          path: '**/build/outputs/apk/**/*.apk'
-          if-no-files-found: error
-          retention-days: 7
-      - name: Upload AAB
-        if: inputs.build_type == 'aab'
-        uses: actions/upload-artifact@v4
-        with:
-          name: wydev-aab-${{ github.run_number }}
-          path: '**/build/outputs/bundle/**/*.aab'
-          if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
+
       - name: Notify WyteLab of failed build
         if: failure()
         continue-on-error: true
-        shell: bash
-        env:
-          WyteLab_NOTIFICATION_URL: https://wyte.name.ng/api/notifications/build-failed
         run: |
-          curl --fail-with-body --max-time 15 -X POST "$WyteLab_NOTIFICATION_URL" \
-            -H "Authorization: Bearer ${{ github.token }}" \
-            -H "Content-Type: application/json" \
+          curl --fail-with-body --max-time 15 -X POST "https://wyte.name.ng/api/notifications/build-failed" \
+            -H "Authorization: Bearer ${{ github.token }}" -H "Content-Type: application/json" \
             --data "{\"repository\":\"${{ github.repository }}\",\"runId\":\"${{ github.run_id }}\"}" || true
