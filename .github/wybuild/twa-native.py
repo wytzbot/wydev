@@ -15,6 +15,11 @@ extras = json.load(open(out + "/wybuild-extras.json")) if os.path.exists(out + "
 manifest_path = proj + "/app/src/main/AndroidManifest.xml"
 xml = open(manifest_path, encoding="utf8").read()
 applied, notes = [], []
+# "standalone" (default): the site runs in WyBuild's own native WebView shell, so there is never an address bar.
+# "twa": plain Trusted Web Activity (needs Digital Asset Links, or Chrome shows its address bar).
+standalone = extras.get("shell", "standalone") != "twa"
+here = os.path.dirname(os.path.abspath(__file__))
+native_name = "%s.WyBuildActivity" % cfg.get("packageId", "")
 
 
 def perm(name):
@@ -34,6 +39,11 @@ def add_before_application(block):
 
 # ---------------------------------------------------------------- 1. permissions
 wanted = [perm(p) for p in cfg.get("androidPermissions", [])]
+if "android.permission.ACCESS_FINE_LOCATION" in wanted or "android.permission.ACCESS_COARSE_LOCATION" in wanted:
+    wanted += ["android.permission.ACCESS_FINE_LOCATION", "android.permission.ACCESS_COARSE_LOCATION"]
+if standalone:
+    # A TWA lets Chrome do the networking; our own WebView needs these itself or every page fails to load.
+    wanted += ["android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE"]
 features = cfg.get("features", {}) or {}
 if cfg.get("enableNotifications"):
     # Android 13+ will not show ANY notification, and cannot even ask, unless the app declares this
@@ -66,27 +76,33 @@ if block:
 # ---------------------------------------------------------------- 2. notifications (delegation)
 if cfg.get("enableNotifications"):
     # Web Push -> Chrome -> this app. The service must exist and be enabled, or notifications fall back to Chrome's own.
-    if "DelegationService" not in xml:
+    if standalone:
+        applied.append("native notifications (WyBuildNative.notify from your site)")
+    elif "DelegationService" not in xml:
         raise SystemExit("Notifications are on, but Bubblewrap did not generate DelegationService. Update bubblewrap_version.")
-    if "NotificationPermissionRequestActivity" not in xml:
+    if not standalone and "NotificationPermissionRequestActivity" not in xml:
         add = '        <activity android:name="com.google.androidbrowserhelper.trusted.NotificationPermissionRequestActivity" />\n'
         xml = xml.replace("</application>", add + "    </application>", 1)
-    applied.append("notification delegation (web push shows as native Android notifications)")
+    if not standalone:
+        applied.append("notification delegation (web push shows as native Android notifications)")
 
 # ---------------------------------------------------------------- 3. fullscreen / immersive
+# TWA display metadata belongs to Chrome. Standalone fullscreen is implemented by WyBuildActivity.
 want = {"fullscreen": "immersive", "fullscreen-sticky": "sticky-immersive"}.get(cfg.get("display"))
-if want:
+if want and not standalone:
     meta = '\n            <meta-data android:name="android.support.customtabs.trusted.DISPLAY_MODE" android:value="%s" />' % want
     if "trusted.DISPLAY_MODE" in xml:
-        # normalise whatever is there to the mode that was asked for
         xml = re.sub(r'(android:name="android\.support\.customtabs\.trusted\.DISPLAY_MODE"\s+android:value=")[^"]*(")', r"\g<1>%s\g<2>" % want, xml)
     else:
-        xml, n = re.subn(r'(<activity\b(?:(?!/>)[^>])*LauncherActivity(?:(?!/>)[^>])*>)', lambda m: m.group(1) + meta, xml, count=1)
-        if not n:
-            raise SystemExit("Could not add the fullscreen display mode: LauncherActivity not found in AndroidManifest.xml")
+        # Bubblewrap normally uses LauncherActivity. Fail rather than silently losing the TWA display mode.
+        m = re.search(r'<activity\b[^>]*android:name="(?:[^"]*\.)?LauncherActivity"[^>]*>', xml)
+        if not m:
+            raise SystemExit("Could not add the TWA fullscreen display mode: LauncherActivity not found in AndroidManifest.xml")
+        xml = xml[:m.end()] + meta + xml[m.end():]
     applied.append("display=" + want)
-    notes.append("Fullscreen hides the address bar only while Android can verify your site (Digital Asset Links). WyBuild checks this after the build.")
-
+    notes.append("TWA fullscreen depends on Digital Asset Links; Standalone fullscreen does not.")
+elif want and standalone:
+    applied.append("native immersive fullscreen requested; implemented by WyBuildActivity (not Chrome/TWA metadata)")
 # ---------------------------------------------------------------- 4. predictive back (Android 13+)
 if extras.get("predictiveBack"):
     gradle = ""
@@ -99,6 +115,189 @@ if extras.get("predictiveBack"):
     elif "enableOnBackInvokedCallback" not in xml:
         xml = re.sub(r"<application\b", '<application android:enableOnBackInvokedCallback="true"', xml, count=1)
         applied.append("predictive-back")
+
+# ---------------------------------------------------------------- 4b. link handling
+# Rules come from the "Link handling" panel: internal (stay in the app), external (system browser), other (hand to Android).
+link_rules = [r for r in (extras.get("linkRules") or []) if isinstance(r, dict)]
+own_host = (cfg.get("host") or "").split(":")[0].lower()
+deep_hosts = []
+for r in link_rules:
+    if r.get("kind") != "host" or r.get("mode") != "internal":
+        continue
+    host = ("*." if r.get("wildcard") else "") + r["host"]
+    if not re.fullmatch(r"(\*\.)?[a-z0-9.-]+", host) or not re.fullmatch(r"(/[A-Za-z0-9._~%/-]*)?", r.get("path", "")):
+        raise SystemExit("bad link rule: " + host + r.get("path", ""))
+    if host.replace("www.", "", 1) == own_host.replace("www.", "", 1) and not r.get("path"):
+        continue  # the app's own site already opens in the app
+    deep_hosts.append((host, r.get("path", "")))
+    if r.get("wildcard"):
+        deep_hosts.append((r["host"], r.get("path", "")))  # Android's *.example.com does not match example.com itself
+deep_hosts = list(dict.fromkeys(deep_hosts))
+if deep_hosts:
+    filters = ""
+    for host, path in deep_hosts:
+        key = 'android:host="%s"' % host
+        if key in xml and ('android:pathPrefix="%s"' % path in xml if path else True):
+            continue
+        filters += (
+            '            <intent-filter android:autoVerify="true">\n'
+            '                <action android:name="android.intent.action.VIEW" />\n'
+            '                <category android:name="android.intent.category.DEFAULT" />\n'
+            '                <category android:name="android.intent.category.BROWSABLE" />\n'
+            '                <data android:scheme="https" android:host="%s"%s />\n'
+            '            </intent-filter>\n' % (host, (' android:pathPrefix="%s"' % path) if path else "")
+        )
+    if filters:
+        # Insert intent-filters while Bubblewrap still exposes its launcher; the standalone
+        # transformation below then renames that same component to WyBuildActivity.
+        activity_name = "LauncherActivity"
+        start = re.search(r'<activity\b(?:(?!/>)[^>])*android:name="(?:[^"]*\.)?' + re.escape(activity_name) + r'"[^>]*>', xml)
+        if not start:
+            # Bubblewrap can use the fully-qualified helper name in the TWA manifest.
+            start = re.search(r'<activity\b(?:(?!/>)[^>])*' + re.escape(activity_name) + r'(?:(?!/>)[^>])*>', xml)
+        if not start:
+            raise SystemExit("Could not add link handling: target launcher activity not found in AndroidManifest.xml")
+        end = xml.find("</activity>", start.end())
+        if end == -1:
+            raise SystemExit("Could not add link handling: target launcher activity is not closed in AndroidManifest.xml")
+        # Insert inside the target activity, immediately before its closing tag.
+        xml = xml[:end] + filters + xml[end:]
+        applied.append("links to %s open in the app (%d domain%s)" % (", ".join(h + p for h, p in deep_hosts), len(deep_hosts), "" if len(deep_hosts) == 1 else "s"))
+    if any(h.startswith("*.") for h, _ in deep_hosts):
+        notes.append("Wildcard domains open the app only after Android verifies the root domain: publish assetlinks.json on it too. Wildcards cannot be trusted origins, so list each subdomain you want without the address bar.")
+n_ext = sum(1 for r in link_rules if r.get("mode") == "external")
+n_other = sum(1 for r in link_rules if r.get("mode") == "other")
+if n_ext or n_other:
+    if standalone:
+        applied.append("link rules enforced natively in the app: %d external, %d handed to Android" % (n_ext, n_other))
+    else:
+        applied.append("link rules for the website: %d external, %d handed to Android (wybuild-links.js)" % (n_ext, n_other))
+        notes.append("External / Other link rules are applied by wybuild-links.js on your website: add it to your site (see NATIVE-FEATURES.md in the build artifact). A Trusted Web Activity cannot intercept those links natively.")
+
+
+# ---------------------------------------------------------------- 4c. standalone shell (native WebView host)
+def own_hosts():
+    hosts = [own_host] if own_host else []
+    for o in cfg.get("additionalTrustedOrigins", []):
+        h = re.sub(r"^https?://", "", str(o)).strip("/").split(":")[0].lower()
+        if h and h not in hosts:
+            hosts.append(h)
+    return hosts
+
+
+def set_attr(tag, name, value):
+    pat = r'android:%s="[^"]*"' % name
+    if re.search(pat, tag):
+        return re.sub(pat, lambda m: 'android:%s="%s"' % (name, value), tag, count=1)
+    return re.sub(r"^(<activity\b)", lambda m: m.group(1) + '\n            android:%s="%s"' % (name, value), tag, count=1)
+
+
+if standalone:
+    pkg_id = cfg.get("packageId", "")
+    if not re.fullmatch(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+", pkg_id):
+        raise SystemExit("bad package id: " + pkg_id)
+    tpl = os.path.join(here, "WyBuildActivity.java")
+    if not os.path.exists(tpl):
+        raise SystemExit("WyBuildActivity.java is missing next to twa-native.py. Reinstall the WyBuild TWA workflow (WyBuild > Web to Android > Update workflow).")
+    src_dir = os.path.join(proj, "app", "src", "main", "java", *pkg_id.split("."))
+    os.makedirs(src_dir, exist_ok=True)
+    open(os.path.join(src_dir, "WyBuildActivity.java"), "w", encoding="utf8").write(open(tpl, encoding="utf8").read().replace("__PACKAGE__", pkg_id))
+
+    def js_rule_cfg(r):
+        if r.get("kind") == "scheme":
+            return {"k": "s", "s": r["scheme"], "m": r["mode"]}
+        return {"k": "h", "h": r["host"], "w": bool(r.get("wildcard")), "p": r.get("path", ""), "m": r["mode"]}
+
+    start_abs = "https://%s%s" % (cfg.get("host", ""), cfg.get("startUrl") or "/")
+    assets = os.path.join(proj, "app", "src", "main", "assets")
+    os.makedirs(assets, exist_ok=True)
+    json.dump({
+        "startUrl": start_abs,
+        "name": cfg.get("name", ""),
+        "versionName": cfg.get("appVersion", ""),
+        "display": cfg.get("display", "standalone"),
+        "fullscreen": cfg.get("display") in ("fullscreen", "fullscreen-sticky"),
+        "notifications": bool(cfg.get("enableNotifications")),
+        "themeColor": cfg.get("themeColor", "#FFFFFF"),
+        "backgroundColor": cfg.get("backgroundColor", "#FFFFFF"),
+        "navigationColor": cfg.get("navigationColor") or cfg.get("themeColor", "#FFFFFF"),
+        "ownHosts": own_hosts(),
+        "rules": [js_rule_cfg(r) for r in link_rules],
+    }, open(os.path.join(assets, "wybuild-config.json"), "w", encoding="utf8"), indent=2)
+
+    values = os.path.join(proj, "app", "src", "main", "res", "values")
+    os.makedirs(values, exist_ok=True)
+    open(os.path.join(values, "wybuild_theme.xml"), "w", encoding="utf8").write(
+        '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n'
+        '    <style name="WyBuildTheme" parent="android:Theme.Material.Light.NoActionBar">\n'
+        '        <item name="android:windowBackground">%s</item>\n'
+        '        <item name="android:statusBarColor">%s</item>\n'
+        '        <item name="android:navigationBarColor">%s</item>\n'
+        '        <item name="android:windowDrawsSystemBarBackgrounds">true</item>\n'
+        '    </style>\n</resources>\n' % (cfg.get("backgroundColor", "#FFFFFF"), cfg.get("themeColor", "#FFFFFF"), cfg.get("navigationColor") or cfg.get("themeColor", "#FFFFFF")))
+
+    # Point EVERY Bubblewrap launcher/alias at the native shell. A TWA project can expose
+    # LauncherActivity through either a direct activity or an activity-alias; changing only one
+    # can silently leave Chrome's Custom Tab as the real launcher (the URL/share/three-dot bar).
+    launcher_hits = 0
+    # Direct activity declarations. Keep all intent-filters on the component so MAIN/LAUNCHER,
+    # VIEW and shortcuts continue to work, but replace the implementation class.
+    def replace_launcher_activity(m):
+        global launcher_hits
+        tag = m.group(0)
+        if not re.search(r'android:(?:name|targetActivity)="(?:[^"]*\.)?LauncherActivity"', tag):
+            return tag
+        launcher_hits += 1
+        tag = re.sub(r'android:name="(?:[^"]*\.)?LauncherActivity"', 'android:name="%s"' % native_name, tag, count=1)
+        tag = set_attr(tag, "theme", "@style/WyBuildTheme")
+        tag = set_attr(tag, "configChanges", "orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density|layoutDirection|fontScale")
+        tag = set_attr(tag, "windowSoftInputMode", "adjustResize")
+        tag = set_attr(tag, "hardwareAccelerated", "true")
+        return tag
+    xml = re.sub(r'<activity\b[^>]*android:name="(?:[^"]*\.)?LauncherActivity"[^>]*>', replace_launcher_activity, xml)
+
+    # Activity aliases do not themselves run code; redirect their targetClass to WyBuildActivity.
+    def replace_alias(m):
+        global launcher_hits
+        tag = m.group(0)
+        if not re.search(r'android:(?:name|targetActivity)="(?:[^"]*\.)?LauncherActivity"', tag):
+            return tag
+        launcher_hits += 1
+        tag = re.sub(r'android:targetActivity="(?:[^"]*\.)?LauncherActivity"', 'android:targetActivity="%s"' % native_name, tag, count=1)
+        return re.sub(r'android:targetClass="(?:[^"]*\.)?LauncherActivity"', 'android:targetClass="%s"' % native_name, tag, count=1)
+    xml = re.sub(r'<activity-alias\b[^>]*>', replace_alias, xml)
+
+    # If Bubblewrap ever changes its manifest shape, add a native launcher rather than building a
+    # browser shell by accident. This is intentionally an error for a missing launcher only after
+    # we have tried both activity and alias forms.
+    if launcher_hits == 0:
+        raise SystemExit("Could not switch the standalone shell: Bubblewrap exposed no LauncherActivity activity or alias")
+
+    # Redirect any shortcut/alias targetClass references left in generated XML resources.
+    xml_dir = os.path.join(proj, "app", "src", "main", "res", "xml")
+    if os.path.isdir(xml_dir):
+        for fn in os.listdir(xml_dir):
+            fp = os.path.join(xml_dir, fn)
+            try:
+                t = open(fp, encoding="utf8").read()
+            except Exception:
+                continue
+            if re.search(r'android:(?:targetActivity|targetClass)="(?:[^"]*\.)?LauncherActivity"', t):
+                t2 = re.sub(r'android:targetActivity="(?:[^"]*\.)?LauncherActivity"', 'android:targetActivity="%s"' % native_name, t)
+                t2 = re.sub(r'android:targetClass="(?:[^"]*\.)?LauncherActivity"', 'android:targetClass="%s"' % native_name, t2)
+                if t2 != t:
+                    open(fp, "w", encoding="utf8").write(t2)
+
+    # Release builds shrink code: keep the shell and the methods the web page calls through window.WyBuildNative
+    pg = os.path.join(proj, "app", "proguard-rules.pro")
+    keep = "\n# WyBuild standalone shell\n-keep class %s.WyBuildActivity { *; }\n-keepclassmembers class * { @android.webkit.JavascriptInterface <methods>; }\n" % pkg_id
+    old = open(pg, encoding="utf8").read() if os.path.exists(pg) else ""
+    if "WyBuild standalone shell" not in old:
+        open(pg, "a", encoding="utf8").write(keep)
+    applied.append("standalone app shell: your site runs inside the app's own WebView, so there is no address bar or Chrome toolbar and no Digital Asset Links dependency")
+    applied.append("native file upload, downloads, camera/microphone/location prompts, JS dialogs, fullscreen video, offline screen, back button")
+    if (features.get("playBilling") or {}).get("enabled"):
+        notes.append("Play Billing needs the Trusted Web Activity shell. Choose 'Trusted Web Activity' as the app shell in WyBuild if you use it.")
 
 open(manifest_path, "w", encoding="utf8").write(xml)
 assert "<application" in xml
@@ -157,6 +356,7 @@ open(kit + "/wybuild-push.js", "w", encoding="utf8").write(r"""/*! WyBuild push 
   var KEY = 'wybuild_in_app';
   function inApp() {
     try {
+      if (window.WyBuildNative || /WyBuildApp\//.test(navigator.userAgent)) return true;
       if (document.referrer && document.referrer.indexOf('android-app://') === 0) localStorage.setItem(KEY, '1');
       return localStorage.getItem(KEY) === '1' || (window.matchMedia && matchMedia('(display-mode: fullscreen)').matches);
     } catch (e) { return false; }
@@ -168,11 +368,12 @@ open(kit + "/wybuild-push.js", "w", encoding="utf8").write(r"""/*! WyBuild push 
   }
   var api = {
     isApp: inApp,
-    supported: function () { return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window; },
+    supported: function () { return !inApp() && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window; },
     permission: function () { return 'Notification' in window ? Notification.permission : 'unsupported'; },
     /** Ask permission (Android shows its own prompt in the app), subscribe, and send the subscription to your server. */
     enable: function (opts) {
       opts = opts || {};
+      if (inApp()) return Promise.reject(new Error('Remote Web Push is not supported by the standalone WebView shell. Use WyBuildPush.notify() for native notifications or the Trusted Web Activity shell for Web Push.'));
       if (!api.supported()) return Promise.reject(new Error('Push is not supported here'));
       if (!opts.vapidPublicKey) return Promise.reject(new Error('vapidPublicKey is required'));
       return navigator.serviceWorker.register(opts.serviceWorker || '/sw.js').then(function () {
@@ -190,6 +391,12 @@ open(kit + "/wybuild-push.js", "w", encoding="utf8").write(r"""/*! WyBuild push 
         return fetch(opts.endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: body })
           .then(function (r) { if (!r.ok) throw new Error('Your server rejected the subscription (' + r.status + ')'); return sub; });
       });
+    },
+    /** Show a notification right now. In the Android app this is a native Android notification (works without Web Push). */
+    notify: function (title, body, url) {
+      if (window.WyBuildNative && window.WyBuildNative.notify) { window.WyBuildNative.notify(String(title || ''), String(body || ''), url ? new URL(url, location.href).href : ''); return Promise.resolve(true); }
+      if (!api.supported()) return Promise.resolve(false);
+      return navigator.serviceWorker.ready.then(function (reg) { return reg.showNotification(title, { body: body || '', data: { url: url || '/' } }); }).then(function () { return true; });
     },
     disable: function (opts) {
       return navigator.serviceWorker.getRegistration().then(function (reg) {
@@ -245,8 +452,8 @@ open(kit + "/NATIVE-FEATURES.md", "w", encoding="utf8").write("""# Native featur
 
 Package: `%(pkg)s`   Site: `https://%(host)s`
 
-## Push notifications (native on Android)
-The app is a Trusted Web Activity with **notification delegation**: when your site shows a web push notification,
+## Push notifications
+For a **Trusted Web Activity**, the app uses **notification delegation**: when your site shows a web push notification,
 Chrome hands it to this app, and Android shows it as a native notification (your app icon and name, its own channel,
 tap opens the app). `POST_NOTIFICATIONS` is declared, so Android 13+ asks the user once, with the system prompt.
 
@@ -261,15 +468,142 @@ Needs: the site verified for this app (see below), HTTPS, and a service worker.
 Use `tag` to replace instead of stack, and `url` to deep-link inside the app.
 
 ## Fullscreen
-Display mode in this build: `%(display)s`. The status bar and navigation bar are hidden by Android itself.
-The browser address bar stays away only while Android can verify that your site trusts this app: publish
-`assetlinks.json` (in this artifact) at `https://%(host)s/.well-known/assetlinks.json` with no redirect.
-If the app was installed from Google Play, also add the Play app-signing SHA-256 in WyBuild.
+Display mode in this build: `%(display)s`. App shell: `%(shell)s`.
+%(shell_doc)s
 
 ## Others
 Camera, microphone and location are declared with optional hardware so Google Play does not hide your app
 from phones without them. The website still asks the user at the moment it uses them.
-""" % {"pkg": pkg, "host": host, "display": cfg.get("display", "standalone")})
+""" % {"pkg": pkg, "host": host, "display": cfg.get("display", "standalone"), "shell": "standalone (native WebView)" if standalone else "Trusted Web Activity",
+       "shell_doc": (
+           "The site runs inside the app itself, so no address bar or Chrome toolbar can ever appear, and nothing has to be published on your site.\n"
+           "`fullscreen` also hides the status bar and navigation bar (swipe from an edge to peek; they hide again by themselves).\n\n"
+           "Your page can call the native app through `window.WyBuildNative` (check `WyBuildNative.isApp()`): `notify(title, body, url)`, "
+           "`share(title, text, url)`, `openExternal(url)`, `vibrate(ms)`. `wybuild-push.js` wraps notify as `WyBuildPush.notify(...)`.\n"
+           "Remote push messages need a push service (Firebase Cloud Messaging) that a plain WebView cannot receive; use the Trusted Web Activity shell if you rely on Web Push."
+           if standalone else
+           "The status bar and navigation bar are hidden by Android itself.\n"
+           "The browser address bar stays away only while Android can verify that your site trusts this app: publish\n"
+           "`assetlinks.json` (in this artifact) at `https://%s/.well-known/assetlinks.json` with no redirect.\n"
+           "If the app was installed from Google Play, also add the Play app-signing SHA-256 in WyBuild." % host)})
+
+# ---------------------------------------------------------------- 7. link handling kit (ships in the build artifact)
+def js_rule(r):
+    if r.get("kind") == "scheme":
+        return {"k": "s", "s": r["scheme"], "m": r["mode"]}
+    return {"k": "h", "h": r["host"], "w": bool(r.get("wildcard")), "p": r.get("path", ""), "m": r["mode"]}
+
+own = [own_host] if own_host else []
+for o in cfg.get("additionalTrustedOrigins", []):
+    h = re.sub(r"^https?://", "", str(o)).strip("/").split(":")[0].lower()
+    if h and h not in own:
+        own.append(h)
+open(kit + "/wybuild-links.json", "w", encoding="utf8").write(json.dumps({"ownHosts": own, "rules": link_rules}, indent=2))
+links_js = r"""/*! WyBuild link handling. Add to your website: <script src="/wybuild-links.js" defer></script>
+ * Decides what happens when a link is tapped inside the Android app (and the installed PWA):
+ *   internal  stays in the app            external  opens in the phone's browser
+ *   other     handed to Android (dialer, mail, WhatsApp, Maps ...)
+ * Links on your own site always stay internal. The first matching rule wins. "*.domain" covers the domain and its
+ * subdomains. Plain browsers are left alone.
+ * Generated from the rules in WyBuild: rebuild to change them (wybuild-links.json lists them).
+ */
+(function () {
+  var OWN = __OWN__;
+  var RULES = __RULES__;
+  var KEY = 'wybuild_in_app';
+  var nativeOpen = window.open;
+  function norm(h) { return String(h || '').toLowerCase().replace(/^www\./, ''); }
+  function inApp() {
+    try {
+      if (window.WyBuildNative || /WyBuildApp\//.test(navigator.userAgent)) return true;
+      if (document.referrer && document.referrer.indexOf('android-app://') === 0) localStorage.setItem(KEY, '1');
+      if (localStorage.getItem(KEY) === '1') return true;
+    } catch (e) {}
+    return !!(window.matchMedia && (matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: fullscreen)').matches || matchMedia('(display-mode: minimal-ui)').matches));
+  }
+  function parse(url) { try { return new URL(String(url), location.href); } catch (e) { return null; } }
+  function resolve(url) {
+    var u = parse(url); if (!u) return null;
+    var scheme = u.protocol.replace(':', '').toLowerCase();
+    var web = scheme === 'http' || scheme === 'https';
+    var h = norm(u.hostname);
+    for (var i = 0; i < RULES.length; i++) {
+      var r = RULES[i];
+      if (r.k === 's') { if (!web && r.s === scheme) return r.m; continue; }
+      if (!web) continue;
+      var rh = norm(r.h);
+      var hostOk = h === rh || (r.w && h.slice(-(rh.length + 1)) === '.' + rh);
+      if (hostOk && (!r.p || u.pathname.indexOf(r.p) === 0)) return r.m;
+    }
+    if (web && OWN.indexOf(h) !== -1) return 'internal';
+    return null;
+  }
+  function viaAndroid(u) {
+    return 'intent://' + u.host + u.pathname + u.search + u.hash + '#Intent;scheme=' + u.protocol.replace(':', '') +
+      ';action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;end';
+  }
+  function go(url, mode) {
+    var u = parse(url); if (!u) return;
+    var web = u.protocol === 'http:' || u.protocol === 'https:';
+    if (mode === 'internal') { location.assign(u.href); return; }
+    if (!inApp()) { if (web) nativeOpen.call(window, u.href, '_blank', 'noopener'); else location.href = u.href; return; }
+    location.href = web ? viaAndroid(u) : u.href;
+  }
+  document.addEventListener('click', function (e) {
+    if (e.defaultPrevented || e.button > 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+    if (!a || a.hasAttribute('download')) return;
+    var mode = resolve(a.href); if (!mode) return;
+    var t = a.getAttribute('target');
+    if (mode === 'internal') {
+      if (t && t !== '_self' && inApp()) { e.preventDefault(); location.assign(a.href); }  // no stray blank tab for your own pages
+      return;
+    }
+    if (mode === 'other' && !inApp() && !(t && t !== '_self')) return;  // in a browser tab tel:, mailto: etc. already behave normally
+    e.preventDefault();
+    go(a.href, mode);
+  }, true);
+  window.open = function (url) {
+    if (url) {
+      var mode = resolve(url);
+      if (mode === 'external' || mode === 'other') { go(url, mode); return null; }
+      if (mode === 'internal' && inApp()) { location.assign(String(url)); return null; }
+    }
+    return nativeOpen.apply(window, arguments);
+  };
+  window.WyBuildLinks = { rules: RULES, ownHosts: OWN, isApp: inApp, resolve: resolve, open: function (url) { go(url, resolve(url) || 'internal'); } };
+})();
+"""
+open(kit + "/wybuild-links.js", "w", encoding="utf8").write(
+    links_js.replace("__OWN__", json.dumps(own)).replace("__RULES__", json.dumps([js_rule(r) for r in link_rules]))
+)
+doc = "\n## Link handling\n"
+if link_rules:
+    doc += "Rules in this build (first match wins; your own site always stays internal; `*.domain` covers the domain and its subdomains):\n\n"
+    for r in link_rules:
+        who = r["scheme"] + ":" if r.get("kind") == "scheme" else ("*." if r.get("wildcard") else "") + r["host"] + r.get("path", "")
+        doc += "- `%s` -> **%s**\n" % (who, {"internal": "internal (stays in the app)", "external": "external (phone browser)", "other": "other (handed to Android)"}[r["mode"]])
+    doc += "\n"
+else:
+    doc += ("No link rules were set: your site stays in the app and other websites open in the phone's browser.\n\n" if standalone else
+            "No link rules were set, so links behave like a normal Trusted Web Activity: your site stays in the app, other sites open in an in-app browser tab.\n\n")
+if standalone:
+    doc += (
+        "This app uses the standalone shell, so these rules are enforced **inside the app itself**: no script on your site is needed and no address bar can appear.\n"
+        "Anything with no matching rule: your own site (and any internal domain) stays in the app, other websites open in the phone's browser, "
+        "and tel:, mailto:, WhatsApp, Maps etc. are handed to Android.\n"
+        "Sign-in providers (for example `accounts.google.com`) that must stay in the app need an **internal** rule.\n"
+    )
+else:
+  doc += (
+    "- **Internal** domains are added as trusted origins and as verified app links, so tapping a link to them anywhere on the phone opens this app.\n"
+    "  Publish `assetlinks.json` (in this artifact) at `/.well-known/assetlinks.json` on **every** internal domain, with no redirect.\n"
+    "- **External** and **Other** rules are applied by `wybuild-links.js`: put it at your site root and add\n"
+    "  `<script src=\"/wybuild-links.js\" defer></script>` to every page. A Trusted Web Activity cannot intercept those taps natively.\n"
+    "  Without the script, those links open in Chrome's in-app tab (external sites) or are handled by Chrome (tel:, mailto:).\n"
+    "- `WyBuildLinks.open(url)` applies the same rules from your own JavaScript.\n"
+)
+open(kit + "/NATIVE-FEATURES.md", "a", encoding="utf8").write(doc)
 
 # ---------------------------------------------------------------- summary
 print("Android features applied:", ", ".join(applied) or "none")
