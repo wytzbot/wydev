@@ -2,7 +2,7 @@ import {API_BASE_URL} from "./config";
 import {fetchTimeout} from "./net";
 const api=async(path,opts={})=>{let r;try{r=await fetchTimeout(`${API_BASE_URL}${path}`,{credentials:"include",headers:{"Content-Type":"application/json",...(opts.headers||{})},...opts})}catch(e){throw new Error(`Network error: ${e?.message||"Unable to reach WyteLab server"}`)}let e=null;try{e=await r.json()}catch{}if(!r.ok){const err=new Error(e?.error||`Request failed (${r.status})`);err.status=r.status;err.code=e?.code;err.details=e;throw err}return e};
 export const github={
- session:()=>api("/auth/me"),login:(fresh=false)=>{const q=fresh?"?fresh=1":"";location.href=`${API_BASE_URL}/auth/github${q}`;},logout:async()=>{const r=await api("/auth/logout",{method:"POST"});try{sessionStorage.setItem("wydev:githubFreshLogin","1")}catch{}return r;},
+ session:()=>api("/auth/me"),login:()=>location.href=`${API_BASE_URL}/auth/github`,logout:()=>api("/auth/logout",{method:"POST"}),
  firebaseLogin:(idToken)=>api("/auth/firebase",{method:"POST",body:JSON.stringify({idToken})}),
  repos:()=>api("/github/repos"),
  createRepo:(p)=>api("/github/repos",{method:"POST",body:JSON.stringify(p)}),
