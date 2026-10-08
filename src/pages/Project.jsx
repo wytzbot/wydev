@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import JSZip from "jszip";
 import { Copy, FilePlus, FolderPlus, ExternalLink, Upload, Trash2, Move, GitBranch, RefreshCw, ChevronDown, Loader2, Undo2, History, Download, FileText, Share2 } from "lucide-react";
 import CodeEditor from "../components/CodeEditor";
 import FileExplorer from "../components/FileExplorer";
@@ -599,6 +598,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
           return [path, f.content ?? ""];
         })
       );
+      const JSZip = (await import("jszip")).default;
       const zip = new JSZip();
       resolved.forEach(([path, content]) => {
         const binary = content && typeof content === "object" && content.__wydevBinary === true;

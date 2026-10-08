@@ -1,4 +1,3 @@
-import JSZip from "jszip";
 export const readFileText=async(file)=>file.text();
 
 // Convert a File selected via a plain (non-zip) <input type=file> into either
@@ -49,6 +48,7 @@ const mimeForUploadPath=(p)=>({png:"image/png",jpg:"image/jpeg",jpeg:"image/jpeg
 // so a repository can be bootstrapped by picking a single zip export instead of
 // relying on a folder picker (which most mobile browsers don't support at all).
 export async function extractZipEntries(file){
+  const JSZip=(await import("jszip")).default;
   const zip=await JSZip.loadAsync(file);
   const entries=Object.values(zip.files);
   const out=[];

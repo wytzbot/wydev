@@ -303,14 +303,12 @@ function clearOAuthCookie(res){
 }
 async function oauthStart(req,res){
   const state=b64(crypto.randomBytes(32));
-  const fresh=String(new URL(req.url,origin(req)).searchParams.get("fresh")||"") === "1";
   const redirectUri=process.env.GITHUB_REDIRECT_URI||`${origin(req)}/api/auth/github/callback`;
   await rememberOAuthState(state,redirectUri,session(req));
   const url=new URL("https://github.com/login/oauth/authorize");
   url.searchParams.set("client_id",process.env.GITHUB_CLIENT_ID||"");
   url.searchParams.set("redirect_uri",redirectUri);
   url.searchParams.set("scope","read:user repo workflow delete_repo");
-  if(fresh) url.searchParams.set("prompt","login");
   url.searchParams.set("state",state);
   // SameSite=None is intentional: Android WebViews/custom tabs can cross a
   // browser boundary during the GitHub redirect. Secure is mandatory with it.

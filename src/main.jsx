@@ -3,7 +3,6 @@ import {createRoot} from "react-dom/client";
 import App from "./App";
 import "./styles.css";
 import {initFullscreen} from "./fullscreen";
-import {showToast} from "./toast";
 
 // A render error used to unmount the whole tree and leave a blank screen with no clue why
 // (worse inside a TWA, where there is no devtools). Show the error instead.
@@ -31,11 +30,3 @@ if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
   });
 }
-
-// After a new deploy the old hashed chunks no longer exist, so a tab/APK still running the
-// previous build fails to lazy-load them ("Failed to fetch dynamically imported module").
-// Don't reload automatically (that could discard unsaved edits); offer a one-tap reload.
-window.addEventListener("vite:preloadError",(e)=>{
-  e.preventDefault();
-  showToast({message:"WyteLab was updated. Reload to finish loading this feature.",type:"info",duration:20000,actionLabel:"Reload",action:()=>location.reload()});
-});
