@@ -18,6 +18,7 @@ import Offline from "./pages/Offline";
 import Actions from "./pages/Actions";
 import GitHubHub from "./pages/GitHubHub";
 import Logs from "./pages/Logs";
+import Billing from "./pages/Billing";
 import { github } from "./github";
 import { loadState, saveState } from "./storage";
 import { buildChangeSet } from "./git";
@@ -506,6 +507,7 @@ export default function App() {
         {page === "github" && <GitHubHub repos={repos} />}
         {page === "logs" && <Logs />}
         {page === "settings" && <Settings />}
+        {page === "billing" && <Billing />}
         {page === "project" && repo && <Project
           repo={repo}
           openPath={openPath}
