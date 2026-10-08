@@ -13,6 +13,8 @@ walk("src");
 const secrets=["GITHUB_CLIENT_SECRET","FLW_CLIENT_SECRET","OPENAI_API_KEY","FIREBASE_PRIVATE_KEY","SESSION_SECRET"];
 for(const p of src){const s=fs.readFileSync(p,"utf8");for(const x of secrets)if(s.includes(x))throw new Error(`Server secret in frontend: ${p}: ${x}`)}
 const env=fs.readFileSync(".env.example","utf8");
-if(!env.includes("FLW_PRO_NGN=7500"))throw new Error("NGN Pro price must be 7500.");
-if(!env.includes("FLW_PRO_USD=7"))throw new Error("USD Pro price must be 7.");
+if(!env.includes("FLW_PRO_NGN_MONTHLY=7500"))throw new Error("Monthly NGN Pro price missing.");
+if(!env.includes("FLW_PRO_USD_MONTHLY=7.99"))throw new Error("Monthly USD Pro price missing.");
+if(!env.includes("FLW_PRO_USD_ANNUAL=79.9"))throw new Error("Annual USD Pro price missing.");
+if(!env.includes("FLW_PRO_NGN_ANNUAL=79900"))throw new Error("Annual NGN Pro price missing.");
 console.log("WyteLab release audit: PASS");

@@ -29,7 +29,7 @@ on:
         description: Native Web-to-App features
         required: false
         type: string
-        default: FULLSCREEN,NETWORK_STATUS,DEVICE_INFO
+        default: FULLSCREEN,NETWORK_STATUS,DEVICE_INFO,DOWNLOADS,SHARE,VIBRATION,ORIENTATION,BATTERY,EXTERNAL_LINKS,LOCAL_NOTIFICATIONS,DEEP_LINKS
 run-name: "WyteLab ${{ inputs.build_type }} ${{ inputs.build_mode }} v${{ inputs.version_name }} (${{ inputs.version_code }})"
 permissions:
   contents: read

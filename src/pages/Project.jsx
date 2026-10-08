@@ -11,6 +11,7 @@ import { nativeShareText } from "../wybuildBridge";
 import { loadState, saveState } from "../storage";
 import { shouldSkipUpload, readUploadedFile, isZipFile, extractZipEntries, stripCommonRoot, safeRepoPath } from "../files";
 import { promptDialog, confirmDialog } from "../dialog";
+import { billing } from "../billing";
 import { LICENSES, fillLicensePlaceholders } from "../licenses";
 import { toastSuccess, toastError, toastInfo } from "../toast";
 import { addLog } from "../logs";
@@ -45,7 +46,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
     [editorView, setEditorView] = useState(null),
     [times, setTimes] = useState(cached?.times || {}),
     [loadedAt, setLoadedAt] = useState(cached?.loadedAt || Date.now()),
-    [plan, setPlan] = useState("pro"),
+    [plan, setPlan] = useState("free"),
     [prs, setPrs] = useState([]),
     [prOpen, setPrOpen] = useState(false),
     [prBusy, setPrBusy] = useState(false),
@@ -143,7 +144,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
         }
       }
       if (generation !== loadGeneration.current) return t;
-      const index = (t.files || []).filter((x) => Number(x.size || 0) <= 10*1024*1024).map((x) => ({ path: x.path, sha: x.sha, size: x.size || 0 }));
+      const index = (t.files || []).map((x) => ({ path: x.path, sha: x.sha, size: x.size || 0 }));
       const empty = Object.fromEntries(index.map((x) => [x.path, null]));
       setFileIndex(index);
       setFiles(empty);
@@ -162,6 +163,11 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
       if (generation === loadGeneration.current) setBusy(false);
     }
   };
+  useEffect(() => {
+    let cancelled=false;
+    billing.status().then(s=>{if(!cancelled)setPlan(s?.plan==="pro"?"pro":"free")}).catch(()=>{});
+    return ()=>{cancelled=true};
+  },[repo.id]);
   useEffect(() => {
     let cancelled=false;
     (async()=>{
@@ -358,7 +364,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
     toastSuccess(`Folder ${safe} created${movedLabel}`);
   };
   const deleteFolder = async () => {
-    const allPaths = Object.keys(files).sort();
+    const allPaths = [...new Set([...Object.keys(files), ...(fileIndex || []).map(x => x.path).filter(Boolean)])].sort();
     if (!allPaths.length) {
       toastInfo("There's nothing to delete yet.");
       return;
@@ -739,6 +745,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
   };
 
   const deleteRepository = async () => {
+    if(plan!=="pro"){ toastError("Deleting a repository requires WyteLab Pro."); return; }
     const confirmation = await promptDialog({
       title: "Delete repository",
       message: `This permanently deletes ${repo.full_name} from GitHub. This cannot be undone. Type the exact repository name to continue.`,
@@ -885,17 +892,17 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
           <FileText size={16} />
           Add license
         </button>
-        <button onClick={loadPRs}>
+        <button onClick={loadPRs} disabled={plan!=="pro"} title={plan==="pro"?"View pull requests":"Pull requests require WyteLab Pro"}>
           <GitBranch size={16} />
-          Pull Requests
+          {plan==="pro" ? "Pull Requests" : "Pull Requests · PRO"}
         </button>
-        <button className="danger" onClick={deleteRepository} disabled={busy} title={plan === "pro" ? "Permanently delete this GitHub repository" : "Permanently delete this GitHub repository"}>
+        <button className="danger" onClick={deleteRepository} disabled={busy||plan!=="pro"} title={plan === "pro" ? "Permanently delete this GitHub repository" : "Permanently delete this GitHub repository"}>
           <Trash2 size={16} />
           Delete repository
         </button>
-        <button onClick={loadCommitHistory} disabled={revertBusy}>
+        <button onClick={loadCommitHistory} disabled={revertBusy||plan!=="pro"} title={plan==="pro"?"Restore a previous commit":"Revert requires WyteLab Pro"}>
           <History size={16} />
-          Revert
+          {plan==="pro" ? "Revert" : "Revert · PRO"}
         </button>
       </div>
       {historyOpen && (
@@ -911,7 +918,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
                     <span> {(c.message || "").split("\n")[0]}</span>
                     <div className="muted">{c.author}{c.date ? ` · ${new Date(c.date).toLocaleString()}` : ""}</div>
                   </div>
-                  <button disabled={revertBusy} onClick={() => revertToCommit(c)}>
+                  <button disabled={revertBusy||plan!=="pro"} onClick={() => revertToCommit(c)}>
                     {revertBusy ? "Reverting…" : "Revert to this"}
                   </button>
                 </div>
@@ -926,7 +933,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
         <div className="changesDropdown">
           <div className="changesList">
             <button onClick={newPullRequest} disabled={prBusy}>
-              {prBusy ? "Working…" : "New pull request"}
+              {prBusy ? "Working…" : plan==="pro" ? "New pull request" : "New pull request · PRO"}
             </button>
             {prs.length ? (
               prs.map((pr) => (

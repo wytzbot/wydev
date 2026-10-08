@@ -438,12 +438,51 @@ async function exportRepoToDrive(s,owner,repo,branch){
 }
 
 function limitKey(s){return `${s.id||s.login}:${new Date().toISOString().slice(0,10)}`;}
-async function entitlement(s){return "pro"; // WyteLab is free: all signed-in users get the full feature set without subscriptions.
+function hasLifetimeFreeAccess(s){
+  // Reserved WyteLab service account: this GitHub account receives the full
+  // product experience without a paid Flutterwave subscription. Keep this
+  // server-side and key it to the verified GitHub login, never to client data.
+  return String(s?.githubLogin||s?.login||'').trim().toLowerCase()==='wytzbot';
 }
+async function entitlement(s){
+  if(hasLifetimeFreeAccess(s)) return "pro";
+  const e=await getEntitlement(s.id);
+  const expiresAt=Number(e?.expiresAt||0);
+  if((e?.status==="active"||e?.status==="cancelled") && (!expiresAt||expiresAt>Date.now())) return "pro";
+  return "free";
+}
+async function planInfo(s){
+  const e=await getEntitlement(s.id);
+  const plan=await entitlement(s);
+  return {plan,expiresAt:Number(e?.expiresAt||0)||null,renewAt:Number(e?.renewAt||0)||null,renewalPending:!!e?.renewalPending,cancelled:e?.status==="cancelled",billingEnabled:true};
+}
+async function requirePro(s){
+  const plan=await entitlement(s);
+  if(plan!=="pro") throw Object.assign(new Error("This feature requires WyteLab Pro."),{status:403,code:"PRO_REQUIRED",plan});
+  return plan;
+}
+async function incrementActionRerun(s){
+  const plan=await entitlement(s);
+  if(plan==="pro")return {plan,used:0,limit:null,remaining:null};
+  const day=new Date().toISOString().slice(0,10),key=`${s.id}_${day}`;
+  if(db){
+    const ref=db.collection("wydev_action_usage").doc(key);
+    return db.runTransaction(async tx=>{
+      const d=await tx.get(ref),used=d.exists?(Number(d.data().count)||0):0,limit=3;
+      if(used>=limit)throw Object.assign(new Error("Free plan allows 3 workflow reruns per day. Upgrade to Pro for unlimited reruns."),{status:429,code:"ACTION_QUOTA_EXCEEDED",limit,used});
+      const next=used+1;tx.set(ref,{count:next,updatedAt:Date.now()},{merge:true});return {plan,used:next,limit,remaining:limit-next};
+    });
+  }
+  const used=memory.usage.get(`action:${key}`)||0,limit=3;
+  if(used>=limit)throw Object.assign(new Error("Free plan allows 3 workflow reruns per day. Upgrade to Pro for unlimited reruns."),{status:429,code:"ACTION_QUOTA_EXCEEDED",limit,used});
+  const next=used+1;memory.usage.set(`action:${key}`,next);return {plan,used:next,limit,remaining:limit-next};
+}
+
 async function checkAIQuota(s){
-  // Free mode: no subscription gate and no daily app-imposed AI quota.
-  const day=new Date().toISOString().slice(0,10),used=await getUsage(s.id,day);
-  return {day,plan:"pro",limit:Number.MAX_SAFE_INTEGER,used};
+  const plan=await entitlement(s);
+  if(plan!=="pro") throw Object.assign(new Error("AI diagnosis is a WyteLab Pro feature."),{status:403,code:"PRO_REQUIRED",plan});
+  const day=new Date().toISOString().slice(0,10),used=await getUsage(s.id,day),limit=5;
+  return {day,plan,limit,used};
 }
 // Redacts likely secrets before code is sent to the AI. This must NEVER
 // corrupt the surrounding code -- mangled output reads to the model (and to
@@ -480,11 +519,6 @@ async function geminiDiagnose(prompt,schema,opts={}){
   // back to an unrelated provider. GEMINI_MODEL may select the first model,
   // while GEMINI_FALLBACK_MODELS can add/reorder stable Gemini models.
   const stable=[
-    "gemini-3.8-flash",
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite"
   ];
@@ -513,8 +547,8 @@ async function aiDiagnose(s,payload){
   const context=JSON.stringify({error:redactSecrets(payload.error),logs:redactSecrets(String(payload.logs||"").slice(0,12000)),file:redactSecrets(payload.file),content:redactSecrets(String(payload.content||"").slice(0,24000)),relatedFiles:files.map(x=>({path:redactSecrets(x.path),content:redactSecrets(String(x.content||"").slice(0,10000))})),package:redactSecrets(payload.package)});
   const schema={type:"object",properties:{title:{type:"string"},severity:{type:"string"},root_cause:{type:"string"},affected_files:{type:"array",items:{type:"string"}},affected_lines:{type:"array",items:{type:"string"}},evidence:{type:"array",items:{type:"string"}},likely_reason:{type:"string"},recommended_action:{type:"string"},confidence:{type:"number"}},required:["title","severity","root_cause","affected_files","affected_lines","evidence","likely_reason","recommended_action","confidence"]};
   const prompt=`You are WyteLab Diagnostic Engine. Diagnose only. NEVER edit code, generate patches, replace files, commit, push, rename files, or perform autonomous actions. Identify the exact problem from the supplied minimum context. If evidence is insufficient, say so. Return only valid JSON matching the supplied schema. Keep the diagnosis very concise: identify the problem, evidence, and next action in short sentences; do not write a long explanation.\nCONTEXT:\n${context}`;
-  const out=await geminiDiagnose(prompt,schema,{maxOutputTokens:700});
   const used=await incrementUsage(s.id,quota.day,quota.limit);
+  const out=await geminiDiagnose(prompt,schema,{maxOutputTokens:700});
   return {...out,usage:{used,limit:quota.limit,remaining:Math.max(0,quota.limit-used),plan:quota.plan}};
 }
 
@@ -560,8 +594,8 @@ async function aiDiagnoseRepo(s,payload){
     confidence:{type:"number"}
   },required:["summary","overall_risk","architecture_notes","issues","confidence"]};
   const prompt=`You are WyteLab's Repository Diagnostic Engine. You are given the contents of an entire codebase (as many files as fit within the supplied context budget). Diagnose only. NEVER edit code, generate patches, rewrite files, commit, push, rename files, or perform autonomous actions.\nIMPORTANT -- read this before diagnosing: some file values in the payload have "truncated": true and end with a WYDEV DIAGNOSTIC NOTE comment. That comment marks where THIS TOOL cut the file off to stay within its own size budget -- it is not part of the real source file and is never itself a code problem. A file ending abruptly right before that marker is expected and must NOT be reported as "truncated code", "incomplete implementation", or similar. Only report a file as incomplete/broken if the evidence for that appears BEFORE the marker, in code the file's author actually wrote. Likewise, values shown as [REDACTED], [REDACTED_TOKEN], or [REDACTED_PRIVATE_KEY] are secrets this tool intentionally masked before sending you the code -- never report these placeholders as syntax errors, missing values, or broken code.\nPerform a DEEP, holistic diagnosis across the whole repository, not just one file in isolation:\n- Find concrete bugs and correctness issues, including ones that only show up when files interact (mismatched contracts between frontend/backend, inconsistent field names, wrong endpoints, race conditions).\n- Flag structural and architectural risks: duplicated logic, dead code, missing error handling, inconsistent patterns between similar files, security issues (secrets, injection, auth gaps), fragile assumptions.\n- Group findings into discrete "issues", each naming the exact affected file paths and citing concrete evidence (function/variable names, line-level detail) from the supplied content -- never invent files or code that was not given to you.\n- If the supplied context is insufficient to be sure about something, say so in that issue instead of guessing.\nReturn only valid JSON matching the supplied schema. Keep it extremely concise: at most 5 important issues, short direct phrases, no long explanations, no essays, and no repeated context.\nCONTEXT:\n${context}`;
-  const out=await geminiDiagnose(prompt,schema,{maxOutputTokens:700,validate:o=>o&&typeof o.summary==="string"&&Array.isArray(o.issues)});
   const quotaUsed=await incrementUsage(s.id,quota.day,quota.limit);
+  const out=await geminiDiagnose(prompt,schema,{maxOutputTokens:700,validate:o=>o&&typeof o.summary==="string"&&Array.isArray(o.issues)});
   return {...out,filesTotal:incoming.length,filesAnalyzed:included.length,omittedFiles:omitted,usage:{used:quotaUsed,limit:quota.limit,remaining:Math.max(0,quota.limit-quotaUsed),plan:quota.plan}};
 }
 
@@ -600,7 +634,17 @@ async function flw(path,opts={}){
   }
   return d;
 }
-function amountFor(currency){if(currency==="NGN"){const n=Number(process.env.FLW_PRO_NGN||7500);if(!n)throw new Error("FLW_PRO_NGN is required for NGN checkout");return n}return Number(process.env.FLW_PRO_USD||7);}
+function amountFor(currency,plan="monthly"){
+  const annual=String(plan||"monthly").toLowerCase()==="annual";
+  if(currency==="NGN"){
+    const n=Number(process.env[annual?"FLW_PRO_NGN_ANNUAL":"FLW_PRO_NGN_MONTHLY"]||process.env.FLW_PRO_NGN||(annual?79900:7500));
+    if(!n)throw new Error(`FLW_PRO_NGN_${annual?"ANNUAL":"MONTHLY"} is required for NGN checkout`);
+    return n;
+  }
+  const n=Number(process.env[annual?"FLW_PRO_USD_ANNUAL":"FLW_PRO_USD_MONTHLY"]|| (annual?79.9:7.99));
+  if(!n)throw new Error(`FLW_PRO_USD_${annual?"ANNUAL":"MONTHLY"} is required for USD checkout`);
+  return n;
+}
 
 async function findCustomerByEmail(email){
   // Flutterwave v4 does not document a customer-search endpoint consistently across environments,
@@ -637,7 +681,9 @@ async function resolveCustomerId(customerPayload){
 }
 async function createBillingCheckout(s,payload){
   requirePersistence();
-  const currency=payload.currency==="NGN"?"NGN":"USD", amount=amountFor(currency), reference=`WYDEV-${String(s.id).slice(0,12)}-${Date.now().toString(36)}-${crypto.randomBytes(5).toString("hex")}`;
+  const current=await getEntitlement(s.id);
+  if(current?.status==="active" && Number(current.expiresAt||0)>Date.now())throw Object.assign(new Error("Your Pro subscription is already active."),{status:409,code:"ALREADY_PRO"});
+  const currency=payload.currency==="NGN"?"NGN":"USD", plan=String(payload.plan||"monthly").toLowerCase()==="annual"?"annual":"monthly", amount=amountFor(currency,plan), reference=`WYDEV-${String(s.id).slice(0,12)}-${Date.now().toString(36)}-${crypto.randomBytes(5).toString("hex")}`;
   const fullName=String(payload.name||"").trim();
   const [firstName,...restName]=fullName?fullName.split(/\s+/):[];
   const customerPayload={email:payload.email||`${s.login}@users.noreply.github.com`,name:{first:firstName||s.name||s.login,...(restName.length?{last:restName.join(" ")}:{})},meta:{github_id:String(s.id)}};
@@ -647,9 +693,9 @@ async function createBillingCheckout(s,payload){
   const pm=await flw("/payment-methods",{method:"POST",body:JSON.stringify({type:"card",card:payload.payment_method.card})});
   const paymentMethodId=pm.data?.id;
   if(!paymentMethodId)throw new Error("Flutterwave did not return a payment method id");
-  await setTransaction(reference,{userId:String(s.id),amount,currency,status:"initiating",customerId,paymentMethodId,createdAt:Date.now(),renewal:false});
+  await setTransaction(reference,{userId:String(s.id),amount,currency,plan,status:"initiating",customerId,paymentMethodId,createdAt:Date.now(),renewal:false});
   const charge=await flw("/charges",{method:"POST",idempotencyKey:reference,body:JSON.stringify({amount,currency,reference,customer_id:customerId,payment_method_id:paymentMethodId,redirect_url:`${origin(payload.req)}/?billing=return&tx_ref=${encodeURIComponent(reference)}#billing`,recurring:false})});
-  await setTransaction(reference,{status:charge.data?.status||"pending",chargeId:charge.data?.id,updatedAt:Date.now()});
+  await setTransaction(reference,{status:charge.data?.status||"pending",chargeId:charge.data?.id,updatedAt:Date.now(),plan});
   return charge;
 }
 async function authorizeCharge(s,id,authorization,reference){
@@ -660,6 +706,7 @@ async function authorizeCharge(s,id,authorization,reference){
   const d=await flw(`/charges/${encodeURIComponent(id)}`,{method:"PUT",body:JSON.stringify({authorization})});
   return d;
 }
+function addOneYear(ts){const d=new Date(Number(ts)||Date.now());d.setUTCFullYear(d.getUTCFullYear()+1);return d.getTime();}
 function addOneMonth(ts){
   const d=new Date(Number(ts)||Date.now()),day=d.getUTCDate();
   d.setUTCMonth(d.getUTCMonth()+1);
@@ -706,14 +753,14 @@ async function renewDue(){
   for(const e of due){
     if(!e.customerId||!e.paymentMethodId||!e.currency)continue;
     try{
-      const renewalAt=Number(e.renewAt||0),reference=`WYDEV-R-${String(e.id).slice(0,12)}-${renewalAt}`,amount=amountFor(e.currency);
+      const renewalAt=Number(e.renewAt||0),reference=`WYDEV-R-${String(e.id).slice(0,12)}-${renewalAt}`,amount=amountFor(e.currency,e.plan||"monthly");
       if(!(await claimRenewal(e.id,reference))) continue;
       const d=await flw("/charges",{method:"POST",idempotencyKey:reference,body:JSON.stringify({reference,currency:e.currency,amount,customer_id:e.customerId,payment_method_id:e.paymentMethodId,recurring:true})});
       const status=String(d.data?.status||"failed").toLowerCase();
-      await setTransaction(reference,{userId:e.id,amount,currency:e.currency,status,chargeId:d.data?.id,customerId:e.customerId,paymentMethodId:e.paymentMethodId,createdAt:Date.now(),renewal:true});
+      await setTransaction(reference,{userId:e.id,amount,currency:e.currency,status,chargeId:d.data?.id,customerId:e.customerId,paymentMethodId:e.paymentMethodId,plan:e.plan||"monthly",createdAt:Date.now(),renewal:true});
       if(status==="succeeded"){
         const base=Math.max(Date.now(),Number(e.expiresAt)||0);
-        const expiresAt=addOneMonth(base);
+        const expiresAt=addPeriod(base,e.plan||"monthly");
         await setEntitlement(e.id,{status:"active",expiresAt,renewAt:expiresAt,renewalPending:false,renewalStartedAt:null,renewalReference:null,updatedAt:Date.now(),lastRenewalReference:reference});
       }else{
         // Flutterwave documents recurring charges as terminal success/failure
@@ -730,8 +777,9 @@ async function cancelSubscription(s){
   requirePersistence();
   const existing=await getEntitlement(s.id);
   if(!existing||existing.status!=="active")return {active:existing?.status==="active"&&(!existing?.expiresAt||existing.expiresAt>Date.now()),cancelled:false};
-  await setEntitlement(s.id,{status:"cancelled",renewAt:null,renewalPending:false,renewalStartedAt:null,renewalReference:null,cancelledAt:Date.now(),updatedAt:Date.now()});
-  return {active:false,cancelled:true};
+  const graceUntil=Date.now()+3*86400000;
+  await setEntitlement(s.id,{status:"cancelled",expiresAt:graceUntil,renewAt:null,renewalPending:false,renewalStartedAt:null,renewalReference:null,cancelledAt:Date.now(),graceUntil,updatedAt:Date.now()});
+  return {active:true,cancelled:true,expiresAt:graceUntil,graceDays:3};
 }
 async function recoverEntitlement(s,requestedReference=""){
   requirePersistence();
@@ -759,8 +807,8 @@ async function recoverEntitlement(s,requestedReference=""){
       const d=await flw(`/charges/${encodeURIComponent(tx.chargeId)}`),x=d.data||{};
       await setTransaction(tx.reference,{status:x.status||"pending",chargeId:tx.chargeId,updatedAt:Date.now()});
       if(x.status==="succeeded"&&String(x.reference||"")===String(tx.reference)&&Number(x.amount)===Number(tx.amount)&&String(x.currency)===String(tx.currency)){
-        const expiresAt=addOneMonth(Date.now());
-        await setEntitlement(s.id,{status:"active",expiresAt,renewAt:expiresAt,reference:tx.reference,customerId:tx.customerId||x.customer_id||null,paymentMethodId:tx.paymentMethodId||x.payment_method_details?.id||null,currency:tx.currency,updatedAt:Date.now(),recoveredAt:Date.now()});
+        const expiresAt=addPeriod(Date.now(),tx.plan||"monthly");
+        await setEntitlement(s.id,{status:"active",expiresAt,renewAt:expiresAt,reference:tx.reference,customerId:tx.customerId||x.customer_id||null,paymentMethodId:tx.paymentMethodId||x.payment_method_details?.id||null,currency:tx.currency,plan:tx.plan||"monthly",updatedAt:Date.now(),recoveredAt:Date.now()});
         try{await sendPushOnce(s.id,`pro-unlocked:${tx.reference}`,"WyteLab Pro unlocked 🎉","Your Pro subscription is active.",{type:"pro_unlocked"})}catch{}
         return {active:true,expiresAt,recovered:true,reference:tx.reference};
       }
@@ -784,8 +832,8 @@ async function verifyCharge(s,id,reference){
   const providerRef=String(x.reference||"");
   await setTransaction(ref,{status:x.status||"pending",chargeId,updatedAt:Date.now()});
   if(x.status==="succeeded"&&providerRef===ref&&Number(x.amount)===Number(expected.amount)&&String(x.currency)===String(expected.currency)){
-    const expiresAt=addOneMonth(Date.now());
-    await setEntitlement(s.id,{status:"active",expiresAt,renewAt:expiresAt,reference:ref,customerId:expected.customerId,paymentMethodId:expected.paymentMethodId,currency:expected.currency,updatedAt:Date.now()});
+    const expiresAt=addPeriod(Date.now(),expected.plan||"monthly");
+    await setEntitlement(s.id,{status:"active",expiresAt,renewAt:expiresAt,reference:ref,customerId:expected.customerId,paymentMethodId:expected.paymentMethodId,currency:expected.currency,plan:expected.plan||"monthly",updatedAt:Date.now()});
     try{await sendPushOnce(s.id,`pro-unlocked:${ref}`,"WyteLab Pro unlocked 🎉","Your Pro subscription is active. Pro limits now apply to repositories, AI, reverts and workflow reruns.",{type:"pro_unlocked"})}catch{}
     return {active:true,status:x.status,expiresAt};
   }
@@ -890,13 +938,13 @@ async function handler(req,res){
           const ref=String(x.reference||tx.reference||"").trim();
           const rec=ref?await getTransaction(ref):null;
           if(rec&&String(rec.chargeId||tx.id)===String(tx.id)&&ref===String(rec.reference||ref)){
-            if(String(rec.status||"").toLowerCase()==="succeeded") return json(res,200,{received:true,duplicate:true});
+            const existing=await getEntitlement(rec.userId);
+            if(String(rec.status||"").toLowerCase()==="succeeded" && existing?.status==="active" && String(existing?.reference||"")===ref && Number(existing?.expiresAt||0)>Date.now()) return json(res,200,{received:true,duplicate:true});
             await setTransaction(ref,{status:x.status||"pending",chargeId:tx.id,updatedAt:Date.now()});
             if(x.status==="succeeded"&&String(x.reference||"")===ref&&Number(x.amount)===Number(rec.amount)&&String(x.currency)===String(rec.currency)){
-              const existing=await getEntitlement(rec.userId);
               const base=rec.renewal?Math.max(Date.now(),Number(existing?.expiresAt)||0):Date.now();
-              const expiresAt=addOneMonth(base);
-              await setEntitlement(rec.userId,{status:"active",expiresAt,renewAt:expiresAt,reference:ref,customerId:rec.customerId,paymentMethodId:rec.paymentMethodId,currency:rec.currency,updatedAt:Date.now(),renewalPending:false});
+              const expiresAt=addPeriod(base,rec.plan||"monthly");
+              await setEntitlement(rec.userId,{status:"active",expiresAt,renewAt:expiresAt,reference:ref,customerId:rec.customerId,paymentMethodId:rec.paymentMethodId,currency:rec.currency,plan:rec.plan||"monthly",updatedAt:Date.now(),renewalPending:false});
               try{await sendPushOnce(rec.userId,`pro-unlocked:${ref}`,rec.renewal?"WyteLab Pro renewed 🎉":"WyteLab Pro unlocked 🎉",rec.renewal?"Your Pro subscription was renewed successfully.":"Your Pro subscription is active.",{type:rec.renewal?"pro_renewed":"pro_unlocked"})}catch{}
             } else if(rec.renewal&&["failed","cancelled","canceled","voided"].includes(String(x.status||"").toLowerCase())){
               await setEntitlement(rec.userId,{status:"past_due",renewalPending:false,lastRenewalReference:ref,updatedAt:Date.now()});
@@ -909,7 +957,7 @@ async function handler(req,res){
     if(p==="/billing/renew"&&(req.method==="GET"||req.method==="POST")){
       const auth=req.headers.authorization||"";
       if(!process.env.CRON_SECRET||auth!==`Bearer ${process.env.CRON_SECRET}`)return json(res,401,{error:"Unauthorized"});
-      return json(res,200,{processed:0,billingDisabled:true,notifications:await runScheduledNotifications()});
+      const processed=await renewDue(); return json(res,200,{processed,notifications:await runScheduledNotifications()});
     }
 
     const s=requireSession(req,res);if(!s)return;
@@ -928,14 +976,28 @@ async function handler(req,res){
       else memory.preferences.set(String(s.id),preferences);
       return json(res,200,{ok:true,preferences});
     }
-    if(p==="/billing/authorize"&&req.method==="POST")return json(res,410,{error:"WyteLab is free. Payments and card authorization are disabled.",code:"BILLING_DISABLED"});
-    if(p==="/billing/cancel"&&req.method==="POST")return json(res,200,{ok:true,billingDisabled:true,plan:"free"});
+    if(p==="/billing/status"&&req.method==="GET")return json(res,200,await planInfo(s));
+    if(p==="/billing/config"&&req.method==="GET")return json(res,200,{
+      usdMonthly:Number(process.env.FLW_PRO_USD_MONTHLY||7.99),
+      usdAnnual:Number(process.env.FLW_PRO_USD_ANNUAL||79.9),
+      ngnMonthly:Number(process.env.FLW_PRO_NGN_MONTHLY||process.env.FLW_PRO_NGN||7500),
+      ngnAnnual:Number(process.env.FLW_PRO_NGN_ANNUAL||79900),
+      encryptionKey:String(process.env.FLW_ENCRYPTION_KEY||"")
+    });
+    if(p==="/billing/checkout"&&req.method==="POST"){
+      return json(res,201,await createBillingCheckout(s,{...(await body(req)),req}));
+    }
+    if(p==="/billing/verify"&&req.method==="POST"){const b=await body(req);return json(res,200,await verifyCharge(s,b.id,b.reference));}
+    if(p==="/billing/resolve"&&req.method==="POST"){const b=await body(req);return json(res,200,await recoverEntitlement(s,b.reference));}
+    if(p==="/billing/recover"&&req.method==="POST"){const b=await body(req);return json(res,200,await recoverEntitlement(s,b.reference));}
+    if(p==="/billing/authorize"&&req.method==="POST"){const b=await body(req);return json(res,200,await authorizeCharge(s,b.id,b.authorization,b.reference));}
+    if(p==="/billing/cancel"&&req.method==="POST")return json(res,200,await cancelSubscription(s));
     if(p==="/github/repos"&&req.method==="GET"){
       const snapshot=await getRepoSnapshot(s.id);
       try{
         const all=await gh(s.token,"/user/repos?per_page=100&sort=updated");
         const plan=await entitlement(s);
-        const limit=null;
+        const limit=plan==="pro"?null:5;
         const repos=limit!=null?all.slice(0,limit):all;
         if(!repos.length && snapshot?.repos?.length){
           // Confirm an empty GitHub result before accepting it. This protects
@@ -989,8 +1051,8 @@ async function handler(req,res){
       }
 
       const plan=await entitlement(s);
-      if(false){
-        const limit=Number(process.env.FREE_REPO_LIMIT||10);
+      if(plan!=="pro"){
+        const limit=5;
         const snapshot=await getRepoSnapshot(s.id);
         // Prefer a recent local/server snapshot to avoid a slow extra GitHub call.
         // If there is no trustworthy snapshot, perform one bounded owner-only list.
@@ -1045,11 +1107,11 @@ async function handler(req,res){
       if(operationId)await saveRepoCreateOperation(s.id,operationId,{status:"completed",repo:created});
       const snapshot=await getRepoSnapshot(s.id);
       if(snapshot){
-        const nextLimit=null;
+        const nextLimit=plan==="pro"?null:5;
         const nextRepos=[created,...(snapshot.repos||[]).filter(x=>x.id!==created.id)];
         const total=Number(snapshot.total||0)+1;
         await saveRepoSnapshot(s.id,{repos:nextLimit==null?nextRepos:nextRepos.slice(0,nextLimit),total,limit:nextLimit,plan});
-        if(plan!=="pro"&&total>=8){try{await sendPushOnce(s.id,`repo-limit:${total}:${new Date().toISOString().slice(0,10)}`,"Free repository limit is getting close",`You now have ${total} of ${Number(process.env.FREE_REPO_LIMIT||10)} free repositories.`,{type:"repo_limit",count:String(total)});}catch{}}
+        if(plan!=="pro"&&total>=4){try{await sendPushOnce(s.id,`repo-limit:${total}:${new Date().toISOString().slice(0,10)}`,"Free repository limit is getting close",`You now have ${total} of 5 free repositories.`,{type:"repo_limit",count:String(total)});}catch{}}
       }
       return json(res,201,created);
     }
@@ -1064,7 +1126,7 @@ async function handler(req,res){
     const drm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)$/);
     if(drm&&req.method==="DELETE"){
       const plan=await entitlement(s);
-      // Repository deletion is available in free mode, subject to GitHub permissions.
+      if(plan!=="pro")return json(res,403,{error:"Deleting a repository requires WyteLab Pro.",code:"PRO_REQUIRED",plan});
       const owner=decodeURIComponent(drm[1]),repo=decodeURIComponent(drm[2]);
       if(!owner||!repo) return json(res,400,{error:"Repository owner and name are required."});
       const scope=String(s.scope||"");
@@ -1118,10 +1180,11 @@ async function handler(req,res){
     const arrm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/actions\/runs\/([^/]+)\/rerun-failed$/);
     if(arrm&&req.method==="POST"){
       const owner=decodeURIComponent(arrm[1]),repo=decodeURIComponent(arrm[2]),runId=decodeURIComponent(arrm[3]),b=await body(req);
-      // Workflow retries are available in free mode, subject to GitHub permissions.
+      // Count only a successful GitHub rerun; failed requests must not burn a free credit.
       const path=`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${encodeURIComponent(runId)}/rerun-failed-jobs`;
-      await gh(s.token,path,{method:"POST",body:JSON.stringify({enable_debug_logging:!!b.debug})});
-      return json(res,201,{ok:true,debug:!!b.debug});
+      const result=await gh(s.token,path,{method:"POST",body:JSON.stringify({enable_debug_logging:!!b.debug})});
+      const usage=await incrementActionRerun(s);
+      return json(res,201,{ok:true,debug:!!b.debug,usage,result});
     }
     const acm=p.match(/^\/github\/repos\/([^/]+)\/([^/]+)\/actions\/runs\/([^/]+)\/(cancel|force-cancel)$/);
     if(acm&&req.method==="POST"){
@@ -1173,9 +1236,13 @@ async function handler(req,res){
         return json(res,200,{status:data.status,ahead_by:data.ahead_by,behind_by:data.behind_by,total_commits:data.total_commits,files:(data.files||[]).slice(0,100).map(f=>({filename:f.filename,status:f.status,additions:f.additions,deletions:f.deletions,changes:f.changes})),html_url:data.html_url});
       }
       if(kind==="pulls"&&req.method==="GET"){
+        const plan=await entitlement(s);
+        if(plan!=="pro")return json(res,403,{error:"Pull requests are a WyteLab Pro feature.",code:"PRO_REQUIRED",plan});
         const state=url.searchParams.get("state")||"open",data=await gh(s.token,`${base}/pulls?state=${encodeURIComponent(state)}&per_page=50`); return json(res,200,{pulls:Array.isArray(data)?data:[]});
       }
       if(kind==="pulls"&&req.method==="POST"){
+        const plan=await entitlement(s);
+        if(plan!=="pro")return json(res,403,{error:"Pull requests are a WyteLab Pro feature.",code:"PRO_REQUIRED",plan});
         const b=await body(req),number=Number(b.number),method=String(b.method||"merge"); if(!number)return json(res,400,{error:"Pull request number is required"});
         const d=await gh(s.token,`${base}/pulls/${number}/merge`,{method:"PUT",body:JSON.stringify({merge_method:["merge","squash","rebase"].includes(method)?method:"merge",commit_title:b.commit_title?String(b.commit_title).slice(0,200):undefined,commit_message:b.commit_message?String(b.commit_message).slice(0,5000):undefined})});
         return json(res,200,d);
@@ -1277,7 +1344,7 @@ async function handler(req,res){
     if(rvm&&req.method==="POST"){
       const owner=decodeURIComponent(rvm[1]),repo=decodeURIComponent(rvm[2]),b=await body(req);
       const plan=await entitlement(s);
-      // Commit revert is available in free mode, subject to GitHub permissions.
+      if(plan!=="pro")return json(res,403,{error:"Reverting a repository requires WyteLab Pro.",code:"PRO_REQUIRED",plan});
       const branch=String(b.branch||"").trim(), targetSha=String(b.sha||"").trim();
       if(!branch||!targetSha) return json(res,400,{error:"A branch and a commit to revert to are required"});
       const encodedOwner=encodeURIComponent(owner),encodedRepo=encodeURIComponent(repo);
@@ -1625,9 +1692,6 @@ async function handler(req,res){
     }
     if(p==="/ai/diagnose"&&req.method==="POST"){const b=await body(req);return json(res,200,await aiDiagnose(s,b));}
     if(p==="/ai/diagnose-repo"&&req.method==="POST"){const b=await body(req);return json(res,200,await aiDiagnoseRepo(s,b));}
-    if(p==="/billing/status"&&req.method==="GET")return json(res,200,{plan:"pro",freeMode:true,billingDisabled:true,expiresAt:null,renewAt:null,renewalPending:false});
-    if(p==="/billing/config"&&req.method==="GET")return json(res,200,{freeMode:true,billingDisabled:true,usd:0,ngn:0,encryptionKey:""});
-    if(p.startsWith("/billing/")&&["POST","PUT","DELETE"].includes(req.method))return json(res,410,{error:"WyteLab is free. Payments and subscriptions are disabled.",code:"BILLING_DISABLED"});
     return json(res,404,{error:"Route not found"});
   }catch(e){return json(res,e.status||500,{error:e.message||"Server error",code:e.code,limit:e.limit,used:e.used,remaining:e.remaining,plan:e.plan});}
 }

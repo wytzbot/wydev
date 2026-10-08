@@ -117,10 +117,19 @@ if(!api.includes('expectedSha')) throw new Error("Remote-change protection missi
 if(!api.includes('getEntitlement')) throw new Error("Persistent entitlement layer missing");
 if(!api.includes('getUsage')) throw new Error("Persistent AI usage layer missing");
 if(!api.includes('incrementUsage(s.id,quota.day,quota.limit)')) throw new Error("Atomic AI quota enforcement missing");
-if(!api.includes('gemini-3.8-flash') || !api.includes('gemini-3.7-flash') || !api.includes('gemini-3.5-flash-lite')) throw new Error("Active Gemini fallback chain missing");
+if(!api.includes('gemini-2.5-flash') || !api.includes('gemini-2.5-flash-lite')) throw new Error("Active Gemini fallback chain missing");
+if(/gemini-3\./.test(api)) throw new Error("Deprecated/unsupported Gemini 3.x model IDs remain in the active API code");
+if(!api.includes("wytzbot")) throw new Error("Lifetime-free GitHub entitlement missing");
 if(api.includes('OPENAI_API_KEY') || api.includes('AI_ENDPOINT_1')) throw new Error("OpenAI-compatible AI fallback must not be present");
 if(!fs.readFileSync(path.join(root,"src/pages/Billing.jsx"),"utf8").includes("5 AI diagnoses/day")) throw new Error("Pro AI plan text is not 5/day");
 if(!fs.readFileSync(path.join(root,"src/pages/Actions.jsx"),"utf8").includes("../components/Select")) throw new Error("Actions page still uses a native picker");
+if(!api.includes('limit=5')) throw new Error("Free repository limit of 5 is missing.");
+if(!api.includes('ACTION_QUOTA_EXCEEDED')) throw new Error("Free Actions rerun quota enforcement missing.");
+if(!api.includes('PRO_REQUIRED')) throw new Error("Pro feature enforcement missing.");
+if(!api.includes('graceUntil')) throw new Error("3-day cancellation grace period missing.");
+if(!fs.readFileSync(path.join(root,"src/components/Menu.jsx"),"utf8").includes("wybuild-black.vercel.app")) throw new Error("Partner APK/AAB build link missing.");
+if(!fs.readFileSync(path.join(root,".github/workflows/wydev-build.yml"),"utf8").includes("DOWNLOADS")) throw new Error("Android Downloads feature is not enabled by default.");
+
 
 console.log("WyteLab source checks passed.");
 console.log("GitHub OAuth: present");

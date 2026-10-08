@@ -194,7 +194,11 @@ body.menu-open,body.modal-open{overflow:hidden}
 .row{display:flex;align-items:center;justify-content:space-between}
 .empty,.loading{min-height:60vh;display:grid;place-items:center;color:var(--muted);text-align:center;padding:24px}
 label{display:flex;justify-content:space-between;align-items:center;gap:15px;padding:6px 0}
-.price{font-size:26px;font-weight:700;margin:14px 0}
+.price{font-size:26px;font-weight:700;margin:14px 0}.billingChoices{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}
+.billingChoice{min-height:78px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--text);text-align:left;display:flex;flex-direction:column;gap:4px}
+.billingChoice b{font-size:14px}.billingChoice span{font-size:18px;font-weight:700}.billingChoice small{color:var(--muted);font-size:11px}.billingChoice.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+@media(max-width:560px){.billingChoices{grid-template-columns:1fr}}
+
 .proActiveBadge{display:inline-block;padding:8px 14px;border-radius:8px;background:var(--success,#2ea043)22;border:1px solid var(--success,#2ea043);color:var(--success,#2ea043);letter-spacing:.04em;font-size:13px;margin:4px 0 10px}
 .cancelSubBtn{display:block;margin-top:14px;min-height:44px;padding:0 16px;border:1px solid var(--danger);border-radius:9px;background:transparent;color:var(--danger);font-weight:600}
 .cancelSubBtn:disabled{opacity:.55}
