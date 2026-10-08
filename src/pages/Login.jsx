@@ -31,7 +31,7 @@ export default function Login(){
     catch(e){setBusy("");setError(e?.message||"Google™ sign-in could not start.");}
   };
 
-  const githubLogin=()=>{setError("");setBusy("github");github.login();};
+  const githubLogin=()=>{setError("");setBusy("github");let fresh=false;try{fresh=sessionStorage.getItem("wydev:githubFreshLogin")==="1";sessionStorage.removeItem("wydev:githubFreshLogin")}catch{}github.login(fresh);};
 
   return <main className="login"><div className="loginBox"><div className="brand">WyteLab</div><h1>Code on the move.</h1><p>Edit, organize, diagnose and push GitHub projects from your phone.</p>
     <button className="primary wide" onClick={google} disabled={!!busy}><span className="googleMark">G</span>{busy==="google"?"Connecting to Google™…":"Continue with Google™"}</button>
