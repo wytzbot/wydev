@@ -79,3 +79,12 @@ No APK/AAB binary was fabricated. The sandbox does not have the project's npm de
 - Added a server-side lifetime Pro entitlement for the verified GitHub OAuth login `wytzbot`.
 - The exception is evaluated from the OAuth session's `githubLogin`; it is not accepted from frontend/local-storage data and does not depend on a Flutterwave payment record.
 - `wytzbot` therefore receives the full Pro feature set without a recurring payment while all other accounts continue through the normal entitlement/billing path.
+
+
+## APK ZIP export follow-up — 2026-10-11
+
+- Added chunked ZIP transfer through the Android shell bridge on Android 10+ so large archives are not passed as one oversized Base64 JavaScript-interface argument. The APK writes chunks to a temporary cache file and then copies it into Android Downloads via MediaStore.
+- Kept the single-call native bridge, Median download bridge, Web Share API, and normal browser download as compatibility fallbacks.
+- ZIP export now fetches lazily loaded file contents with concurrency limited to four requests, uses low-cost compression for mobile, and stops with an explicit message if GitHub did not provide a binary file's bytes instead of silently packaging a zero-byte asset.
+- Added `ENVIRONMENT-VARIABLES.md`; corrected `.env.example` by removing the unused `FREE_REPO_LIMIT=10` example and documenting the optional Kivora-only Flutterwave v3 secrets.
+- Validation in this environment checks source syntax/static rules and repository packaging. A fresh APK still needs to be built through the repository's GitHub Actions workflow to put the updated native bridge into the installed app.

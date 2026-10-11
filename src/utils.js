@@ -74,42 +74,101 @@ export function openExternal(url) {
   if (!w) window.location.href = url;
 }
 
-// Saves a Blob to the user's device. The plain `<a download>` + blob-URL
-// trick below is all a real browser needs, but the Android APK shell is a
-// bare WebView with no download listener wired up on the native side — a
-// click on a blob:/data: URL there just does nothing (no error, no file,
-// nothing to catch). The Web Share API bypasses that entirely: it hands the
-// bytes to Android's native share sheet (Chromium implements this itself,
-// independent of the WebView host app's own download handling), where "Save
-// to Files"/Drive/etc. actually write the file. We try that first on
-// platforms that support sharing files, and fall back to the classic anchor
-// trick everywhere else (desktop browsers, older WebViews).
+// Save APK exports through the native Android bridge in small chunks. Passing
+// a whole ZIP as one Base64 JavaScript-interface argument can fail for larger
+// repositories (and temporarily duplicates the ZIP in memory). Chunked writes
+// avoid the oversized bridge call; ordinary browsers and TWA builds keep the
+// share/download fallbacks below.
+function readAsDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("Could not read export data."));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function saveViaChunkedNativeDownload(blob, filename, mime) {
+  const bridge = typeof window !== "undefined" ? window.WyBuild : null;
+  if (!bridge?.supportsChunkedDownloads || !bridge?.beginDownload || !bridge?.writeDownloadChunk || !bridge?.finishDownload) return false;
+  try { if (!bridge.supportsChunkedDownloads()) return false; } catch { return false; }
+
+  const type = mime || blob.type || "application/octet-stream";
+  let started = false;
+  let completed = false;
+  try {
+    started = !!bridge.beginDownload(String(filename || "download"), String(type));
+    if (!started) return false;
+    const chunkSize = 256 * 1024;
+    for (let offset = 0; offset < blob.size; offset += chunkSize) {
+      const chunk = blob.slice(offset, Math.min(offset + chunkSize, blob.size));
+      const dataUrl = await readAsDataUrl(chunk);
+      const base64 = dataUrl.split(",")[1] || "";
+      if (!bridge.writeDownloadChunk(base64)) throw new Error("Android could not write the ZIP data.");
+    }
+    completed = !!bridge.finishDownload();
+    return completed;
+  } finally {
+    if (started && !completed) {
+      try { bridge.cancelDownload?.(); } catch {}
+    }
+  }
+}
+
+// Saves a Blob to the user's device. The Android WebView shell receives files
+// through its native Downloads bridge. Median-wrapped apps can use Median's
+// download bridge, and Chrome/TWA/browser builds can use Web Share or a normal
+// download link. Every route is feature-detected because Android containers
+// expose different subsets of browser APIs.
 export async function saveFile(blob, filename, mime) {
+  const type = mime || blob.type || "application/octet-stream";
+  try {
+    if (await saveViaChunkedNativeDownload(blob, filename, type)) return true;
+  } catch {}
+  // Compatibility path for older native shells that only implement a single
+  // Base64 download call. Newer shells use the chunked writer above.
   try {
     if (window.WyBuild?.downloadBase64) {
-      const r = new FileReader();
-      const ok = await new Promise(resolve => { r.onload=()=>{ try { resolve(!!window.WyBuild.downloadBase64(filename, mime || blob.type || "application/octet-stream", String(r.result).split(",")[1] || "")); } catch { resolve(false); } }; r.onerror=()=>resolve(false); r.readAsDataURL(blob); });
+      const dataUrl = await readAsDataUrl(new Blob([blob], { type }));
+      const ok = !!window.WyBuild.downloadBase64(String(filename || "download"), String(type), dataUrl.split(",")[1] || "");
       if (ok) return true;
     }
   } catch {}
+  // Median-wrapped APK: Median exposes a dedicated download bridge.
   try {
-    const file = new File([blob], filename, { type: mime || blob.type || "application/octet-stream" });
+    const m = typeof window !== "undefined" && /median|gonative/i.test(navigator.userAgent || "") ? window.median : null;
+    if (m?.share?.downloadFile) {
+      const dataUrl = await readAsDataUrl(new Blob([blob], { type }));
+      m.share.downloadFile({ url: dataUrl, filename, open: true });
+      return true;
+    }
+  } catch {}
+  // In Chrome Android/TWA, handing a File to the native share sheet is more
+  // reliable than relying on a WebView download listener for a blob: URL.
+  try {
+    const file = new File([blob], filename, { type });
     if (navigator.canShare?.({ files: [file] })) {
       await navigator.share({ files: [file], title: filename });
       return true;
     }
   } catch (e) {
-    if (e?.name === "AbortError") return false; // user dismissed the share sheet — not a failure
-    // Any other error (unsupported, permission, etc.) — fall through below.
+    if (e?.name === "AbortError") return false; // user dismissed the share sheet
   }
+  // The maintained Android shell is a bare WebView; if its native bridge
+  // refused the save and the share sheet was unavailable/cancelled, a blob:
+  // anchor would silently do nothing. Report failure rather than claiming the
+  // ZIP was saved. TWA/regular browsers don't expose this bridge and continue.
+  if (typeof window !== "undefined" && window.WyBuild) return false;
+  // Standard browsers handle this path with their Downloads manager.
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
   a.download = filename;
+  a.style.display = "none";
   document.body.appendChild(a);
   a.click();
   a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
   return true;
 }
 

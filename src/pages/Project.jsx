@@ -591,23 +591,46 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
       // why the downloaded archive was empty. Fetch anything unloaded and
       // unwrap binary content before adding it to the archive.
       const paths = Object.keys(files);
-      const resolved = await Promise.all(
-        paths.map(async (path) => {
-          const current = files[path];
-          if (current !== null && current !== undefined) return [path, current];
-          const f = await github.file(repo.owner.login, repo.name, path, branch);
-          return [path, f.content ?? ""];
-        })
-      );
+      if (!paths.length) {
+        toastInfo("There are no files in this working tree to export.");
+        return;
+      }
+      // Resolve lazily-loaded files with a small concurrency limit. Parallel
+      // fetching every path at once can exhaust memory/network sockets on APKs
+      // and lower-end Android devices when the repository has many files.
+      const resolved = new Array(paths.length);
+      let cursor = 0;
+      const worker = async () => {
+        while (true) {
+          const i = cursor++;
+          if (i >= paths.length) return;
+          const path = paths[i];
+          let content = files[path];
+          if (content === null || content === undefined) {
+            const f = await github.file(repo.owner.login, repo.name, path, branch);
+            content = f.content ?? "";
+          }
+          if (content && typeof content === "object" && content.__wydevBinary === true && (content.tooLarge || (Number(content.size || 0) > 0 && !content.base64))) {
+            throw new Error(`Cannot include ${path}: GitHub did not return its binary data. Large binary files may not be available through this export path; download that file separately, then export again.`);
+          }
+          resolved[i] = [path, content];
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(4, paths.length) }, () => worker()));
       const zip = new JSZip();
       resolved.forEach(([path, content]) => {
         const binary = content && typeof content === "object" && content.__wydevBinary === true;
-        if (binary) zip.file(path, content.base64 || "", { base64: true });
+        if (binary) zip.file(path, content.base64, { base64: true });
         else zip.file(path, String(content ?? ""));
       });
-      const blob = await zip.generateAsync({ type: "blob" });
+      const blob = await zip.generateAsync({
+        type: "blob",
+        compression: "DEFLATE",
+        compressionOptions: { level: 1 },
+      });
       const saved = await saveFile(blob, `${repo.name}-${branch}.zip`, "application/zip");
       if (saved) toastSuccess("Repository exported as ZIP");
+      else toastInfo("ZIP was not saved. If you dismissed the Android share sheet, retry and choose Save to Files/Downloads; also check available storage.");
     } catch (e) {
       toastError(e.message || "Export failed");
     }

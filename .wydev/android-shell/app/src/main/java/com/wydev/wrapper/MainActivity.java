@@ -45,6 +45,9 @@ import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URL;
@@ -269,7 +272,86 @@ public class MainActivity extends AppCompatActivity {
 
     public class NativeBridge {
         private final Context ctx;
+        private File pendingDownloadFile;
+        private OutputStream pendingDownloadStream;
+        private String pendingDownloadName;
+        private String pendingDownloadMime;
         NativeBridge(Context c) { ctx = c; }
+
+        // Android 10+ lets the APK write downloads through MediaStore without
+        // broad storage permission. Large ZIP exports are streamed to a cache
+        // file in chunks instead of crossing the JS bridge as one huge string.
+        @JavascriptInterface public boolean supportsChunkedDownloads() {
+            return F_DOWNLOADS && Build.VERSION.SDK_INT >= 29;
+        }
+        @JavascriptInterface public synchronized boolean beginDownload(String filename, String mime) {
+            if (!supportsChunkedDownloads()) return false;
+            clearPendingDownload(true);
+            try {
+                String safe = filename == null ? "download" : filename.replaceAll("[^A-Za-z0-9._ -]", "_");
+                if (safe.trim().isEmpty()) safe = "download";
+                pendingDownloadName = safe;
+                pendingDownloadMime = (mime == null || mime.isEmpty()) ? "application/octet-stream" : mime;
+                pendingDownloadFile = new File(ctx.getCacheDir(), "wytelab-export-" + System.currentTimeMillis() + ".tmp");
+                pendingDownloadStream = new FileOutputStream(pendingDownloadFile);
+                return true;
+            } catch (Exception e) {
+                clearPendingDownload(true);
+                return false;
+            }
+        }
+        @JavascriptInterface public synchronized boolean writeDownloadChunk(String base64) {
+            if (!supportsChunkedDownloads() || pendingDownloadStream == null) return false;
+            try {
+                byte[] bytes = Base64.decode(base64 == null ? "" : base64, Base64.DEFAULT);
+                pendingDownloadStream.write(bytes);
+                return true;
+            } catch (Exception e) { return false; }
+        }
+        @JavascriptInterface public synchronized boolean finishDownload() {
+            if (!supportsChunkedDownloads() || pendingDownloadFile == null || pendingDownloadStream == null) return false;
+            Uri target = null;
+            File staged = pendingDownloadFile;
+            String filename = pendingDownloadName;
+            String mime = pendingDownloadMime;
+            try {
+                pendingDownloadStream.flush();
+                pendingDownloadStream.close();
+                pendingDownloadStream = null;
+                android.content.ContentValues values = new android.content.ContentValues();
+                values.put(android.provider.MediaStore.Downloads.DISPLAY_NAME, filename);
+                values.put(android.provider.MediaStore.Downloads.MIME_TYPE, mime);
+                values.put(android.provider.MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                values.put(android.provider.MediaStore.Downloads.IS_PENDING, 1);
+                target = ctx.getContentResolver().insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                if (target == null) throw new java.io.IOException("Unable to create the Downloads file");
+                try (InputStream in = new FileInputStream(staged); OutputStream out = ctx.getContentResolver().openOutputStream(target)) {
+                    if (out == null) throw new java.io.IOException("Unable to open the Downloads file");
+                    byte[] buffer = new byte[64 * 1024];
+                    int count;
+                    while ((count = in.read(buffer)) != -1) out.write(buffer, 0, count);
+                }
+                android.content.ContentValues ready = new android.content.ContentValues();
+                ready.put(android.provider.MediaStore.Downloads.IS_PENDING, 0);
+                ctx.getContentResolver().update(target, ready, null, null);
+                clearPendingDownload(true);
+                ((Activity)ctx).runOnUiThread(() -> Toast.makeText(ctx, "Saved to Downloads", Toast.LENGTH_SHORT).show());
+                return true;
+            } catch (Exception e) {
+                if (target != null) try { ctx.getContentResolver().delete(target, null, null); } catch (Exception ignored) {}
+                clearPendingDownload(true);
+                return false;
+            }
+        }
+        @JavascriptInterface public synchronized void cancelDownload() { clearPendingDownload(true); }
+        private void clearPendingDownload(boolean deleteFile) {
+            try { if (pendingDownloadStream != null) pendingDownloadStream.close(); } catch (Exception ignored) {}
+            pendingDownloadStream = null;
+            if (deleteFile && pendingDownloadFile != null) try { pendingDownloadFile.delete(); } catch (Exception ignored) {}
+            pendingDownloadFile = null;
+            pendingDownloadName = null;
+            pendingDownloadMime = null;
+        }
         @JavascriptInterface public boolean hasFeature(String name) {
             String n = String.valueOf(name).toUpperCase();
             switch (n) {

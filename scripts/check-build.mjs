@@ -129,6 +129,12 @@ if(!api.includes('PRO_REQUIRED')) throw new Error("Pro feature enforcement missi
 if(!api.includes('graceUntil')) throw new Error("3-day cancellation grace period missing.");
 if(!fs.readFileSync(path.join(root,"src/components/Menu.jsx"),"utf8").includes("wybuild-black.vercel.app")) throw new Error("Partner APK/AAB build link missing.");
 if(!fs.readFileSync(path.join(root,".github/workflows/wydev-build.yml"),"utf8").includes("DOWNLOADS")) throw new Error("Android Downloads feature is not enabled by default.");
+const downloadUtils=fs.readFileSync(path.join(root,"src/utils.js"),"utf8");
+if(!downloadUtils.includes("saveViaChunkedNativeDownload") || !downloadUtils.includes("writeDownloadChunk")) throw new Error("APK downloads must support chunked native writes.");
+const androidShell=fs.readFileSync(path.join(root,".wydev/android-shell/app/src/main/java/com/wydev/wrapper/MainActivity.java"),"utf8");
+if(!androidShell.includes("supportsChunkedDownloads") || !androidShell.includes("finishDownload()")) throw new Error("Android shell chunked-download bridge is incomplete.");
+const projectPage=fs.readFileSync(path.join(root,"src/pages/Project.jsx"),"utf8");
+if(!projectPage.includes("content.tooLarge") || !projectPage.includes("compressionOptions: { level: 1 }")) throw new Error("ZIP export must reject unavailable large binary content and use low-cost compression.");
 
 
 console.log("WyteLab source checks passed.");
