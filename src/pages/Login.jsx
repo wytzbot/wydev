@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Github } from "lucide-react";
+import { Github, ChevronDown, Check, UserRound } from "lucide-react";
 import { github } from "../github";
 import { finishGoogleSignIn, startGoogleSignIn } from "../firebase-auth";
 
@@ -8,6 +8,7 @@ export default function Login(){
   const [error,setError]=useState("");
   const [accounts,setAccounts]=useState(()=>{try{return JSON.parse(localStorage.getItem("wydev:githubAccounts")||"[]").filter(a=>a&&typeof a.login==="string").slice(0,5)}catch{return []}});
   const [selectedAccount,setSelectedAccount]=useState("");
+  const [accountMenuOpen,setAccountMenuOpen]=useState(false);
   const rememberAccount=(user)=>{if(!user?.login)return;try{const key="wydev:githubAccounts";const old=JSON.parse(localStorage.getItem(key)||"[]");const next=[{login:user.login,name:user.name||user.login,avatar:user.avatar||""},...old.filter(a=>a?.login?.toLowerCase()!==user.login.toLowerCase())].slice(0,5);localStorage.setItem(key,JSON.stringify(next));setAccounts(next);setSelectedAccount(user.login)}catch{}};
 
   useEffect(()=>{
@@ -38,7 +39,7 @@ export default function Login(){
 
   return <main className="login"><div className="loginBox"><div className="brand">WyteLab</div><h1>Code on the move.</h1><p>Edit, organize, preview and push GitHub projects from your phone.</p>
     <button className="primary wide" onClick={google} disabled={!!busy}><span className="googleMark">G</span>{busy==="google"?"Connecting to Google™…":"Continue with Google™"}</button>
-    {accounts.length>0&&<div className="accountChooser"><label htmlFor="github-account">Choose a previously used GitHub account</label><select id="github-account" value={selectedAccount} onChange={e=>setSelectedAccount(e.target.value)} disabled={!!busy}><option value="">Choose account…</option>{accounts.map(a=><option key={a.login} value={a.login}>{a.name} (@{a.login})</option>)}</select><button className="secondary wide" onClick={()=>githubLogin(selectedAccount)} disabled={!!busy||!selectedAccount}><Github size={19}/>{busy==="github"?"Opening GitHub…":`Continue as @${selectedAccount||"…"}`}</button></div>}
+    {accounts.length>0&&<div className="accountChooser"><label>PREVIOUSLY USED ACCOUNTS</label><button type="button" className="accountPickerTrigger" aria-haspopup="listbox" aria-expanded={accountMenuOpen} onClick={()=>setAccountMenuOpen(v=>!v)} disabled={!!busy}><span className="accountAvatar">{accounts.find(a=>a.login===selectedAccount)?.avatar?<img src={accounts.find(a=>a.login===selectedAccount).avatar} alt=""/>:<UserRound size={19}/>}</span><span className="accountPickerCopy"><strong>{accounts.find(a=>a.login===selectedAccount)?.name||"Choose an account"}</strong><small>{selectedAccount?`@${selectedAccount}`:"Select a saved GitHub account"}</small></span><ChevronDown className={`accountPickerChevron ${accountMenuOpen?"isOpen":""}`} size={18}/></button>{accountMenuOpen&&<div className="accountPickerMenu" role="listbox" aria-label="Saved GitHub accounts" onKeyDown={e=>{if(e.key==="Escape")setAccountMenuOpen(false)}}>{accounts.map(a=><button type="button" role="option" aria-selected={selectedAccount===a.login} className={`accountPickerOption ${selectedAccount===a.login?"isSelected":""}`} key={a.login} onClick={()=>{setSelectedAccount(a.login);setAccountMenuOpen(false)}}><span className="accountAvatar">{a.avatar?<img src={a.avatar} alt=""/>:<UserRound size={18}/>}</span><span className="accountPickerCopy"><strong>{a.name||a.login}</strong><small>@{a.login}</small></span>{selectedAccount===a.login&&<Check size={17} className="accountPickerCheck"/>}</button>)}</div>}<button className="secondary wide accountContinue" onClick={()=>githubLogin(selectedAccount)} disabled={!!busy||!selectedAccount}><Github size={19}/>{busy==="github"?"Opening GitHub…":`Continue as @${selectedAccount||"…"}`}</button></div>}
     <button className="secondary wide" onClick={()=>githubLogin("")} disabled={!!busy}><Github size={19}/>{busy==="github"?"Opening GitHub…":"Continue with another GitHub account"}</button>
     {error&&<p className="error loginError">{error}</p>}
     <small>Google™ signs you into your WyteLab account. GitHub connects the repository workspace and remains the source of truth for your code.</small>
