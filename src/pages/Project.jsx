@@ -4,7 +4,6 @@ import { Copy, FilePlus, FolderPlus, ExternalLink, Upload, Trash2, Move, GitBran
 import CodeEditor from "../components/CodeEditor";
 import FileExplorer from "../components/FileExplorer";
 import CommitPanel from "../components/CommitPanel";
-import AIDiagnostics from "../components/AIDiagnostics";
 import { github } from "../github";
 import { buildChangeSet, renameFolder } from "../git";
 import { copy, saveFile, openExternal, readClipboardText } from "../utils";
@@ -57,6 +56,10 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
     [commitHistory, setCommitHistory] = useState([]),
     [historyBusy, setHistoryBusy] = useState(false),
     [revertBusy, setRevertBusy] = useState(false),
+    [previewAvailable, setPreviewAvailable] = useState(false),
+    [previewOpen, setPreviewOpen] = useState(false),
+    [previewDoc, setPreviewDoc] = useState(""),
+    [previewUsage, setPreviewUsage] = useState(0),
     loadGeneration = useRef(0);
   const changes = useMemo(() => buildChangeSet(base, files), [base, files]);
   const selectedBinary = Boolean(files[selected] && typeof files[selected] === "object" && files[selected].__wydevBinary);
@@ -167,6 +170,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
   useEffect(() => {
     let cancelled=false;
     billing.status().then(s=>{if(!cancelled)setPlan(s?.plan==="pro"?"pro":"free")}).catch(()=>{});
+    github.previewUsage(repo.full_name).then(u=>{if(!cancelled){setPreviewUsage(Number(u?.used)||0);if(u?.plan)setPlan(u.plan)}}).catch(e=>{if(!cancelled)toastError(e?.message||"Could not check server-side preview allowance. Preview will stay disabled until this can be verified.")});
     return ()=>{cancelled=true};
   },[repo.id]);
   useEffect(() => {
@@ -253,6 +257,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
       setBaseSha(r.commitSha);
       addLog({ type: "Commit & push", repo: repo?.full_name || "", branch: branch || "", text: `Committed ${changes.length} change${changes.length===1?"":"s"} successfully. Commit: ${r.commitSha}` });
       setChangesOpen(false);
+      setPreviewAvailable(false);
       toastSuccess(`Committed and pushed successfully · ${r.commitSha.slice(0, 7)}`);
       try { await load({silent:true,retries:2}); } catch {}
       localStorage.removeItem("wydev:project:" + repo.id);
@@ -487,16 +492,81 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
     setRenamePreview(null);
     toastSuccess(`Folder renamed to ${renamePreview.to}`);
   };
+  const openLocalPreview = async () => {
+    if (!previewAvailable) return;
+    try {
+      const paths = Object.keys(files);
+      const lookup = new Map(paths.map(p => [p.replace(/^\//, ""), files[p]]));
+      const htmlPath = lookup.has("index.html") ? "index.html" : paths.find(p => /(^|\/)index\.html$/i.test(p));
+      if (!htmlPath) {
+        const manifestPath=paths.find(p=>/(^|\/)package\.json$/i.test(p));
+        const manifest=manifestPath?(()=>{try{return JSON.parse(String(files[manifestPath]||""))}catch{return {}}})():{};
+        const deps={...(manifest.dependencies||{}),...(manifest.devDependencies||{})};
+        const framework=deps.next?"Next.js":deps["@angular/core"]?"Angular":deps.svelte?"Svelte":deps.vue?"Vue":deps.react?"React":deps["@vitejs/plugin-react"]?"React/Vite":manifestPath?"JavaScript framework":"unknown project";
+        throw new Error(`Preview cannot run this ${framework} ZIP yet because it has no built index.html. Build/export the project first and upload the generated static output folder (for example dist/, build/, out/ or browser/). Server-rendered backends and dependency-installing builds are not run inside the secure local preview.`);
+      }
+      let html = String(lookup.get(htmlPath) ?? files[htmlPath] ?? "");
+      const moduleEntrypoint=html.match(/<script[^>]+type=["']module["'][^>]+src=["']([^"']+)["']/i);
+      if(moduleEntrypoint && !/(^|\/)(assets|static|_next|build|dist|out)\//i.test(moduleEntrypoint[1]) && /\.(jsx?|tsx?)($|[?#])/i.test(moduleEntrypoint[1])) {
+        const srcPath=safeRepoPath((htmlPath.includes("/")?htmlPath.slice(0,htmlPath.lastIndexOf("/")+1):"")+moduleEntrypoint[1].split(/[?#]/)[0]);
+        const src=lookup.get(srcPath)??files[srcPath]??"";
+        if(/\b(import|export)\b|<\/?[A-Z][A-Za-z0-9.]*/.test(String(src))) throw new Error("This ZIP contains unbuilt framework source (JSX/TSX or module imports). For React/Vite, Vue, Svelte, Angular, or similar projects, run the framework production build and upload the generated static output folder. Prebuilt client-side bundles are supported; server-side rendering and backend processes are not executed locally.");
+      }
+      const root = htmlPath.includes("/") ? htmlPath.slice(0, htmlPath.lastIndexOf("/")+1) : "";
+      const moduleScripts=[...html.matchAll(/<script[^>]*type=["']module["'][^>]*src=["']([^"']+)["'][^>]*>/gi)];
+      for(const match of moduleScripts){
+        const src=match[1];
+        if(/^(https?:|data:|blob:|\/\/)/i.test(src)) continue;
+        const clean=src.split(/[?#]/)[0];
+        const candidatePaths=src.startsWith("/")?[safeRepoPath(root+clean.replace(/^\/+/,"")),safeRepoPath(clean.replace(/^\/+/,""))]:[safeRepoPath(root+clean)];
+        const path=candidatePaths.find(p=>lookup.has(p)||files[p]!==undefined)||candidatePaths[0];
+        const code=lookup.get(path)??files[path];
+        if(typeof code==="string" && /(?:\bfrom\s*["']\.{1,2}\/|\bimport\s*\(["']\.{1,2}\/)/.test(code)) {
+          throw new Error("This built app uses multiple JavaScript chunks. The local preview cannot resolve its chunk imports safely yet. Upload a self-contained static bundle or run the project in its own development/production environment. Your ZIP was not uploaded and no preview allowance was consumed.");
+        }
+      }
+      const resolveAsset = (src) => {
+        if (!src || /^(https?:|data:|blob:|#|\/\/)/i.test(src)) return src;
+        const cleanSrc=src.split(/[?#]/)[0];
+        const rootRelative=cleanSrc.startsWith("/");
+        const candidates=rootRelative?[safeRepoPath(root+cleanSrc.replace(/^\/+/,"")),safeRepoPath(cleanSrc.replace(/^\/+/,""))]:[safeRepoPath(root+cleanSrc)];
+        const path=candidates.find(p=>lookup.has(p)||files[p]!==undefined)||candidates[0];
+        const content = lookup.get(path) ?? files[path];
+        if (content == null || typeof content !== "string") return src;
+        const ext = path.split(".").pop().toLowerCase();
+        const mime = ({css:"text/css",js:"text/javascript",mjs:"text/javascript",svg:"image/svg+xml",png:"image/png",jpg:"image/jpeg",jpeg:"image/jpeg",gif:"image/gif",webp:"image/webp",ico:"image/x-icon",json:"application/json",woff:"font/woff",woff2:"font/woff2"})[ext] || "text/plain";
+        return `data:${mime};charset=utf-8,${encodeURIComponent(content)}`;
+      };
+      html = html.replace(/(src|href)=(['"])([^'"]+)\2/gi, (m, attr, q, url) => `${attr}=${q}${resolveAsset(url)}${q}`);
+      html = html.replace(/<base\b[^>]*>/gi, "");
+      const envText = Object.entries(files).filter(([p,v]) => /^\.env(?:\..+)?$/.test(p) && typeof v === "string").map(([,v]) => v).join("\n");
+      const publicConfig = {};
+      for (const line of envText.split(/\r?\n/)) { const m = line.match(/^\s*(VITE_[A-Z0-9_]+)\s*=\s*(.*)\s*$/); if (m) publicConfig[m[1]] = m[2].replace(/^['"]|['"]$/g, ""); }
+      const configScript = `<script>window.__WYTELAB_PREVIEW__=${JSON.stringify(publicConfig)};</script>`;
+      html = html.replace(/<head([^>]*)>/i, `<head$1>${configScript}`);
+      // Keep preview execution isolated from the host app. No uploaded file is posted to a server.
+      html = html.replace(/<head([^>]*)>/i, `<head$1><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src data: blob: https: http: 'unsafe-inline' 'unsafe-eval'; connect-src https: http: ws: wss:; frame-src https: http:;">`);
+      // Consume allowance atomically on the server immediately before opening the preview.
+      const allowance=await github.previewUsage(repo.full_name,true);
+      setPreviewUsage(Number(allowance?.used)||previewUsage);
+      if(allowance?.plan)setPlan(allowance.plan);
+      setPreviewDoc(html);
+      setPreviewOpen(true);
+    } catch (e) { toastError(e.message || "Could not prepare local preview. Check the ZIP structure and try again."); }
+  };
+
   const uploadFiles = async (eOrFiles) => {
     const picked = eOrFiles?.target?.files || eOrFiles;
     if (!picked?.length) return;
     setBusy(true);
     try {
       const next = { ...files };
+      let zipUploaded = false;
       let added = 0,
         skippedBinary = 0;
       for (const f of picked) {
         if (isZipFile(f)) {
+          zipUploaded = true;
           const { files: entries } = await extractZipEntries(f);
           for (const entry of stripCommonRoot(entries)) {
             if (!entry.path || shouldSkipUpload(entry.path)) continue;
@@ -520,6 +590,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
         }
       }
       applyFiles(next, `Uploaded ${added} file${added === 1 ? "" : "s"}`);
+      if (zipUploaded) setPreviewAvailable(true);
       // Add newly uploaded paths to the visible index immediately. This keeps
       // local ZIP imports visible even while the remote repository is still
       // being refreshed.
@@ -625,8 +696,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
       });
       const blob = await zip.generateAsync({
         type: "blob",
-        compression: "DEFLATE",
-        compressionOptions: { level: 1 },
+        compression: "STORE",
       });
       const saved = await saveFile(blob, `${repo.name}-${branch}.zip`, "application/zip");
       if (saved) toastSuccess("Repository exported as ZIP");
@@ -860,7 +930,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
         </button>
       </header>
       <div className="projectTools">
-        <AIDiagnostics repo={repo} branch={branch} fileIndex={fileIndex} files={files} fetchFileContent={fetchFileContent} plan={plan} />
+        <button onClick={openLocalPreview} disabled={!previewAvailable} title={!previewAvailable ? "Upload a ZIP before committing to enable preview" : "Preview the uploaded ZIP locally before committing"}><ExternalLink size={16}/> Preview {plan === "pro" ? "· Unlimited" : `· ${Math.max(0,2-previewUsage)} free left`}</button>
         <button onClick={undo} disabled={!history.length} title={history.length ? `Undo: ${history[history.length - 1].label}` : "Nothing to undo"}>
           <Undo2 size={16} />
           Undo
@@ -1027,6 +1097,10 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
           )}
         </main>
       </div>
+      {previewOpen && <div className="previewOverlay" role="dialog" aria-modal="true" aria-label="Local repository preview">
+        <header className="previewHeader"><div><b>Local preview · {repo.full_name}</b><small>Runs in this browser. ZIP contents are not uploaded for preview.</small></div><div><button onClick={()=>{setPreviewOpen(false);setChangesOpen(true);setTimeout(()=>document.querySelector(".commitBar")?.scrollIntoView({behavior:"smooth",block:"center"}),50)}}>Commit changes</button><button className="primary" onClick={()=>setPreviewOpen(false)}>Return to repo</button></div></header>
+        <iframe className="previewFrame" title="Uploaded repository preview" sandbox="allow-scripts allow-forms allow-modals allow-popups" srcDoc={previewDoc}/>
+      </div>}
       <CommitPanel count={changes.length} onCommit={commit} busy={busy} />
       {renamePreview && (
         <div className="sheet">

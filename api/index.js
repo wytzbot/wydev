@@ -95,26 +95,6 @@ async function setEntitlement(userId,data){
   if(db){await db.collection("wydev_entitlements").doc(String(userId)).set(data,{merge:true});return}
   memory.entitlements.set(String(userId),data);
 }
-async function getUsage(userId,day){
-  if(db){const d=await db.collection("wydev_ai_usage").doc(`${userId}_${day}`).get();return d.exists?(Number(d.data().count)||0):0}
-  return memory.usage.get(`${userId}:${day}`)||0;
-}
-async function incrementUsage(userId,day,limit){
-  if(db){
-    const ref=db.collection("wydev_ai_usage").doc(`${userId}_${day}`);
-    return db.runTransaction(async tx=>{
-      const d=await tx.get(ref);
-      const count=d.exists?(Number(d.data().count)||0):0;
-      if(count>=limit)throw Object.assign(new Error(`Daily AI diagnostic limit reached (${limit}). Try again tomorrow.`),{status:429,code:"AI_QUOTA_EXCEEDED",limit,used:count});
-      const next=count+1;
-      tx.set(ref,{count:next,updatedAt:Date.now()},{merge:true});
-      return next;
-    });
-  }
-  const k=`${userId}:${day}`,count=memory.usage.get(k)||0;
-  if(count>=limit)throw Object.assign(new Error(`Daily AI diagnostic limit reached (${limit}). Try again tomorrow.`),{status:429,code:"AI_QUOTA_EXCEEDED",limit,used:count});
-  const next=count+1; memory.usage.set(k,next); return next;
-}
 async function setTransaction(reference,data){
   if(db){await db.collection("wydev_transactions").doc(reference).set(data,{merge:true});return}
   memory.transactions.set(reference,data);
@@ -190,7 +170,7 @@ function openCookie(v){try{const [iv,enc,tag]=v.split(".");const d=crypto.create
 function setSession(res,user){const value=seal(user);res.setHeader("Set-Cookie",`wydev_session=${encodeURIComponent(value)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800`);}
 function clearSession(res){res.setHeader("Set-Cookie","wydev_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0");}
 function session(req){const c=parseCookies(req).wydev_session;return c?openCookie(c):null;}
-function requireSession(req,res){const s=session(req);if(!s?.token||!s?.login){json(res,401,{error:"GitHub connection required. Connect GitHub to use repository features."});return null}return s;}
+function requireSession(req,res){const s=session(req);if(!s?.token||!s?.login){json(res,401,{error:"Your login session has expired or is missing. Sign in again to reconnect GitHub and continue.",code:"SESSION_EXPIRED"});return null}return s;}
 async function firebaseLogin(req,res){
   if(!firebaseAdmin?.auth) return json(res,503,{error:"Google sign-in is not configured on the WyteLab server.",code:"GOOGLE_AUTH_NOT_CONFIGURED"});
   const b=await body(req),idToken=String(b?.idToken||"").trim();
@@ -303,14 +283,17 @@ function clearOAuthCookie(res){
 }
 async function oauthStart(req,res){
   const state=b64(crypto.randomBytes(32));
-  const fresh=String(new URL(req.url,origin(req)).searchParams.get("fresh")||"") === "1";
+  const startUrl=new URL(req.url,origin(req));
+  const fresh=String(startUrl.searchParams.get("fresh")||"") === "1";
+  const accountHint=String(startUrl.searchParams.get("login")||"").trim().replace(/[^A-Za-z0-9-]/g,"").slice(0,39);
   const redirectUri=process.env.GITHUB_REDIRECT_URI||`${origin(req)}/api/auth/github/callback`;
   await rememberOAuthState(state,redirectUri,session(req));
   const url=new URL("https://github.com/login/oauth/authorize");
   url.searchParams.set("client_id",process.env.GITHUB_CLIENT_ID||"");
   url.searchParams.set("redirect_uri",redirectUri);
   url.searchParams.set("scope","read:user repo workflow delete_repo");
-  if(fresh) url.searchParams.set("prompt","login");
+  if(fresh || accountHint) url.searchParams.set("prompt","login");
+  if(accountHint) url.searchParams.set("login",accountHint);
   url.searchParams.set("state",state);
   // SameSite=None is intentional: Android WebViews/custom tabs can cross a
   // browser boundary during the GitHub redirect. Secure is mandatory with it.
@@ -478,127 +461,6 @@ async function incrementActionRerun(s){
   const used=memory.usage.get(`action:${key}`)||0,limit=3;
   if(used>=limit)throw Object.assign(new Error("Free plan allows 3 workflow reruns per day. Upgrade to Pro for unlimited reruns."),{status:429,code:"ACTION_QUOTA_EXCEEDED",limit,used});
   const next=used+1;memory.usage.set(`action:${key}`,next);return {plan,used:next,limit,remaining:limit-next};
-}
-
-async function checkAIQuota(s){
-  const plan=await entitlement(s);
-  if(plan!=="pro") throw Object.assign(new Error("AI diagnosis is a WyteLab Pro feature."),{status:403,code:"PRO_REQUIRED",plan});
-  const day=new Date().toISOString().slice(0,10),used=await getUsage(s.id,day),limit=5;
-  return {day,plan,limit,used};
-}
-// Redacts likely secrets before code is sent to the AI. This must NEVER
-// corrupt the surrounding code -- mangled output reads to the model (and to
-// a human) exactly like a truncated/broken file, which produces false "this
-// code is broken" diagnoses instead of real ones. So every rule below only
-// fires on something shaped like an actual literal secret, and always
-// preserves the quote characters it matched inside.
-function redactSecrets(value){
-  let s=String(value||"");
-  // Real PEM private key blocks have a substantial base64 body between the
-  // markers. Require a minimum body length so this doesn't also match the
-  // *description* of that pattern -- e.g. this very regex's own source text,
-  // which appears verbatim when this file is diagnosed.
-  s=s.replace(/-----BEGIN [^-]+ PRIVATE KEY-----[\s\S]{40,}?-----END [^-]+ PRIVATE KEY-----/gi,"[REDACTED_PRIVATE_KEY]");
-  // Strings shaped like real provider credentials, regardless of what
-  // variable they're assigned to.
-  s=s.replace(/(ghp_|github_pat_|sk-[A-Za-z0-9_-]+|AIza[0-9A-Za-z_-]{20,})[A-Za-z0-9_-]*/g,"[REDACTED_TOKEN]");
-  // "<secret-ish keyword>: <quoted literal>" pairs. \b keeps this from
-  // matching a keyword that's merely a suffix of a longer identifier (e.g.
-  // FLW_TOKEN, SESSION_SECRET used as a *name*, not a leaked value). Requiring
-  // an actual quoted literal of plausible secret length keeps this from
-  // matching bare expressions/object literals (e.g. `authorization={...}`,
-  // `secret:process.env.X`), which have no leakable value to redact in the
-  // first place. The quote characters are preserved in the replacement so
-  // the surrounding code stays syntactically valid.
-  s=s.replace(/\b(api[_-]?key|secret|password|token|authorization)\b(\s*[:=]\s*)(["'`])((?:(?!\3)[^\\]|\\.){12,}?)\3/gi,
-    (m,kw,sep,q)=>`${kw}${sep}${q}[REDACTED]${q}`);
-  return s;
-}
-function parseGeminiText(data){return data?.candidates?.[0]?.content?.parts?.map(p=>p.text||"").join("")||"";}
-async function geminiDiagnose(prompt,schema,opts={}){
-  // Gemini-only provider chain. Keep this allowlist limited to currently supported stable model IDs;
-  // each failure falls through to the next active model rather than falling
-  // back to an unrelated provider. GEMINI_MODEL may select the first model,
-  // while GEMINI_FALLBACK_MODELS can add/reorder stable Gemini models.
-  const stable=[
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite"
-  ];
-  const configured=[String(process.env.GEMINI_MODEL||"").trim(),...String(process.env.GEMINI_FALLBACK_MODELS||"").split(",").map(x=>x.trim()).filter(Boolean)];
-  const active=new Set(stable); const models=[...configured,...stable].filter((x,i,a)=>x&&active.has(x)&&a.indexOf(x)===i);
-  const failures=[];
-  const key=String(process.env.GEMINI_API_KEY||"").trim();
-  if(!key) throw Object.assign(new Error("Gemini AI is not configured. Set GEMINI_API_KEY in Vercel."),{status:503,code:"GEMINI_NOT_CONFIGURED"});
-  for(const model of models){
-    try{
-      const url=`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
-      const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{role:"user",parts:[{text:prompt}]}],generationConfig:{maxOutputTokens:opts.maxOutputTokens||500,responseMimeType:"application/json",responseSchema:schema}})});
-      const data=await r.json().catch(()=>({}));
-      if(!r.ok){failures.push(`${model}: ${data?.error?.message||r.status}`);continue;}
-      const text=parseGeminiText(data); if(!text) throw new Error("empty response");
-      const out=JSON.parse(text); const valid=opts.validate?opts.validate(out):(out.root_cause&&Array.isArray(out.affected_files)&&Array.isArray(out.evidence));
-      if(!valid) throw new Error("AI response validation failed");
-      return out;
-    }catch(e){failures.push(`${model}: ${e.message}`)}
-  }
-  throw Object.assign(new Error("All configured Gemini models were unavailable. Try again shortly."),{status:503,code:"GEMINI_ALL_MODELS_FAILED",details:failures.slice(-6)});
-}
-async function aiDiagnose(s,payload){
-  const quota=await checkAIQuota(s);
-  const files=Array.isArray(payload.relatedFiles)?payload.relatedFiles.slice(0,8):[];
-  const context=JSON.stringify({error:redactSecrets(payload.error),logs:redactSecrets(String(payload.logs||"").slice(0,12000)),file:redactSecrets(payload.file),content:redactSecrets(String(payload.content||"").slice(0,24000)),relatedFiles:files.map(x=>({path:redactSecrets(x.path),content:redactSecrets(String(x.content||"").slice(0,10000))})),package:redactSecrets(payload.package)});
-  const schema={type:"object",properties:{title:{type:"string"},severity:{type:"string"},root_cause:{type:"string"},affected_files:{type:"array",items:{type:"string"}},affected_lines:{type:"array",items:{type:"string"}},evidence:{type:"array",items:{type:"string"}},likely_reason:{type:"string"},recommended_action:{type:"string"},confidence:{type:"number"}},required:["title","severity","root_cause","affected_files","affected_lines","evidence","likely_reason","recommended_action","confidence"]};
-  const prompt=`You are WyteLab Diagnostic Engine. Diagnose only. NEVER edit code, generate patches, replace files, commit, push, rename files, or perform autonomous actions. Identify the exact problem from the supplied minimum context. If evidence is insufficient, say so. Return only valid JSON matching the supplied schema. Keep the diagnosis very concise: identify the problem, evidence, and next action in short sentences; do not write a long explanation.\nCONTEXT:\n${context}`;
-  const used=await incrementUsage(s.id,quota.day,quota.limit);
-  const out=await geminiDiagnose(prompt,schema,{maxOutputTokens:700});
-  return {...out,usage:{used,limit:quota.limit,remaining:Math.max(0,quota.limit-used),plan:quota.plan}};
-}
-
-// Whole-repository diagnosis: instead of one file plus a handful of "related"
-// files, this walks the entire fetched file set (skipping binaries, lockfiles
-// and anything past the char budget) so the model reasons about cross-file
-// problems -- inconsistent patterns, missing error handling, structural and
-// architectural issues -- not just what's wrong in whatever single file the
-// user happened to have open. Still diagnosis-only, still one AI credit.
-// Budgeted generously (well above this repo's ~230KB of source) so ordinary
-// projects are sent in full; per-file cap is likewise sized above the
-// largest files WyteLab itself ships so real files aren't cut mid-function.
-const REPO_CONTEXT_CHAR_BUDGET=550000;
-const REPO_PER_FILE_CHAR_CAP=90000;
-const TRUNCATION_MARKER="\n/* [WYDEV DIAGNOSTIC NOTE: file content cut off here because it exceeded the diagnosis size budget. This is NOT a bug in the source file -- it is only how much of it could be included in this analysis. Do not report this cutoff itself as an issue. */";
-async function aiDiagnoseRepo(s,payload){
-  const quota=await checkAIQuota(s);
-  const incoming=Array.isArray(payload.files)?payload.files:[];
-  let used=0;
-  const omitted=[];
-  const included=[];
-  for(const f of incoming){
-    const path=redactSecrets(String(f?.path||"")).slice(0,300);
-    if(!path){continue}
-    let content=String(f?.content||"");
-    let truncated=false;
-    if(content.length>REPO_PER_FILE_CHAR_CAP){content=content.slice(0,REPO_PER_FILE_CHAR_CAP)+TRUNCATION_MARKER;truncated=true}
-    content=redactSecrets(content);
-    const entryLen=path.length+content.length+48;
-    if(used+entryLen>REPO_CONTEXT_CHAR_BUDGET){omitted.push(f.path);continue}
-    used+=entryLen;
-    included.push({path,content,truncated});
-  }
-  const context=JSON.stringify({repo:redactSecrets(payload.repo||""),branch:redactSecrets(payload.branch||""),fileCountTotal:incoming.length,fileCountIncluded:included.length,files:included});
-  const schema={type:"object",properties:{
-    summary:{type:"string"},
-    overall_risk:{type:"string"},
-    architecture_notes:{type:"string"},
-    issues:{type:"array",items:{type:"object",properties:{
-      title:{type:"string"},severity:{type:"string"},affected_files:{type:"array",items:{type:"string"}},
-      root_cause:{type:"string"},evidence:{type:"array",items:{type:"string"}},recommended_action:{type:"string"}
-    },required:["title","severity","affected_files","root_cause","evidence","recommended_action"]}},
-    confidence:{type:"number"}
-  },required:["summary","overall_risk","architecture_notes","issues","confidence"]};
-  const prompt=`You are WyteLab's Repository Diagnostic Engine. You are given the contents of an entire codebase (as many files as fit within the supplied context budget). Diagnose only. NEVER edit code, generate patches, rewrite files, commit, push, rename files, or perform autonomous actions.\nIMPORTANT -- read this before diagnosing: some file values in the payload have "truncated": true and end with a WYDEV DIAGNOSTIC NOTE comment. That comment marks where THIS TOOL cut the file off to stay within its own size budget -- it is not part of the real source file and is never itself a code problem. A file ending abruptly right before that marker is expected and must NOT be reported as "truncated code", "incomplete implementation", or similar. Only report a file as incomplete/broken if the evidence for that appears BEFORE the marker, in code the file's author actually wrote. Likewise, values shown as [REDACTED], [REDACTED_TOKEN], or [REDACTED_PRIVATE_KEY] are secrets this tool intentionally masked before sending you the code -- never report these placeholders as syntax errors, missing values, or broken code.\nPerform a DEEP, holistic diagnosis across the whole repository, not just one file in isolation:\n- Find concrete bugs and correctness issues, including ones that only show up when files interact (mismatched contracts between frontend/backend, inconsistent field names, wrong endpoints, race conditions).\n- Flag structural and architectural risks: duplicated logic, dead code, missing error handling, inconsistent patterns between similar files, security issues (secrets, injection, auth gaps), fragile assumptions.\n- Group findings into discrete "issues", each naming the exact affected file paths and citing concrete evidence (function/variable names, line-level detail) from the supplied content -- never invent files or code that was not given to you.\n- If the supplied context is insufficient to be sure about something, say so in that issue instead of guessing.\nReturn only valid JSON matching the supplied schema. Keep it extremely concise: at most 5 important issues, short direct phrases, no long explanations, no essays, and no repeated context.\nCONTEXT:\n${context}`;
-  const quotaUsed=await incrementUsage(s.id,quota.day,quota.limit);
-  const out=await geminiDiagnose(prompt,schema,{maxOutputTokens:700,validate:o=>o&&typeof o.summary==="string"&&Array.isArray(o.issues)});
-  return {...out,filesTotal:incoming.length,filesAnalyzed:included.length,omittedFiles:omitted,usage:{used:quotaUsed,limit:quota.limit,remaining:Math.max(0,quota.limit-quotaUsed),plan:quota.plan}};
 }
 
 function flwRequestId(prefix){return `${prefix}${crypto.randomBytes(18).toString("hex")}`;}
@@ -977,6 +839,27 @@ async function handler(req,res){
       if(db) await db.collection("wydev_preferences").doc(String(s.id)).set({preferences,updatedAt:Date.now()},{merge:true});
       else memory.preferences.set(String(s.id),preferences);
       return json(res,200,{ok:true,preferences});
+    }
+    if(p==="/preview/usage"&&(req.method==="GET"||req.method==="POST")){
+      if(!db) return json(res,503,{error:"Server-side preview limits are unavailable because preview usage storage is not configured. Configure Firebase Admin persistence and retry; no preview was counted.",code:"PREVIEW_STORAGE_UNAVAILABLE"});
+      const b=req.method==="POST"?await body(req):{};
+      const repo=String(req.method==="GET"?url.searchParams.get("repo"):b.repo||"").trim();
+      if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) return json(res,400,{error:"A valid repository name (owner/repository) is required.",code:"PREVIEW_REPO_INVALID"});
+      const plan=await entitlement(s), pro=plan==="pro";
+      const key=crypto.createHash("sha256").update(`${String(s.id)}:${repo.toLowerCase()}`).digest("hex");
+      const ref=db.collection("wydev_preview_usage").doc(key);
+      if(req.method==="GET"){
+        const snap=await ref.get(), used=Number(snap.exists?snap.data().count:0)||0;
+        return json(res,200,{plan,used,limit:pro?null:2,remaining:pro?null:Math.max(0,2-used)});
+      }
+      const result=await db.runTransaction(async tx=>{
+        const snap=await tx.get(ref), used=Number(snap.exists?snap.data().count:0)||0;
+        if(!pro&&used>=2) throw Object.assign(new Error("You have used both free previews for this repository. Upgrade to Pro for unlimited previews."),{status:429,code:"PREVIEW_LIMIT_REACHED",used,limit:2});
+        const next=used+1;
+        tx.set(ref,{userId:String(s.id),repo:repo.toLowerCase(),count:next,updatedAt:Date.now()},{merge:true});
+        return {plan,used:next,limit:pro?null:2,remaining:pro?null:Math.max(0,2-next)};
+      });
+      return json(res,200,result);
     }
     if(p==="/billing/status"&&req.method==="GET")return json(res,200,await planInfo(s));
     if(p==="/billing/config"&&req.method==="GET")return json(res,200,{
@@ -1692,8 +1575,6 @@ async function handler(req,res){
       }
       return json(res,200,{ok:true,commitSha:commit.sha,html_url:commit.html_url,branch,placeholder});
     }
-    if(p==="/ai/diagnose"&&req.method==="POST"){const b=await body(req);return json(res,200,await aiDiagnose(s,b));}
-    if(p==="/ai/diagnose-repo"&&req.method==="POST"){const b=await body(req);return json(res,200,await aiDiagnoseRepo(s,b));}
     return json(res,404,{error:"Route not found"});
   }catch(e){return json(res,e.status||500,{error:e.message||"Server error",code:e.code,limit:e.limit,used:e.used,remaining:e.remaining,plan:e.plan});}
 }

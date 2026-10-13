@@ -354,6 +354,7 @@ export default function App() {
       .then((x) => {
         if (x?.user) {
           setUser(x.user);
+          if (x.user.provider !== "google" && x.user.login) { try { const key="wydev:githubAccounts"; const old=JSON.parse(localStorage.getItem(key)||"[]"); const account={login:x.user.login,name:x.user.name||x.user.login,avatar:x.user.avatar||""}; localStorage.setItem(key,JSON.stringify([account,...old.filter(a=>a?.login?.toLowerCase()!==account.login.toLowerCase())].slice(0,5))); } catch {} }
           const cached = loadState(`reposCache:${String(x.user.id)}`, null);
           if (cached?.repos?.length) { setRepos(cached.repos); setRepoLimit(cached.repoLimit || null); }
           if (x.user.githubConnected) { loadRepos({ silent: true }); initNotifications(x.user).catch(() => {}); }

@@ -3,7 +3,7 @@ import {github} from "../github";
 import {searchFiles} from "../search";
 
 const actions=[
- {label:"Open Repository",page:"repos"},{label:"Rename folder",page:"project"},{label:"Font size",page:"settings"},{label:"AI diagnostics",page:"project"},{label:"Branches",page:"project"},{label:"Changes",page:"changes"}
+ {label:"Open Repository",page:"repos"},{label:"Rename folder",page:"project"},{label:"Font size",page:"settings"},{label:"Branches",page:"project"},{label:"Changes",page:"changes"}
 ];
 export default function SearchPage({repos,onOpen,onNavigate,query="",repoFiles={},onOpenFile}){
  const [q,setQ]=useState(query),[repoHits,setRepoHits]=useState([]),[remote,setRemote]=useState([]);

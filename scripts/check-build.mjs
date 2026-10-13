@@ -116,12 +116,7 @@ if(!api.includes('/billing/webhook')) throw new Error("Flutterwave webhook route
 if(!api.includes('expectedSha')) throw new Error("Remote-change protection missing");
 if(!api.includes('getEntitlement')) throw new Error("Persistent entitlement layer missing");
 if(!api.includes('getUsage')) throw new Error("Persistent AI usage layer missing");
-if(!api.includes('incrementUsage(s.id,quota.day,quota.limit)')) throw new Error("Atomic AI quota enforcement missing");
-if(!api.includes('gemini-2.5-flash') || !api.includes('gemini-2.5-flash-lite')) throw new Error("Active Gemini fallback chain missing");
-if(/gemini-3\./.test(api)) throw new Error("Deprecated/unsupported Gemini 3.x model IDs remain in the active API code");
 if(!api.includes("wytzbot")) throw new Error("Lifetime-free GitHub entitlement missing");
-if(api.includes('OPENAI_API_KEY') || api.includes('AI_ENDPOINT_1')) throw new Error("OpenAI-compatible AI fallback must not be present");
-if(!fs.readFileSync(path.join(root,"src/pages/Billing.jsx"),"utf8").includes("5 AI diagnoses/day")) throw new Error("Pro AI plan text is not 5/day");
 if(!fs.readFileSync(path.join(root,"src/pages/Actions.jsx"),"utf8").includes("../components/Select")) throw new Error("Actions page still uses a native picker");
 if(!api.includes('limit=5')) throw new Error("Free repository limit of 5 is missing.");
 if(!api.includes('ACTION_QUOTA_EXCEEDED')) throw new Error("Free Actions rerun quota enforcement missing.");
@@ -134,13 +129,13 @@ if(!downloadUtils.includes("saveViaChunkedNativeDownload") || !downloadUtils.inc
 const androidShell=fs.readFileSync(path.join(root,".wydev/android-shell/app/src/main/java/com/wydev/wrapper/MainActivity.java"),"utf8");
 if(!androidShell.includes("supportsChunkedDownloads") || !androidShell.includes("finishDownload()")) throw new Error("Android shell chunked-download bridge is incomplete.");
 const projectPage=fs.readFileSync(path.join(root,"src/pages/Project.jsx"),"utf8");
-if(!projectPage.includes("content.tooLarge") || !projectPage.includes("compressionOptions: { level: 1 }")) throw new Error("ZIP export must reject unavailable large binary content and use low-cost compression.");
+if(!projectPage.includes("content.tooLarge") || !projectPage.includes('compression: "STORE"')) throw new Error("ZIP export must reject unavailable large binary content and use low-cost compression.");
 
 
 console.log("WyteLab source checks passed.");
 console.log("GitHub OAuth: present");
 console.log("GitHub commit/push + remote SHA guard: present");
-console.log("AI diagnostic + quota + fallback: present");
+console.log("AI diagnosis endpoints: disabled");
 console.log("Firebase persistence layer: present");
 console.log("Flutterwave v4 + webhook + verification: present");
 
