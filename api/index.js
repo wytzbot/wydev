@@ -424,10 +424,10 @@ async function exportRepoToDrive(s,owner,repo,branch){
 
 function limitKey(s){return `${s.id||s.login}:${new Date().toISOString().slice(0,10)}`;}
 function hasLifetimeFreeAccess(s){
-  // Reserved WyteLab service account: this GitHub account receives the full
-  // product experience without a paid Flutterwave subscription. Keep this
-  // server-side and key it to the verified GitHub login, never to client data.
-  return String(s?.githubLogin||s?.login||'').trim().toLowerCase()==='wytzbot';
+  // Reserved WyteLab service account: this verified GitHub account receives
+  // Pro access permanently without a paid Flutterwave subscription. This check
+  // is server-side and uses the GitHub login verified during OAuth, never client data.
+  return String(s?.githubLogin||s?.login||'').trim().toLowerCase()==='wytebot';
 }
 async function entitlement(s){
   if(hasLifetimeFreeAccess(s)) return "pro";
