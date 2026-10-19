@@ -24,12 +24,22 @@ function legacyCopy(text){
 
 
 export async function readClipboardText(){
+  // Native Android WebViews often deny navigator.clipboard.readText even
+  // though the app has a legitimate user-triggered Paste action.
   try{
     if(navigator.clipboard?.readText){
-      return await navigator.clipboard.readText();
+      const text = await navigator.clipboard.readText();
+      if (typeof text === "string") return text;
     }
   }catch{}
-  throw new Error("Clipboard access was denied or is unavailable. Copy the replacement code and try again.");
+  try{
+    const bridge = typeof window !== "undefined" ? window.WyBuild : null;
+    if (bridge?.paste) {
+      const text = bridge.paste();
+      if (typeof text === "string") return text;
+    }
+  }catch{}
+  throw new Error("Clipboard access is unavailable. Copy the replacement code, then try Paste again.");
 }
 
 export const copy=async text=>{

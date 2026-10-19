@@ -378,6 +378,7 @@ public class MainActivity extends AppCompatActivity {
         }
         @JavascriptInterface public boolean openExternal(String url) { try { startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(url))); return true; } catch(Exception e){return false;} }
         @JavascriptInterface public boolean copy(String text) { try { ClipboardManager c=(ClipboardManager)getSystemService(CLIPBOARD_SERVICE);c.setPrimaryClip(ClipData.newPlainText("WyteLab",text));Toast.makeText(ctx,"Copied",Toast.LENGTH_SHORT).show();return true;}catch(Exception e){return false;} }
+        @JavascriptInterface public String paste() { try { ClipboardManager c=(ClipboardManager)getSystemService(CLIPBOARD_SERVICE); if(c==null||!c.hasPrimaryClip())return ""; ClipData clip=c.getPrimaryClip(); if(clip==null||clip.getItemCount()==0)return ""; CharSequence text=clip.getItemAt(0).coerceToText(ctx); return text==null?"":text.toString(); }catch(Exception e){return "";} }
         @JavascriptInterface public boolean downloadBase64(String filename,String mime,String base64) {
             if(!F_DOWNLOADS)return false;
             try {

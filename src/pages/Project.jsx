@@ -415,6 +415,54 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
     if (selected && toDelete.has(selected)) setSelected("");
     toastSuccess(`${toDelete.size} file${toDelete.size === 1 ? "" : "s"} deleted`);
   };
+  // Bulk delete uses the repository tree index as its source of truth. This
+  // avoids depending on selecting hundreds of checkboxes in Android WebView.
+  const deleteAllFiles = async () => {
+    if (busy) return;
+    let paths = [...new Set([
+      ...Object.keys(base || {}),
+      ...Object.keys(files || {}),
+      ...(fileIndex || []).map((item) => item.path).filter(Boolean),
+    ])];
+    if (!paths.length) {
+      let tree;
+      try {
+        setBusy(true);
+        tree = await github.tree(repo.owner.login, repo.name, branch);
+      } catch (e) {
+        toastError(e?.message || "Could not load repository files. Nothing was deleted.");
+        return;
+      } finally {
+        setBusy(false);
+      }
+      const index = (tree.files || []).map((item) => ({ path: item.path, sha: item.sha, size: item.size || 0 }));
+      const placeholders = Object.fromEntries(index.map((item) => [item.path, null]));
+      setFileIndex(index);
+      setBase(placeholders);
+      setBaseSha(tree.baseSha || baseSha);
+      paths = index.map((item) => item.path);
+    }
+    if (!paths.length) {
+      toastInfo("This repository has no tracked files to delete.");
+      return;
+    }
+    const ok = await confirmDialog({
+      title: "Delete all files",
+      message: `Stage deletion of all ${paths.length} tracked file${paths.length === 1 ? "" : "s"} in ${repo.full_name}? The repository changes only after you commit and push.`,
+      confirmLabel: "Delete all files",
+      danger: true,
+    });
+    if (!ok) return;
+    setBase((current) => {
+      const merged = { ...current };
+      for (const path of paths) if (!(path in merged)) merged[path] = null;
+      return merged;
+    });
+    applyFiles({}, `Deleted all ${paths.length} files`);
+    setSelected("");
+    toastSuccess(`${paths.length} file${paths.length === 1 ? "" : "s"} staged for deletion. Commit changes to apply them on GitHub.`);
+  };
+
   const deleteSelected = async () => {
     if (!selected) return;
     const ok = await confirmDialog({
@@ -973,9 +1021,13 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
           <Trash2 size={16} />
           Delete file
         </button>
-        <button onClick={deleteFolder}>
+        <button onClick={deleteFolder} disabled={busy}>
           <Trash2 size={16} />
           Delete files
+        </button>
+        <button className="danger" onClick={deleteAllFiles} disabled={busy} title="Stage deletion of every tracked file in this repository">
+          <Trash2 size={16} />
+          Delete all files
         </button>
         <button onClick={exportZip}>
           <Upload size={16} />
