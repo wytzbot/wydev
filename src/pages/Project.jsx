@@ -415,52 +415,56 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
     if (selected && toDelete.has(selected)) setSelected("");
     toastSuccess(`${toDelete.size} file${toDelete.size === 1 ? "" : "s"} deleted`);
   };
-  // Bulk delete uses the repository tree index as its source of truth. This
-  // avoids depending on selecting hundreds of checkboxes in Android WebView.
+  // Bulk delete must refresh GitHub immediately before staging. Cached editor
+  // state can belong to a previous session/account or an outdated branch, so
+  // never let a non-empty local cache prevent a remote-tree refresh.
   const deleteAllFiles = async () => {
     if (busy) return;
-    let paths = [...new Set([
-      ...Object.keys(base || {}),
-      ...Object.keys(files || {}),
-      ...(fileIndex || []).map((item) => item.path).filter(Boolean),
-    ])];
-    if (!paths.length) {
-      let tree;
-      try {
-        setBusy(true);
-        tree = await github.tree(repo.owner.login, repo.name, branch);
-      } catch (e) {
-        toastError(e?.message || "Could not load repository files. Nothing was deleted.");
-        return;
-      } finally {
-        setBusy(false);
-      }
-      const index = (tree.files || []).map((item) => ({ path: item.path, sha: item.sha, size: item.size || 0 }));
-      const placeholders = Object.fromEntries(index.map((item) => [item.path, null]));
-      setFileIndex(index);
-      setBase(placeholders);
-      setBaseSha(tree.baseSha || baseSha);
-      paths = index.map((item) => item.path);
+    let remoteTree;
+    setBusy(true);
+    try {
+      remoteTree = await github.tree(repo.owner.login, repo.name, branch);
+    } catch (e) {
+      toastError(e?.message || "Could not refresh repository files from GitHub. Nothing was deleted.");
+      return;
+    } finally {
+      setBusy(false);
     }
+
+    const remoteIndex = (remoteTree?.files || [])
+      .filter((item) => item && typeof item.path === "string" && item.path.length)
+      .map((item) => ({ path: item.path, sha: item.sha || null, size: item.size || 0 }));
+    const remotePaths = new Set(remoteIndex.map((item) => item.path));
+    // Include newly-created local files too, but do not trust cached base/index
+    // paths that are absent from the freshly fetched GitHub tree.
+    const newLocalPaths = Object.keys(files || {}).filter((path) => !(path in (base || {})) && !remotePaths.has(path));
+    const paths = [...new Set([...remotePaths, ...newLocalPaths])];
+
     if (!paths.length) {
-      toastInfo("This repository has no tracked files to delete.");
+      // Keep the editor's baseline aligned with the actual remote repository.
+      setFileIndex(remoteIndex);
+      setBase(Object.fromEntries(remoteIndex.map((item) => [item.path, null])));
+      setBaseSha(remoteTree?.baseSha || "");
+      toastInfo("GitHub confirms this repository has no tracked files to delete.");
       return;
     }
+
     const ok = await confirmDialog({
       title: "Delete all files",
-      message: `Stage deletion of all ${paths.length} tracked file${paths.length === 1 ? "" : "s"} in ${repo.full_name}? The repository changes only after you commit and push.`,
+      message: `GitHub currently has ${remoteIndex.length} tracked file${remoteIndex.length === 1 ? "" : "s"} in ${repo.full_name}. This will also discard ${newLocalPaths.length} newly-created local file${newLocalPaths.length === 1 ? "" : "s"}. Continue? The repository changes only after you commit and push.`,
       confirmLabel: "Delete all files",
       danger: true,
     });
     if (!ok) return;
-    setBase((current) => {
-      const merged = { ...current };
-      for (const path of paths) if (!(path in merged)) merged[path] = null;
-      return merged;
-    });
+
+    // Replace potentially stale baseline metadata with the freshly fetched
+    // tree before computing the deletion change-set.
+    setFileIndex(remoteIndex);
+    setBase(Object.fromEntries(remoteIndex.map((item) => [item.path, null])));
+    setBaseSha(remoteTree?.baseSha || "");
     applyFiles({}, `Deleted all ${paths.length} files`);
     setSelected("");
-    toastSuccess(`${paths.length} file${paths.length === 1 ? "" : "s"} staged for deletion. Commit changes to apply them on GitHub.`);
+    toastSuccess(`${paths.length} file${paths.length === 1 ? "" : "s"} staged for deletion. Open Changes and commit/push to apply them on GitHub.`);
   };
 
   const deleteSelected = async () => {
