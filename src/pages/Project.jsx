@@ -177,7 +177,13 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
     let cancelled=false;
     (async()=>{
       try { await loadBranches(); } catch {}
-      if (!cancelled && (!Object.keys(files).length || !baseSha)) {
+      // Only fetch from GitHub when there is no saved project at all. An empty
+      // `files` object is a valid state after "Delete all files" (every path is
+      // staged for deletion and lives on in `base`). Treating it as "not loaded"
+      // made the editor silently re-download the repo whenever the user left
+      // this page (e.g. to open Changes) and came back, wiping the deletions.
+      const hasLocalState = Object.keys(files).length > 0 || Object.keys(base).length > 0;
+      if (!cancelled && (!hasLocalState || !baseSha)) {
         try { await load(); } catch {}
       }
     })();
