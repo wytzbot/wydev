@@ -227,9 +227,7 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
       // latest remote tree when the changed paths do not conflict. This is
       // important for ZIP uploads and for files added directly on GitHub.
       const sha = baseSha;
-      // Upload file contents as Git blobs first. Keeping blob creation out of
-      // the final commit request prevents large ZIP imports from exceeding the
-      // Vercel request-body limit and makes failures retryable per file.
+      // Upload blobs with bounded concurrency, then publish as small commits.
       const prepared = [];
       const queue = changes.filter(c => c.status !== "D");
       let cursor = 0;
@@ -242,29 +240,63 @@ export default function Project({ repo, onBack, onWorkingState, openPath, onDele
             ? { content: String(c.content.base64 || ""), encoding: "base64" }
             : { content: String(c.content ?? ""), encoding: "utf-8" };
           if (binary && !payload.content) throw new Error(`Binary file ${c.path} has no data.`);
-          const b = await github.blob(repo.owner.login, repo.name, { path: c.path, ...payload });
-          prepared[i] = { path: c.path, status: c.status, blobSha: b.sha };
+          if (payload.content.length > 4_000_000) throw new Error(`${c.path} is too large for a single GitHub blob upload (${(payload.content.length / 1_000_000).toFixed(1)} MB encoded). GitHub requires one complete file per blob request; split this individual file or use Git LFS.`);
+          let lastError;
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              const b = await github.blob(repo.owner.login, repo.name, { path: c.path, ...payload });
+              prepared[i] = { path: c.path, status: c.status, blobSha: b.sha };
+              lastError = null;
+              break;
+            } catch (e) {
+              lastError = e;
+              if (e.status && e.status < 500 && e.status !== 429) break;
+              if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 700 * (attempt + 1)));
+            }
+          }
+          if (lastError) throw lastError;
         }
       };
-      await Promise.all(Array.from({ length: Math.min(4, Math.max(1, queue.length)) }, () => worker()));
-      const commitChanges = [
+      await Promise.all(Array.from({ length: Math.min(2, Math.max(1, queue.length)) }, () => worker()));
+      const allCommitChanges = [
         ...prepared.filter(Boolean),
         ...changes.filter(c => c.status === "D").map(c => ({ path: c.path, status: "D" }))
       ];
-      const r = await github.commit(repo.owner.login, repo.name, {
-        branch,
-        message: msg,
-        expectedSha: sha,
-        baseFiles: fileIndex,
-        changes: commitChanges
-      });
-      if (r.branch && r.branch !== branch) setBranch(r.branch);
+      // Keep each Git tree/commit request small. Advance the parent SHA after
+      // every successful batch, preserving successful work if a later batch fails.
+      const batchSize = 20;
+      let rollingSha = sha;
+      let rollingBase = { ...base };
+      let r = null;
+      const totalBatches = Math.ceil(allCommitChanges.length / batchSize);
+      for (let offset = 0; offset < allCommitChanges.length; offset += batchSize) {
+        const batch = allCommitChanges.slice(offset, offset + batchSize);
+        const batchNumber = Math.floor(offset / batchSize) + 1;
+        const suffix = ` (${batchNumber}/${totalBatches})`;
+        const batchMessage = totalBatches > 1 ? `${msg.slice(0, 200 - suffix.length)}${suffix}` : msg;
+        r = await github.commit(repo.owner.login, repo.name, {
+          branch, message: batchMessage, expectedSha: rollingSha,
+          baseFiles: fileIndex, changes: batch
+        });
+        rollingSha = r.commitSha;
+        for (const item of batch) {
+          if (item.status === "D") delete rollingBase[item.path];
+          else {
+            const source = changes.find(c => c.path === item.path);
+            if (source) rollingBase[item.path] = source.content ?? "";
+          }
+        }
+        setBase({ ...rollingBase });
+        setBaseSha(rollingSha);
+      }
+      if (!r) throw new Error("There were no files to commit.");
       setBase({ ...files });
-      setBaseSha(r.commitSha);
-      addLog({ type: "Commit & push", repo: repo?.full_name || "", branch: branch || "", text: `Committed ${changes.length} change${changes.length===1?"":"s"} successfully. Commit: ${r.commitSha}` });
+      setBaseSha(rollingSha);
+      if (r.branch && r.branch !== branch) setBranch(r.branch);
+      addLog({ type: "Commit & push", repo: repo?.full_name || "", branch: branch || "", text: `Committed ${changes.length} change${changes.length===1?"":"s"} successfully in ${totalBatches} small commit${totalBatches===1?"":"s"}. Final commit: ${r.commitSha}` });
       setChangesOpen(false);
       setPreviewAvailable(false);
-      toastSuccess(`Committed and pushed successfully · ${r.commitSha.slice(0, 7)}`);
+      toastSuccess(`Pushed ${changes.length} changes in ${totalBatches} small commit${totalBatches===1?"":"s"} · ${r.commitSha.slice(0, 7)}`);
       try { await load({silent:true,retries:2}); } catch {}
       localStorage.removeItem("wydev:project:" + repo.id);
     } catch (e) {
